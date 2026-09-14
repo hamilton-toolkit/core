@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hamilton-core"
+version = "0.1.0"
+description = "Specification-gated development with enforced verification"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+hamilton = "hamilton_core.cli:main"
+
+[tool.setuptools]
+packages = ["hamilton_core"]
+
+[tool.setuptools.package-data]
+hamilton_core = [
+    "templates/*",
+    "templates/*/*",
+    "templates/*/*/*",
+    "templates/*/*/*/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixtures"]
