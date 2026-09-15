@@ -44,7 +44,7 @@ def test_render_lists_last_three_spec_changes(tmp_path):
     root = copy_fixture("tree", tmp_path)
     _git(root, "init", "-q")
     _git(root, "add", "-A")
-    _git(root, "commit", "-qm", "c1")
+    _git(root, "commit", "-qm", "root-commit")
     req = os.path.join(root, "spec", "requirements.md")
     for n in range(2, 5):
         with open(req, "a", encoding="utf-8") as fh:
@@ -53,7 +53,9 @@ def test_render_lists_last_three_spec_changes(tmp_path):
     out = status.render(root, "spec")
     assert "spec change 4" in out and "spec change 3" in out
     assert "spec change 2" in out
-    assert "c1" not in out                       # only the last three
+    # "root-commit" is deliberately letters outside a-f so it can never
+    # collide with a random abbreviated hex hash in `out`.
+    assert "root-commit" not in out              # only the last three
 
 
 def test_render_no_git_history(tmp_path):
