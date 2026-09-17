@@ -300,3 +300,10 @@ def test_decide_resolves_a_relative_target_against_the_root(tmp_path):
     make_project(tmp_path, "spec")
     assert _guard.decide(str(tmp_path), "spec/requirements.md") is None
     assert _guard.decide(str(tmp_path), "src/x.py") is not None
+
+
+def test_the_write_target_comes_from_either_path_field():
+    from hamilton_core.guard import target_of
+    assert target_of({"file_path": "spec/r.md"}) == "spec/r.md"
+    assert target_of({"notebook_path": "n.ipynb"}) == "n.ipynb"
+    assert target_of({"command": "ls"}) is None

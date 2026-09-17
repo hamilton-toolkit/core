@@ -28,6 +28,7 @@ Imports no vendor SDK: this is Hamilton's own front end, and it renders
 from __future__ import annotations
 
 import contextlib
+import enum
 import itertools
 import os
 import re
@@ -35,36 +36,32 @@ import sys
 import threading
 import time
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.application import Application, create_app_session, get_app
-from prompt_toolkit.cursor_shapes import CursorShape
-from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_input
-from prompt_toolkit.key_binding import KeyBindings, KeyPress
-from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import Dimension, HSplit, Layout, Window
-from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.output import create_output
-from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import CheckboxList, RadioList
 
 from hamilton_core.session import protocol as P
+from hamilton_core.session import widgets
 
 ESC = "\x1b"
 PROMPT = "> "
 OTHER = "Type my own answer"
 FINISH_ROW = "Finish this session"
-
-# What a question resolved to. `FINISH` is the engineer choosing to stop; at an
-# iteration boundary that is a clean finish, mid-question it is an interruption,
-# and the two callers below read it accordingly.
-CHOICE, TEXT, FINISH, ABORT = "choice", "text", "finish", "abort"
-PICK_HINT = "↑/↓ or Tab to move · Enter to select"
-SELECT_HINT = "↑/↓ to move · Space to tick · Enter to confirm · Esc to go back"
 EDIT_HINT = "Alt+Enter (or Ctrl+J) for a new line · Enter to send"
 ENDED = "(the engineer ended the session)"
 WORKING = "Engineering"
 FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+class Outcome(enum.Enum):
+    """What a question resolved to. `FINISH` is the engineer choosing to stop;
+    at an iteration boundary that is a clean finish, mid-question it is an
+    interruption, and `ask` and `choose` read it accordingly."""
+    CHOICE = enum.auto()
+    TEXT = enum.auto()
+    FINISH = enum.auto()
+    ABORT = enum.auto()
+
 
 # Choices that duplicate the fixed rows Hamilton adds to every question: a
 # catch-all ("Other") or a way out ("Exit session"). The agent is told not to
@@ -73,12 +70,11 @@ _FIXED_ROW_DUPLICATE = re.compile(
     r"^\W*(other|something else|type my own|none of these|exit|quit"
     r"|(finish|end|close)\s+(the\s+|this\s+)?session)\b", re.I)
 
-STYLE = Style.from_dict({
-    "prompt": "bold",
-    "hint": "ansibrightblack",
-    "description": "ansibrightblack",
-    "chosen": "bold ansicyan",
-})
+
+def without_fixed_rows(q: P.Question) -> P.Question:
+    choices = tuple(c for c in q.choices
+                    if not _FIXED_ROW_DUPLICATE.match(c.label))
+    return P.Question(q.prompt, choices, q.header)
 
 
 def supports_color(stream) -> bool:
@@ -104,7 +100,7 @@ class Paint:
     def cyan(self, s: str) -> str: return self._w("36", s)
     def green(self, s: str) -> str: return self._w("32", s)
     def red(self, s: str) -> str: return self._w("31", s)
-    def selected(self, s: str) -> str: return self._w("1;36", s)
+    def heading(self, s: str) -> str: return self._w("1;36", s)
 
 
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
@@ -136,113 +132,6 @@ def echo(text: str) -> str:
     after a newline indented under it. Long lines are left for the terminal
     to wrap, so a copy from the scrollback has no breaks we added."""
     return PROMPT + text.replace("\n", "\n" + " " * len(PROMPT))
-
-
-# --- prompt_toolkit widgets ---------------------------------------------------
-
-def editor(hint: str) -> PromptSession:
-    """The multi-line input every prompt uses."""
-    kb = KeyBindings()
-
-    @kb.add("enter")
-    def _send(event):
-        event.current_buffer.validate_and_handle()
-
-    @kb.add("escape", "enter")
-    @kb.add("c-j")
-    def _newline(event):
-        event.current_buffer.insert_text("\n")
-
-    return PromptSession(
-        multiline=True,
-        key_bindings=kb,
-        prompt_continuation=lambda width, _line, _wrap: " " * width,
-        cursor=CursorShape.BLOCK,
-        placeholder=FormattedText([("class:hint", hint)]),
-        erase_when_done=True,
-        style=STYLE,
-    )
-
-
-def _list_app(widget, hint: str, accept) -> Application:
-    """A list the engineer moves through and confirms with Enter. The result
-    is `accept()`, or None if they leave (Esc, Ctrl+D)."""
-    kb = KeyBindings()
-
-    @kb.add("enter", eager=True)
-    def _confirm(event):
-        event.app.exit(result=accept())
-
-    @kb.add("tab")
-    def _down(event):
-        event.app.key_processor.feed(KeyPress(Keys.Down), first=True)
-
-    @kb.add("s-tab")
-    def _up(event):
-        event.app.key_processor.feed(KeyPress(Keys.Up), first=True)
-
-    @kb.add("escape", eager=True)
-    @kb.add("c-d")
-    def _leave(event):
-        event.app.exit(result=None)
-
-    @kb.add("c-c")
-    def _interrupt(event):
-        event.app.exit(exception=KeyboardInterrupt())
-
-    # A long list scrolls instead of pushing its top off the screen.
-    widget.window.height = lambda: Dimension(
-        max=max(3, get_app().output.get_size().rows - 4))
-    hint_row = Window(FormattedTextControl([("class:hint", f"  {hint}")]),
-                      height=1)
-    return Application(
-        layout=Layout(HSplit([widget, hint_row]), focused_element=widget),
-        key_bindings=kb,
-        style=STYLE,
-        erase_when_done=True,
-    )
-
-
-def picker(rows: list[tuple[str, str]]) -> Application:
-    """The cursor list for a question. `rows` are (label, description); the
-    app's result is the chosen row's index, or None if the engineer left."""
-    options = [(i, FormattedText([("", label)]
-                                 + ([("class:description", f"  {desc}")] if desc else [])))
-               for i, (label, desc) in enumerate(rows)]
-    radio = RadioList(
-        values=options,
-        select_on_focus=True,
-        open_character="",
-        select_character="❯",
-        close_character="",
-        show_cursor=False,
-        show_numbers=False,
-        selected_style="",
-        checked_style="class:chosen",
-        show_scrollbar=False,
-    )
-    return _list_app(radio, PICK_HINT, lambda: radio.current_value)
-
-
-def checklist(options: list[tuple[str, str]]) -> Application:
-    """A list to tick several rows of. `options` are (value, label); the app's
-    result is the ticked values, or the highlighted one if none is ticked."""
-    boxes = CheckboxList(
-        values=options,
-        open_character="[",
-        select_character="x",
-        close_character="]",
-        selected_style="class:chosen",
-        checked_style="",
-    )
-
-    def ticked():
-        # `_selected_index` is the highlighted row; the widget has no public
-        # accessor for it.
-        return (list(boxes.current_values)
-                or [boxes.values[boxes._selected_index][0]])
-
-    return _list_app(boxes, SELECT_HINT, ticked)
 
 
 class Console:
@@ -383,7 +272,7 @@ class Console:
     def error(self, message: str) -> None:
         self.say(self.paint.red(f"hamilton: {message}"))
 
-    def prompt_turn(self) -> str | None:
+    def next_message(self) -> str | None:
         """The engineer's own next message, or None to end the session."""
         with self._paused():
             self.say()
@@ -408,69 +297,63 @@ class Console:
         """A question from the agent. Its answer goes back to the model, so
         finishing here reads as an interruption -- the engineer is leaving
         mid-thought, and the checkpoint should stay resumable."""
-        q = self._without_fixed_rows(q)
-        with self._paused():
-            self._show(q)
-            if not q.choices:
-                answer = self._free_text()
-                if answer is None:
-                    self.aborted = True
-                    return ENDED
-                return answer
-            kind, value = self._resolve(q)
-            if kind in (ABORT, FINISH):
-                self.aborted = True
-                return ENDED
-            return value
+        q = without_fixed_rows(q)
+        with self._question(q):
+            if q.choices:
+                outcome, value = self._resolve(q)
+            else:
+                value = self._free_text()
+                outcome = Outcome.ABORT if value is None else Outcome.TEXT
+        if outcome in (Outcome.ABORT, Outcome.FINISH):
+            self.aborted = True
+            return ENDED
+        return value
 
     def choose(self, q: P.Question) -> str | None:
         """Hamilton's own menu: its steps and a finish, nothing typed.
         `None` means the engineer is done."""
-        with self._paused():
-            self._show(q)
-            kind, value = self._resolve(q, own_answer=False)
-            return None if kind in (ABORT, FINISH) else value
+        with self._question(q):
+            outcome, value = self._resolve(q, own_answer=False)
+        return None if outcome in (Outcome.ABORT, Outcome.FINISH) else value
 
-    def select(self, prompt: str, options: list[tuple[str, str]]) -> list[str] | None:
-        """Several of `options` ((value, label) rows), chosen by Hamilton's
-        own flow. Returns the chosen values, or None if the engineer backs
-        out."""
-        with self._paused():
-            self._show(P.Question(prompt))
-            if self._interactive():
-                with self._session():
-                    chosen = checklist(options).run()
-                if chosen:
-                    labels = dict(options)
-                    self.say(self.paint.green("\n".join(labels[v] for v in chosen)))
-                return chosen
-            return self._numbered_many(options)
+    def choose_many(self, prompt: str, options: list[tuple[str, str]]) -> list[str] | None:
+        """Several of `options` ((value, label) rows), for Hamilton's own flow.
+        The chosen values, or None if the engineer backs out."""
+        with self._question(P.Question(prompt)):
+            if not self._interactive():
+                return self._numbered_many_choices(options)
+            with self._session():
+                chosen = widgets.checklist(options).run()
+            if chosen:
+                labels = dict(options)
+                self._echo_chosen([labels[v] for v in chosen])
+            return chosen
 
-    def text(self, prompt: str) -> str | None:
+    def ask_text(self, prompt: str) -> str | None:
         """An open question from Hamilton's own flow. None if the engineer
         backs out -- unlike `ask`, that does not end the session."""
-        with self._paused():
-            self._show(P.Question(prompt))
+        with self._question(P.Question(prompt)):
             answer = self._input(hint=f"Enter on its own goes back · {EDIT_HINT}")
         return answer if answer and answer.strip() else None
 
-    def _show(self, q: P.Question) -> None:
-        self.say()
-        if q.header:
-            self.say(self.paint.selected(f"── {q.header} ──"))
-        if q.prompt:
-            self.say(markdown(q.prompt, self.paint))
+    @contextlib.contextmanager
+    def _question(self, q: P.Question):
+        """Pause the indicator and show the question while it is answered."""
+        with self._paused():
+            self.say()
+            if q.header:
+                self.say(self.paint.heading(f"── {q.header} ──"))
+            if q.prompt:
+                self.say(markdown(q.prompt, self.paint))
+            yield
 
-    def _resolve(self, q: P.Question, own_answer: bool = True) -> tuple[str, str]:
+    def _echo_chosen(self, labels: list[str]) -> None:
+        self.say(self.paint.green("\n".join(f"  {label}" for label in labels)))
+
+    def _resolve(self, q: P.Question, own_answer: bool = True) -> tuple[Outcome, str]:
         if self._interactive():
             return self._pick(q, own_answer)
         return self._numbered(q, own_answer)
-
-    @staticmethod
-    def _without_fixed_rows(q: P.Question) -> P.Question:
-        choices = tuple(c for c in q.choices
-                        if not _FIXED_ROW_DUPLICATE.match(c.label))
-        return P.Question(q.prompt, choices, q.header)
 
     def _free_text(self) -> str | None:
         while True:
@@ -487,31 +370,31 @@ class Console:
             return self._read(PROMPT)
         try:
             with self._session():
-                text = editor(hint).prompt([("class:prompt", PROMPT)])
+                text = widgets.editor(hint).prompt([("class:prompt", PROMPT)])
         except EOFError:
             return None
         self.say(echo(text))
         return text
 
-    def _pick(self, q: P.Question, own_answer: bool) -> tuple[str, str]:
+    def _pick(self, q: P.Question, own_answer: bool) -> tuple[Outcome, str]:
         """The cursor list. Moving the highlight sends nothing; Enter does."""
         fixed = ([OTHER] if own_answer else []) + [FINISH_ROW]
         rows = ([(c.label, c.description) for c in q.choices]
                 + [(label, "") for label in fixed])
         with self._session():
-            idx = picker(rows).run()
+            idx = widgets.picker(rows).run()
         if idx is None:
-            return ABORT, ""
+            return Outcome.ABORT, ""
         label = rows[idx][0]
         if idx < len(q.choices):
-            self.say(self.paint.green(f"  {label}"))
-            return CHOICE, label
+            self._echo_chosen([label])
+            return Outcome.CHOICE, label
         if label == FINISH_ROW:
-            return FINISH, ""
+            return Outcome.FINISH, ""
         answer = self._free_text()
-        return (TEXT, answer) if answer is not None else (ABORT, "")
+        return (Outcome.TEXT, answer) if answer is not None else (Outcome.ABORT, "")
 
-    def _numbered(self, q: P.Question, own_answer: bool) -> tuple[str, str]:
+    def _numbered(self, q: P.Question, own_answer: bool) -> tuple[Outcome, str]:
         """No-TTY fallback: the same question as a numbered list. Typing is
         already how you answer here, so only the finish row is added."""
         for i, c in enumerate(q.choices, 1):
@@ -523,19 +406,19 @@ class Console:
             raw = self._read(f"choose 1-{last}"
                              f"{', or type your own answer' if own_answer else ''}> ")
             if raw is None:
-                return ABORT, ""
+                return Outcome.ABORT, ""
             if raw.isdigit():
                 n = int(raw)
                 if n == last:
-                    return FINISH, ""
+                    return Outcome.FINISH, ""
                 if 1 <= n <= len(q.choices):
-                    return CHOICE, q.choices[n - 1].label
+                    return Outcome.CHOICE, q.choices[n - 1].label
                 self.say("  not a choice on the list -- pick again")
             elif raw and own_answer:
-                return TEXT, raw
+                return Outcome.TEXT, raw
 
-    def _numbered_many(self, options: list[tuple[str, str]]) -> list[str] | None:
-        """No-TTY fallback for `select`: numbers separated by commas."""
+    def _numbered_many_choices(self, options: list[tuple[str, str]]) -> list[str] | None:
+        """No-TTY fallback for `choose_many`: numbers separated by commas."""
         for i, (_value, label) in enumerate(options, 1):
             self.say(f"  {i}) {label}")
         while True:

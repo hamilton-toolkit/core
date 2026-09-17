@@ -86,6 +86,7 @@ def test_json_rows(tmp_path):
     assert by_id["R-0004"]["boundary"] is False
     assert by_id["R-0007"]["status"] == "stale"
     assert by_id["R-0001"]["criteria"] == {"AC1": "covered"}
+    assert by_id["R-0004"]["label"].startswith('R-0004 "')
     assert "_text" not in by_id["R-0001"]
 
 

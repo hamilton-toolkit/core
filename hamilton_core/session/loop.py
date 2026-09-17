@@ -32,6 +32,7 @@ import asyncio
 import os
 
 from hamilton_core import guard as _guard
+from hamilton_core import phase as _phase
 from hamilton_core import status as _status
 from hamilton_core import tree as _tree
 from hamilton_core.session import protocol as P
@@ -40,7 +41,6 @@ from hamilton_core.session.console import Console
 from hamilton_core.session.modes import Mode, Step
 
 SESSION_ENV = "HAMILTON_SESSION"
-PHASE_REL = ".hamilton/phase"
 
 NEXT_PROMPT = "That iteration is done. What next? Pick a step, or finish the session."
 
@@ -68,25 +68,24 @@ def next_step(console: Console, mode: Mode, root: str) -> str | None:
         step = steps[answer]
         if not step.picks_requirements:
             return step.instruction
-        instruction = _targeted_change(console, step, root)
+        instruction = _change_picked_requirements(console, step, root)
         if instruction is not None:
             return instruction
 
 
-def _targeted_change(console: Console, step: Step, root: str) -> str | None:
+def _change_picked_requirements(console: Console, step: Step, root: str) -> str | None:
     """Let the engineer pick requirements from the tree and say what should
     change. None if the tree is empty or they back out."""
     rows = _tree.rows(root)
     if not rows:
         console.note("The spec has no requirements yet -- nothing to pick.")
         return None
-    labels = {r["id"]: f'{r["id"]} "{r["title"] or r["_text"]}"' for r in rows}
-    options = [(r["id"], "  " * r["path"].count(".") + labels[r["id"]])
-               for r in rows]
-    chosen = console.select("Which requirements?", options)
+    labels = {r["id"]: r["label"] for r in rows}
+    options = [(r["id"], "  " * r["path"].count(".") + r["label"]) for r in rows]
+    chosen = console.choose_many("Which requirements?", options)
     if not chosen:
         return None
-    change = console.text("What should change?")
+    change = console.ask_text("What should change?")
     if change is None:
         return None
     return step.instruction.format(
@@ -141,7 +140,7 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
                 continue
 
             cp.save(root)
-            text = await asyncio.to_thread(console.prompt_turn)
+            text = await asyncio.to_thread(console.next_message)
     finally:
         console.stop_working()
         await adapter.close()
@@ -171,8 +170,7 @@ def main(mode: Mode) -> int:
     if problem:
         return refuse(problem)
 
-    with open(os.path.join(root, PHASE_REL), "w", encoding="utf-8") as fh:
-        fh.write(mode.phase)
+    _phase.write(root, mode.phase)
     os.environ[SESSION_ENV] = mode.phase
 
     console.banner(_status.render(root, mode.phase))

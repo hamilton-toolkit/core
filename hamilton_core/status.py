@@ -18,19 +18,14 @@ import subprocess
 import sys
 
 from hamilton_core import model as M
+from hamilton_core import phase as _phase_file
 from hamilton_core.check import REQ_REL, extract
 
-PHASE_REL = ".hamilton/phase"
 VERIFIED_REL = ".hamilton/verified"
 
 
 def _phase(root: str, phase: str | None) -> str:
-    if phase:
-        return phase
-    try:
-        return open(os.path.join(root, PHASE_REL), encoding="utf-8").read().strip()
-    except OSError:
-        return "unknown"
+    return phase or _phase_file.read(root) or "unknown"
 
 
 def _counts(root: str):

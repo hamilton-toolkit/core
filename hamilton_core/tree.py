@@ -29,6 +29,7 @@ def rows(root: str) -> list[dict]:
             "path": paths.get(rid, "?"),
             "id": rid,
             "title": M.req_title(rid, m.reqs),
+            "label": M.req_label(rid, m.reqs),
             "statement": r["statement"],
             "parent": r["parent"],
             "actor": r.get("actor"),

@@ -34,6 +34,7 @@ from claude_agent_sdk import (
     tool,
 )
 
+from hamilton_core import guard
 from hamilton_core.session import protocol as P
 
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
@@ -55,10 +56,6 @@ _ASK_SCHEMA = {
 }
 
 
-def _target_of(tool_input: dict) -> str | None:
-    return tool_input.get("file_path") or tool_input.get("notebook_path")
-
-
 def _as_question(args: dict) -> P.Question:
     choices = []
     for c in args.get("choices") or ():
@@ -77,8 +74,7 @@ class ClaudeSdkAdapter:
 
     def __init__(self, root: str, answerer: P.Answerer,
                  write_policy: P.WritePolicy,
-                 resume_ref: str | None = None,
-                 model: str | None = None) -> None:
+                 resume_ref: str | None = None) -> None:
         self._root = root
         self._answerer = answerer
         self._write_policy = write_policy
@@ -108,12 +104,11 @@ class ClaudeSdkAdapter:
                 "hamilton", tools=[ask_engineer])},
             can_use_tool=self._can_use_tool,
             resume=resume_ref,
-            model=model,
         )
 
     async def _can_use_tool(self, tool_name: str, tool_input: dict, context):
         if tool_name in WRITE_TOOLS:
-            target = _target_of(tool_input)
+            target = guard.target_of(tool_input)
             if target:
                 denial = self._write_policy(target)
                 if denial is not None:

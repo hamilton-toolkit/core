@@ -126,7 +126,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 260 passing
+$ python -m pytest -q          # expects 263 passing
 ```
 
 ### 2. Link it into a separate test project

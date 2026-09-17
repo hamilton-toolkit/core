@@ -32,6 +32,8 @@ import os
 import sys
 import json
 
+from hamilton_core import phase as _phase
+
 LOCKED_IN_BUILD_DIRS = ("spec", ".hamilton", ".claude")
 LOCKED_IN_BUILD_FILES = ("AGENTS.md", "CLAUDE.md")
 BUILD_WRITABLE = (os.path.join(".hamilton", "config"),)
@@ -48,9 +50,8 @@ def decide(root: str, target: str) -> str | None:
 
     No `.hamilton/phase` means this is not a Hamilton project -- allow."""
     target = os.path.normpath(os.path.join(root, target))  # abs wins in join
-    try:
-        phase = open(os.path.join(root, ".hamilton", "phase"), encoding="utf-8").read().strip()
-    except OSError:
+    phase = _phase.read(root)
+    if phase is None:
         return None  # no .hamilton/phase -- not a Hamilton project
 
     if phase not in ("spec", "build"):
@@ -75,10 +76,14 @@ def decide(root: str, target: str) -> str | None:
             f"written. Run `hamilton design` (from a plain shell) to switch phase.")
 
 
+def target_of(tool_input: dict) -> str | None:
+    """The path a write tool is about to write, from its input."""
+    return tool_input.get("file_path") or tool_input.get("notebook_path")
+
+
 def main(argv=None) -> int:
     try:
-        ti = json.load(sys.stdin).get("tool_input") or {}
-        target = ti.get("file_path") or ti.get("notebook_path")
+        target = target_of(json.load(sys.stdin).get("tool_input") or {})
     except (ValueError, AttributeError):
         return 0
     if not target:

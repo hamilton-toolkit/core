@@ -7,11 +7,10 @@ turn loop) is shared, so a new mode is one `Mode` here and nothing more.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Callable
 
-from hamilton_core.check import REQ_REL, extract
+from hamilton_core import tree
 
 
 @dataclass(frozen=True)
@@ -63,19 +62,9 @@ _SPEC_STEPS: tuple[Step, ...] = (
 )
 
 
-def _requirement_count(root: str) -> int:
-    """Real requirements in spec/requirements.md -- 0 if the file is absent or
-    holds only the fenced example."""
-    path = os.path.join(root, REQ_REL)
-    if not os.path.isfile(path):
-        return 0
-    reqs, _dupes, _malformed = extract(path)
-    return len(reqs)
-
-
 def _spec_is_empty(root: str) -> str | None:
     """`reverse` derives a *first* spec, so it refuses a spec with content."""
-    n = _requirement_count(root)
+    n = len(tree.rows(root))
     if not n:
         return None
     return (f"spec/requirements.md already has {n} requirement(s). `hamilton "
