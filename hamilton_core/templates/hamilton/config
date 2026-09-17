@@ -4,15 +4,19 @@
 # test_command  the test suite, run from the project root by `hamilton check`.
 #               Must exit 0 on success. Use `python -m pytest`, not bare
 #               `pytest`, so the project root is importable from the tests.
-#               Which framework and where tests live are build-time calls, so
-#               this and `test_paths` are the two keys the agent MAY edit
-#               during a `build` session.
-# test_paths    space-separated dirs holding the tests; a `@covers` tag only
-#               counts inside one of them.
+# paths.<method>  space-separated dirs holding the tests for one verification
+#               method defined in `## Verification methods` in
+#               spec/requirements.md, e.g. `paths.browser=tests/browser`. A
+#               `@covers` tag counts for an AC only under the paths of one of
+#               its methods. `manual` needs no paths.
+#               Which framework runs and where each method's tests live are
+#               build-time calls, so `test_command` and the `paths.*` keys are
+#               the keys the agent MAY edit during a `build` session.
 # mutation_command  RESERVED. Per-language mutation testing (see concept.md
 #               5.3). Not implemented yet -- if you set it, `hamilton check`
 #               prints a notice every run and does NOT run it. Leave it unset.
 
 test_command=
-test_paths=tests
+# paths.unit=tests/unit
+# paths.browser=tests/browser
 # mutation_command=

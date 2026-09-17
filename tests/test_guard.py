@@ -45,7 +45,7 @@ def make_project(root, phase="spec"):
     (root / ".hamilton").mkdir()
     (root / ".claude").mkdir()
     (root / ".hamilton" / "phase").write_text(phase)
-    (root / ".hamilton" / "config").write_text("test_command=true\ntest_paths=tests\n")
+    (root / ".hamilton" / "config").write_text("test_command=true\npaths.unit=tests\n")
     (root / ".claude" / "settings.json").write_text("{}")
     return root
 

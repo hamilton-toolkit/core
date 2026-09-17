@@ -17,13 +17,13 @@ Non-goal: replacing human architectural judgment. The process concentrates human
 
 | | Governs | Contributes |
 |---|---|---|
-| **MBSE** | Representation: what the design artifacts are and how they relate | Recursive decomposition, interfaces on the boundaries |
+| **MBSE** | Representation: what the design artifacts are and how they relate | Recursive decomposition |
 | **V-Model** | Timing and level: when verification intent is fixed, at what granularity | R↔AC pairing, verification levels, traceability |
 
 They are near-orthogonal. MBSE is weak on verification discipline; the V-model is weak on how decomposition is actually performed. Each covers the other's gap.
 
 Hamilton takes a **scale-appropriate** slice of MBSE (D-014): recursive
-decomposition and interfaces, but not the logical/physical model split. At the
+decomposition, but not the logical/physical model split. At the
 target scale — single engineer to small team — a separate component model and a
 separate module model maintained in parallel with the requirements cost more
 attention than they return. The requirement tree carries the decomposition; the
@@ -40,34 +40,32 @@ Recursive decomposition of the system from the outside in:
 
 - **Root:** a system-level goal, as seen by an actor. It names the `Actor:`
   whose goal it is.
-- **Interior nodes:** subsystem boundaries. An interior requirement carries an
-  **`Interface:`** line — prose naming what crosses the boundary it owns (the
-  data, the calls, the protocol). The interior of the tree **is** the
-  architecture.
+- **Interior nodes:** the goal broken into smaller requirements, each of which
+  its children add up to.
 - **Leaves:** behaviour small enough to implement in a single agent session,
   with at least one externally observable acceptance criterion.
 
 Depth is **variable**. Three levels is the common case, not a rule. A trivial
 feature may be root → leaf.
 
-Every requirement — interior or leaf — carries a `Statement` and acceptance
-criteria like any other; an interior node additionally carries the `Interface:`.
+Every requirement — root, interior or leaf — carries a `Statement` and
+acceptance criteria, and every criterion names how it is verified (§4.4, §5.1).
+The tree holds requirements and criteria only; the architecture lives in the
+code (§3.1).
 
 ### 3.1 The physical model is the code
 
 The real modules/packages/files are the physical model; there is no parallel
 map from a logical component to a path. An agent locates code the ordinary way
-(search, the interface line on the nearest interior ancestor). A separate
+(search, reading the code). A separate
 physical model is deferred until a system large enough to need one.
 
 ### 3.2 The refactoring rule
 
 > Changing the code without changing the requirement tree is **refactoring**: no
-> requirement is touched, no `Interface:` line changes, and all existing tests
-> must pass unchanged.
+> requirement is touched, and all existing tests must pass unchanged.
 >
-> Changing behaviour — or changing what crosses an interface — requires changing
-> the **tree first**.
+> Changing behaviour requires changing the **tree first**.
 
 This is the primary defense against spec/code drift.
 
@@ -96,7 +94,7 @@ The V-model does not require test *code* before implementation. It requires *ver
 Inability to state an AC before implementation is **a symptom, not an accepted limitation**:
 
 - at leaf/unit level, it is sometimes legitimate (edge cases genuinely emerge from the code)
-- at interface/integration level, it means **the interior requirement or its `Interface:` is underspecified**
+- at integration or system level, it means **the requirement above is underspecified**
 
 Treat the second case as a defect in the tree and fix it there.
 
@@ -105,27 +103,33 @@ Treat the second case as a defect in the tree and fix it there.
 The implemented format (`data-model.md` §2.2, §4.1) is authoritative:
 
 ```
+## Verification methods
+- **<name>** — <what is real, what is stubbed>
+
 ## R-nnnn <Short title>
 Parent:    <R-nnnn>        # omit only on a root requirement
 Actor:     <A-nnnn>        # required on a root, meaningless elsewhere
-Interface: <one sentence>  # required once the node has children; what crosses its boundary
 Statement: <one sentence, one behaviour, < 20 words>
 Criteria:
-- AC1: <observable condition> -> <expected outcome>
+- AC1: <observable condition> -> <expected outcome> [<method>]
 - AC2: ...
 ```
 
-No `Verification` field — the level is derived from the requirement's position
-in the tree (§5.1). No `Status` field — the never-reuse invariant is carried by
-the id counter, not a status lifecycle (`data-model.md` §3), and there are no
-tombstones. `Component:` is a **retired field** (D-014): a pre-D-014 file that
-still carries it parses, the line is ignored.
+**Every AC records its verification method** (D-019), as a trailing marker
+naming a method defined once, at the top of the file. This reverses an earlier
+rule that the level was derived from tree position and recorded nowhere: in
+practice nothing enforced the derived level, so an agent picked the cheapest
+test everywhere and the gate went green over a broken product. The method is
+spec, ratified with the AC; the tool that runs it is not (§5.1).
 
-The `Parent` tree is the whole model. It is both *problem* structure (a leaf is
-behaviour to test) and *solution* structure (an interior node is a subsystem,
-and its `Interface:` is the integration surface). Roots are actor-level goals
-and must name an `Actor:`; everything else names a `Parent:` (D-007, D-014,
-`data-model.md` §2.2).
+No `Status` field — the never-reuse invariant is carried by the id counter, not
+a status lifecycle (`data-model.md` §3), and there are no tombstones.
+`Component:` (D-014) and `Interface:` (D-019) are **retired fields**: a file
+that still carries them parses, the lines are ignored.
+
+The `Parent` tree is the whole model: requirements and their criteria. Roots
+are actor-level goals and must name an `Actor:`; everything else names a
+`Parent:` (D-007, D-014, `data-model.md` §2.2).
 
 ### 4.5 Granularity heuristic
 
@@ -139,21 +143,38 @@ If writing the requirement takes longer than writing the code it describes, the 
 
 ## 5. Verification
 
-### 5.1 Levels derive from tree position
+### 5.1 Levels are chosen, not derived
 
-| Position in the requirement tree | Verification level | Execution |
+Each project defines its **verification methods** once, in `## Verification
+methods` at the top of `spec/requirements.md`, and every AC names the method
+that proves it (D-019). A method's definition says what a test observes, what is
+real and what is stubbed — for example:
+
+| Method | Observes | Stubbed |
 |---|---|---|
-| Leaf | Unit | Automated, every change |
-| Interior node (has an `Interface:`) | Integration | Automated, every change |
-| Root | System | See 5.5 |
+| `browser` | the running product in a real browser | external services |
+| `http` | requests to the running backend, and the calls external services received | external services |
+| `unit` | one module in isolation | all I/O |
+| `manual` | judged by a person — reserved, never enforced | — |
 
-Levels follow tree position, not a fixed numeric depth.
+The agent proposes a method for every AC by what the AC observes, never by what
+is cheapest to test; the engineer refines it. Tree position is a hint, not the
+rule: a root's criteria are usually observed through the actor's channel, a
+leaf's are often `unit`, but a leaf whose outcome the actor sees is verified
+where the actor sees it.
+
+`hamilton check` enforces the choice: a test counts for an AC only under the
+directories configured for its method (`paths.<method>`, §5.6). A `manual` AC
+needs no test and is listed as not machine-verified. Changing a method changes
+the AC, so it goes `stale` like a reworded one.
 
 ### 5.2 Test authoring: fresh subagent
 
 Tests are written by a **fresh agent session** that receives:
 - the requirement and its acceptance criteria
-- the public interface / signature of the unit under test
+- the definition of each AC's verification method
+- for `unit`, the public signature of the unit under test; for any other method,
+  a running instance of the system
 
 and **not** the implementation body.
 
@@ -183,7 +204,8 @@ nothing is exactly the failure this section describes.
 ### 5.4 Coverage policy
 
 **Gate — AC coverage, enforced.**
-- every AC maps to ≥1 test that names it (`@covers R-nnnn/ACn`)
+- every AC maps to ≥1 test that names it (`@covers R-nnnn/ACn`) under the
+  paths of each of its methods; `manual` ACs are listed instead
 - `hamilton check` runs `test_command` and requires exit 0
 
 Both are checkable at commit time — coverage from the `@covers` tags, the pass
@@ -199,13 +221,18 @@ The second bucket is the point: it is the mechanical check against agent gold-pl
 
 **Cap:** a bounded number of tests per requirement, forcing prioritization over assertion-count padding.
 
-### 5.5 System verification is transitive
+### 5.5 System verification is the root's own criteria
 
-A root requirement carries acceptance criteria like any other. There is **no
-separate acceptance mechanism** — no `accept` command, no stored sign-off (a
-recorded self-report is fakeable the way the falsification ledger was, §5.3). A
-root requirement is satisfied when its child requirements are correctly
-specified and green. The final judgement is the user's, and it is not recorded.
+A root requirement carries acceptance criteria like any other, and it is
+verified **through them**: at least one of them names an actor-facing method,
+so a test exercises the running product the way the actor reaches it. Green
+children do not verify their parent — the parts can each pass while the product
+that wires them together is broken. `hamilton check` warns (`root-unit-only`)
+on a root whose criteria are all `unit`.
+
+There is **no separate acceptance mechanism** — no `accept` command, no stored
+sign-off (a recorded self-report is fakeable the way the falsification ledger
+was, §5.3). The final judgement is the user's, and it is not recorded.
 
 Rejection at the system level is always a defect *upstream of the code*:
 
@@ -216,21 +243,25 @@ Rejection at the system level is always a defect *upstream of the code*:
 Fix the spec or the test first; patching the code alone fixes the symptom and
 guarantees recurrence.
 
-**Known limitation.** Children being green proves the children, not that they
-*add up to* the parent. A missing requirement produces no signal — absence is
+**Known limitation.** A green check proves the specification is satisfied, not
+that it is complete. A missing requirement produces no signal — absence is
 invisible — and emergent properties (latency, concurrency, cross-boundary error
-propagation) are not covered. A green check proves the specification is
-satisfied, not that it is complete. The cheap mitigation is to render
-`hamilton tree` after the root layer is ratified and read it upward, asking of
-each parent: *do these children add up to this?*
+propagation) are covered only where a criterion names them. The cheap
+mitigation is a completeness read-through: render `hamilton tree` after the
+root layer is ratified and read it upward, asking of each parent: *do these
+children add up to this?* That reading checks the spec; it does not verify the
+product.
 
 ### 5.6 Test tiers and the local gate
 
-`test_command` runs the fast tests — unit and integration. End-to-end tests are
-heavier; they live in a directory that is listed in `test_paths` but is **not**
-part of `test_command`. Consequence: an E2E `@covers` tag satisfies the coverage
-gate, but the test itself runs only in CI (§8). The local gate stays fast enough
-to run on every change, which is the only way it keeps being run.
+Each method's tests live under its own directories, `paths.<method>` in
+`.hamilton/config` — e.g. `paths.unit=tests/unit`, `paths.browser=tests/browser`.
+Which tool runs them and where they live are build-phase choices. `test_command`
+runs the fast tests. Heavier ones (a `browser` suite, say) may live under their
+method's paths but outside `test_command`. Consequence: their `@covers` tags
+satisfy the coverage gate, but the tests themselves run only in CI (§8). The
+local gate stays fast enough to run on every change, which is the only way it
+keeps being run.
 
 ---
 
@@ -241,37 +272,21 @@ to run on every change, which is the only way it keeps being run.
 | `spec/vision.md` — purpose, users, non-goals | Human | Proposes; human ratifies |
 | Initial requirements | User | — (greenfield); under `hamilton reverse`, agent proposes from the existing code, human ratifies (D-018) |
 | The requirement tree — shape, statements, AC | Human | Proposes; human ratifies |
-| `Interface:` on each interior node — what crosses the boundary | Human | Proposes; human ratifies |
+| Verification methods — their definitions and each AC's method | Human | Proposes; human ratifies |
 | Internal file layout, data structures, algorithms | Claude Code | Owns |
 | Framework and component-library choice — one-way doors | Human | Proposes; agent may advise |
 | Utility-library and test-framework choice — two-way doors | Claude Code | Owns |
 | Test implementation | Claude Code (fresh session, per 5.2) | Owns |
 
-A technology choice is an architecture decision — record it in the `Interface:`
-line of the interior requirement it constrains, or in a decision note, not as a
-requirement: no observable acceptance criterion can be written for "use Angular"
+A technology choice is an architecture decision — record it in a decision note,
+not as a requirement: no observable acceptance criterion can be written for "use Angular"
 (D-008). The exception is an externally *mandated* technology: that is a genuine
 constraint requirement, with an ugly-but-honest AC over the dependency manifest.
 
-### 6.1 Why the interface line is the human's
+### 6.1 Propose–ratify pattern
 
-The framework works because it gives the agent a **bounded target**. The bound
-is the `Interface:` on the nearest interior ancestor of the requirement being
-implemented. If the agent selects its own boundary, the bound is self-selected
-and the control loop is circular — structurally identical to an agent writing
-tests against its own code.
-
-- **AC** = oracle for behavior
-- **the interior node's `Interface:`** = oracle for scope
-
-Secondary payoff: that `Interface:`, once stated concretely, *is* the
-integration test surface. This is what makes integration-level AC writable
-before implementation (see 4.3).
-
-### 6.2 Propose–ratify pattern
-
-Claude proposes the decomposition and the interface lines; the human reviews and
-ratifies. Generation is expensive, ratification is cheap. Applies uniformly to
+Claude proposes the decomposition, the criteria and their methods; the human
+reviews and ratifies. Generation is expensive, ratification is cheap. Applies uniformly to
 every part of the tree.
 
 ---
@@ -296,8 +311,8 @@ At this scale there is no separate spec MR, and the engineer is the spec author 
 rules the agent is meant to follow — an agent must not relax what constrains it
 (`hamilton check` writes `.hamilton/verified` itself, as a subprocess, not
 through a hooked tool). The one exception is `.hamilton/config`: which test
-framework runs and where the tests live (`test_command`, `test_paths`) are
-build-time decisions, so the file is writable in `build`. A path hook cannot
+framework runs and where each method's tests live (`test_command`,
+`paths.<method>`) are build-time decisions, so the file is writable in `build`. A path hook cannot
 lock individual lines, so the whole file is writable there — and visible in the
 config diff a reviewer sees.
 
@@ -336,12 +351,12 @@ reach (§8).
 
 **Step 1 — Specification**
 Engineer updates the requirement tree: shape, statements, acceptance criteria,
-and the `Interface:` line on each interior node. Claude may propose; the
-engineer decides. No code is written.
+and the verification method of each criterion. Claude may propose; the engineer
+decides. No code is written.
 
 **Step 2 — Implementation**
-- *2a:* Claude implements against the ratified requirements and interfaces.
-- *2b:* A **fresh subagent** writes tests from the AC plus the public signature, without the implementation body (see 5.2).
+- *2a:* Claude implements against the ratified requirements.
+- *2b:* A **fresh subagent** writes tests from the AC and its method — the public signature for `unit`, a running instance otherwise — without the implementation body (see 5.2).
 
 **Step 3 — Verification**
 - `hamilton check` runs `test_command`; Claude repairs failures within the mutability rule below.
@@ -361,9 +376,9 @@ Without an explicit rule, agents repair red suites by weakening assertions, dele
 
 ### 7.4 Loop-back edges
 
-A hard stop is a **full stop**: Claude reports and yields to the engineer. It never continues on a deviated interface.
+A hard stop is a **full stop**: Claude reports and yields to the engineer. It never continues on a deviated specification.
 
-- **Step 2 → Step 1 (hard stop).** A ratified interface or requirement proves wrong during implementation. Attempted spec write is denied; the agent stops. The engineer re-enters Step 1. Because both phases live in one branch and one MR, this costs a mode switch — no approval cycle.
+- **Step 2 → Step 1 (hard stop).** A ratified requirement or verification method proves wrong during implementation. Attempted spec write is denied; the agent stops. The engineer re-enters Step 1. Because both phases live in one branch and one MR, this costs a mode switch — no approval cycle.
 - **Step 3 → Step 2.** Test failure caused by the implementation. Claude decides and proceeds.
 - **Step 3 → Step 1.** Test failure revealing that the specification is wrong. **Only the engineer may take this edge.**
 
@@ -393,7 +408,8 @@ because it is unscaffolded.
 Non-exhaustive; the full target set is `data-model.md` §5.
 
 - every requirement has ≥1 AC
-- every AC has ≥1 traced test, and every test names an existing AC
+- every AC names a defined verification method
+- every AC has ≥1 traced test under its method's paths, and every test names an existing AC
 - the test suite runs and passes
 - no orphan requirements; references resolve; `Parent` graphs are acyclic
 - IDs unique, never reused (a counter, not a status lifecycle — no tombstones)
@@ -407,7 +423,7 @@ Periodic reconciliation: an agent diffs actual code behavior against the spec an
 ## 9. Constraints for implementation
 
 - **Language-agnostic.** The process must not assume a stack. The coding agent selects test framework and tooling.
-- **Greenfield start, or brownfield adoption (D-018).** A new project writes its spec first. An existing codebase is adopted with `hamilton reverse`, which *derives* a first spec from the code and its git history — capturing intent and the load-bearing decisions, deliberately under-specified relative to the implementation, module by module. Ownership is unchanged (§6.2): the agent proposes, the engineer ratifies. The first `hamilton build` after it binds the existing tests to the derived criteria.
+- **Greenfield start, or brownfield adoption (D-018).** A new project writes its spec first. An existing codebase is adopted with `hamilton reverse`, which *derives* a first spec from the code and its git history — capturing intent and the load-bearing decisions, deliberately under-specified relative to the implementation, module by module. Ownership is unchanged (§6.1): the agent proposes, the engineer ratifies. The first `hamilton build` after it binds the existing tests to the derived criteria.
 - **One agent, behind a seam.** Hamilton drives the session itself — `hamilton design` / `hamilton build` / `hamilton reverse` run the agent in process rather than handing over the terminal, which is what lets Hamilton own the question flow (so a mis-picked option can be taken back), end the session when the phase's work is done, and checkpoint every turn so an interrupted session resumes. That control is only purchasable by speaking a specific agent's protocol, so the earlier agent-agnostic launcher (`agent_command`, any CLI as a child process) was **retired**: it could set the phase but could see nothing inside the session. The dependency is contained rather than diffused — a single `AgentAdapter` (today `claude_agent_sdk`) is the only thing that knows which model is answering; the session driver, the write gate and the question flow are written against Hamilton's own event vocabulary. A second model is a second adapter. None exists yet, and the honest statement of today's position is: Hamilton runs on Claude.
 - **Team collaboration via Git / GitLab.**
 - **Enforced gating** rather than advisory.

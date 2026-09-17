@@ -1,23 +1,33 @@
 """`hamilton check` -- the verification gate.
 
 Reads `spec/requirements.md`, `spec/actors.md` and `.hamilton/config`, runs the
-project's test command, scans the configured test paths for `@covers
+project's test command, scans the configured method paths for `@covers
 R-nnnn/ACn` tags, and compares every acceptance criterion against
 `.hamilton/verified` (the hashes recorded the last time `check` passed).
 
-The model is one tree (D-014): `spec/requirements.md`, whose interior nodes are
-the architecture and carry an `Interface:`. `spec/actors.md` is a flat list.
-There is no components/modules model. Rules:
+The model is one tree (D-014): `spec/requirements.md`, headed by a
+`## Verification methods` section. Every AC ends in a marker naming how it is
+verified (`[browser]`, `[unit, http]`); a test for it counts only under the
+`paths.<method>` directories of one of those methods (D-019).
+`spec/actors.md` is a flat list. Rules:
 
   no-test-command    .hamilton/config has no (or a blank) test_command
   tests-failed       test_command ran and did not exit 0
-  uncovered          an AC has no @covers tag in a file under test_paths
+  retired-config     .hamilton/config still sets test_paths
+  no-method          an AC has no `[method]` marker
+  unknown-method     a marker names a method `## Verification methods` does
+                     not define
+  no-method-paths    a method in use has no `paths.<method>` in the config
+  uncovered          an AC's method has no @covers tag under its paths (each
+                     method of a multi-method AC needs its own); `manual`
+                     needs none
+  wrong-method       an AC is tagged, but under none of its methods' paths
   orphan-tag         a tag names a requirement or AC that does not exist
   orphan-requirement a requirement with no Parent and no Actor (a root must
                      name the actor whose goal it is)
   dangling-ref       a Parent or Actor value names no such entity
   cyclic-parent      a requirement's Parent chain loops
-  stale              an AC's text changed since check last passed
+  stale              an AC's text or method changed since check last passed
   malformed          a requirement has no ACs, no Statement, a repeated id,
                      or an unparseable line
 
@@ -26,9 +36,11 @@ with at least one requirement, `check` rewrites `.hamilton/verified` and exits
 0. Exit 1 on any finding; exit 2 when it cannot run at all (`spec/requirements.md`
 or `.hamilton/config` missing). `--json` emits
 {"ok": bool, "findings": [...], "warnings": [...], "notices": [...],
-"requirements": int, "acceptance_criteria": int} or {"error": "..."}.
-`notices` flag config that is set but does nothing (e.g. `mutation_command`,
-which is reserved and unimplemented); they never change the exit code.
+"manual": ["R-nnnn/ACn", ...], "requirements": int,
+"acceptance_criteria": int} or {"error": "..."}. `manual` lists the criteria a
+person verifies, which the gate does not. `notices` flag config that is set
+but does nothing (e.g. `mutation_command`, which is reserved and
+unimplemented); they never change the exit code.
 
 Advisory **warnings** never change the exit code and never fail an existing
 project:
@@ -36,8 +48,8 @@ project:
   long-statement    a Statement over 20 words -- it is several requirements
                     welded together; split it and push detail into ACs
   long-description  an Actor Description that is more than one sentence
-  no-interface      an interior requirement (has children) with no `Interface:`
-                    line -- expected while a subsystem is still being decomposed
+  root-unit-only    a root requirement whose ACs are all `unit` -- nothing
+                    verifies the actor's goal end to end
 
 The finding messages are the tool's real interface: the primary reader is an
 agent repairing a mistake it just made, so each one states where, which rule
@@ -57,11 +69,22 @@ import unicodedata
 REQ_REL = "spec/requirements.md"
 CONFIG_REL = ".hamilton/config"
 VERIFIED_REL = ".hamilton/verified"
-KNOWN_FIELDS = {"Parent", "Actor", "Statement", "Criteria", "Interface"}
+KNOWN_FIELDS = {"Parent", "Actor", "Statement", "Criteria"}
 # Fields a past model used; recognised and ignored so an older `requirements.md`
-# still parses (D-014). Not stored, not flagged.
-RETIRED_FIELDS = {"Component"}
+# still parses (D-014, D-019). Not stored, not flagged.
+RETIRED_FIELDS = {"Component", "Interface"}
 TAG_RE = re.compile(r"@covers\s+(R-\d{4})/(AC\d+)\b")
+
+METHODS_HEADING = "Verification methods"
+# a method needs no tag: a person verifies it, the gate only lists it
+MANUAL = "manual"
+_METHOD_NAME = r"[a-z][a-z0-9-]*"
+# `- **browser** — the running site in a real browser`
+_METHOD_DEF_RE = re.compile(rf"-\s+\*\*({_METHOD_NAME})\*\*\s*[—–:-]\s*(.+)$")
+# the trailing `[browser]` / `[unit, http]` of an AC
+_METHOD_MARKER_RE = re.compile(
+    rf"\[\s*({_METHOD_NAME}(?:\s*,\s*{_METHOD_NAME})*)\s*\]$")
+PATHS_PREFIX = "paths."
 
 STATEMENT_WORD_LIMIT = 20
 # a sentence terminator with real text on both sides -> a second sentence;
@@ -103,7 +126,7 @@ def read_config(root: str) -> dict:
     path = os.path.join(root, CONFIG_REL)
     if not os.path.isfile(path):
         raise UsageError(f"{CONFIG_REL}: not found (run `hamilton init`, or "
-                         f"create it with test_command and test_paths lines)")
+                         f"create it with test_command and paths.<method> lines)")
     cfg = {}
     with open(path, "r", encoding="utf-8") as fh:
         for n, line in enumerate(fh, 1):
@@ -112,6 +135,32 @@ def read_config(root: str) -> dict:
             key, _, value = line.partition("=")
             cfg[key.strip()] = (value.rstrip("\n"), n)
     return cfg
+
+
+def method_paths(cfg: dict) -> dict:
+    """{method: [dir, ...]} from the `paths.<method>` keys of the config: the
+    directories where a test verifying that method lives. A blank value counts
+    as unset."""
+    out = {}
+    for key, (value, _line) in cfg.items():
+        dirs = [d.replace("\\", "/").strip("/") for d in value.split()]
+        if key.startswith(PATHS_PREFIX) and dirs:
+            out[key[len(PATHS_PREFIX):]] = dirs
+    return out
+
+
+def under(rel: str, dirs) -> bool:
+    """True if repo-relative path ``rel`` lies in one of ``dirs``."""
+    r = rel.replace("\\", "/")
+    return any(r == d or r.startswith(d + "/") for d in dirs)
+
+
+def missing_methods(methods, paths: dict, files) -> list:
+    """The methods of an AC that none of its tags satisfies. A tag in ``files``
+    satisfies a method when it lies under that method's ``paths``; `manual`
+    needs no tag. A method without paths is always missing."""
+    return [m for m in methods
+            if m != MANUAL and not any(under(f, paths.get(m, ())) for f in files)]
 
 
 def run_tests(root: str, cfg: dict):
@@ -131,31 +180,57 @@ def run_tests(root: str, cfg: dict):
     return False, f"test_command {cmd.strip()!r} exited {p.returncode}", lineno
 
 
-def extract(path: str):
-    """Tolerant line matcher (not a parser). Returns (reqs, duplicates, malformed).
-
-    reqs       -- {R-id: {title, statement, statement_line, parent, actor,
-                          interface, open_line, acs:{AC-id:{text,line}}}}
-                  title/parent/actor/interface are None when absent. A
-                  `Component:` line (a retired field) is recognised and ignored.
-    duplicates -- [(R-id, line, first_line)]   -- the same `## R-nnnn` twice
-    malformed  -- [(R-id, line, reason)]       -- reason is a full agent-facing sentence
-
-    Lines inside a fenced code block (``` or ~~~) are ignored, so the commented
-    example that `hamilton init` writes is not parsed as a real requirement.
-    """
+def spec_lines(path: str):
+    """[(lineno, stripped)] for the non-blank lines of ``path`` outside fenced
+    code blocks (``` or ~~~), so the commented example that `hamilton init`
+    writes is never parsed as real content."""
     with open(path, "r", encoding="utf-8") as fh:
         lines = fh.read().splitlines()
-    reqs, duplicates, malformed, cur, in_fence = {}, [], [], None, False
-    fields = ", ".join(sorted(KNOWN_FIELDS))
-
+    out, in_fence = [], False
     for n, raw in enumerate(lines, 1):
         stripped = raw.strip()
         if stripped.startswith("```") or stripped.startswith("~~~"):
             in_fence = not in_fence
+        elif not in_fence and stripped:
+            out.append((n, stripped))
+    return out
+
+
+def extract_methods(path: str) -> dict:
+    """{method: {description, line}} from the `## Verification methods` section
+    that precedes the first requirement. Each method is a bullet
+    `- **name** — what is real and what is stubbed`; other lines in the
+    section are prose and ignored."""
+    methods, inside = {}, False
+    for n, stripped in spec_lines(path):
+        head = re.match(r"#{1,6}\s+(.*)$", stripped)
+        if head:
+            if re.match(r"R-\d{4}\b", head.group(1)):
+                break
+            inside = head.group(1).strip() == METHODS_HEADING
             continue
-        if in_fence or not stripped:
-            continue
+        m = _METHOD_DEF_RE.match(stripped) if inside else None
+        if m and m.group(1) not in methods:
+            methods[m.group(1)] = {"description": m.group(2).strip(), "line": n}
+    return methods
+
+
+def extract(path: str):
+    """Tolerant line matcher (not a parser). Returns (reqs, duplicates, malformed).
+
+    reqs       -- {R-id: {title, statement, statement_line, parent, actor,
+                          open_line, acs:{AC-id:{text,methods,line}}}}
+                  title/parent/actor are None when absent. An AC's text keeps
+                  its method marker, so the hash covers it; `methods` is the
+                  marker's names, empty without one. A retired field line
+                  (`Component:`, `Interface:`) is recognised and ignored.
+    duplicates -- [(R-id, line, first_line)]   -- the same `## R-nnnn` twice
+    malformed  -- [(R-id, line, reason)]       -- reason is a full agent-facing sentence
+    """
+    reqs, duplicates, malformed, cur = {}, [], [], None
+    fields = ", ".join(sorted(KNOWN_FIELDS))
+
+    for n, stripped in spec_lines(path):
         head = re.match(r"(#{1,6})\s+(.*)$", stripped)
         if head:
             rid = re.match(r"(R-\d{4})\b", head.group(2).strip())
@@ -167,19 +242,20 @@ def extract(path: str):
                     title = head.group(2).strip()[len(cur):].strip().strip('"').strip()
                     reqs[cur] = {"title": title or None, "statement": None,
                                  "statement_line": None, "parent": None,
-                                 "actor": None, "interface": None,
-                                 "open_line": n, "acs": {}}
+                                 "actor": None, "open_line": n, "acs": {}}
             elif cur is not None:
                 malformed.append((cur, n,
                     f"unexpected heading {stripped!r} while inside {cur}. "
-                    f"Expected: the only headings in {REQ_REL} are '## R-nnnn' "
-                    f"requirement openers. Found: a heading at another level, "
-                    f"or '## ' not followed by an R-nnnn id. Fix: if it opens "
-                    f"a new requirement write it as '## R-nnnn'; otherwise drop "
-                    f"the leading '#'(s) or delete the line."))
+                    f"Expected: the only headings in {REQ_REL} after the first "
+                    f"requirement are '## R-nnnn' requirement openers. Found: a "
+                    f"heading at another level, or '## ' not followed by an "
+                    f"R-nnnn id. Fix: if it opens a new requirement write it as "
+                    f"'## R-nnnn'; if it is '## {METHODS_HEADING}', move it above "
+                    f"the first requirement; otherwise drop the leading '#'(s) "
+                    f"or delete the line."))
             continue
         if cur is None:
-            continue  # prose before the first requirement is ignored
+            continue  # prose and the methods section before the first requirement
         ac = re.match(r"-\s+(AC\d+):\s?(.*)$", stripped)
         if ac:
             acid = ac.group(1)
@@ -192,11 +268,16 @@ def extract(path: str):
                     f"would silently win. Fix: renumber this criterion, or "
                     f"merge it into the first {acid}."))
             else:
-                reqs[cur]["acs"][acid] = {"text": ac.group(2).strip(), "line": n}
+                text = ac.group(2).strip()
+                marker = _METHOD_MARKER_RE.search(text)
+                methods = ([m.strip() for m in marker.group(1).split(",")]
+                           if marker else [])
+                reqs[cur]["acs"][acid] = {"text": text, "methods": methods,
+                                          "line": n}
             continue
         field = re.match(r"([A-Za-z][\w -]*?):\s?(.*)$", stripped)
         if field and field.group(1) in RETIRED_FIELDS:
-            continue  # recognised, ignored (D-014)
+            continue  # recognised, ignored (D-014, D-019)
         if field and field.group(1) in KNOWN_FIELDS:
             key, val = field.group(1), field.group(2).strip()
             if key == "Statement":
@@ -208,26 +289,24 @@ def extract(path: str):
             elif key == "Actor":
                 m = re.match(r"(A-\d{4})", val)
                 reqs[cur]["actor"] = m.group(1) if m else (val or None)
-            elif key == "Interface":
-                reqs[cur]["interface"] = val or None
             continue
         if stripped.startswith("- "):
             malformed.append((cur, n,
                 f"malformed acceptance criterion inside {cur}: a '- ' bullet "
-                f"that is not '- AC<n>: <condition> -> <outcome>'. Expected: "
-                f"the label 'AC' in capitals, one or more digits, ': ', then "
-                f"the criterion text. Found: a bullet that does not match. "
-                f"Fix: rewrite it as '- AC<n>: ... -> ...', or remove the "
-                f"leading '- ' if it is not a criterion."))
+                f"that is not '- AC<n>: <condition> -> <outcome> [method]'. "
+                f"Expected: the label 'AC' in capitals, one or more digits, "
+                f"': ', then the criterion text. Found: a bullet that does not "
+                f"match. Fix: rewrite it as '- AC<n>: ... -> ... [method]', or "
+                f"remove the leading '- ' if it is not a criterion."))
         else:
             malformed.append((cur, n,
                 f"unparseable line inside {cur}. Expected: a '## R-nnnn' "
                 f"heading, a 'Key: value' field ({fields}), or a "
-                f"'- AC<n>: <condition> -> <outcome>' criterion. Found: a "
-                f"non-blank line matching none of these. Fix: reword it to a "
-                f"recognised field or criterion, fold it into the Statement, "
-                f"or delete it. Note: each field must be a single line -- a "
-                f"wrapped continuation lands here."))
+                f"'- AC<n>: <condition> -> <outcome> [method]' criterion. "
+                f"Found: a non-blank line matching none of these. Fix: reword "
+                f"it to a recognised field or criterion, fold it into the "
+                f"Statement, or delete it. Note: each field must be a single "
+                f"line -- a wrapped continuation lands here."))
     return reqs, duplicates, malformed
 
 
@@ -249,23 +328,23 @@ def _iter_files(root: str):
             yield os.path.relpath(os.path.join(dpath, fn), root)
 
 
-def scan(root: str, test_paths: str):
+def scan(root: str, dirs):
     """Return [(R-id, AC-id, relpath, line)] for `@covers R-nnnn/ACn` tags found
-    in files under one of the ``test_paths`` prefixes (space-separated, relative
-    to root). A tag anywhere else -- README, the implementation, a notes file --
+    in files under one of ``dirs`` (relative to root, as `method_paths` gives
+    them). A tag anywhere else -- README, the implementation, a notes file --
     does not count. Also skips .git/, spec/, .hamilton/, files over 2 MB, and
     git-ignored paths. The tag is matched as raw text, so any comment syntax in
     any language works.
     """
-    prefixes = [p.replace("\\", "/").strip("/") for p in test_paths.split() if p.strip()]
+    dirs = list(dirs)
     hits = []
-    if not prefixes:
+    if not dirs:
         return hits
     for rel in _iter_files(root):
         r = rel.replace("\\", "/")
         if r.split("/", 1)[0] in ("spec", ".hamilton", ".git"):
             continue
-        if not any(r == p or r.startswith(p + "/") for p in prefixes):
+        if not under(r, dirs):
             continue
         full = os.path.join(root, rel)
         try:
@@ -316,10 +395,10 @@ def _sample(ids, limit=8):
     return ", ".join(ids[:limit]) + f", ... ({len(ids)} total)"
 
 
-def _finding(rule, detail, file, line, req=None, ac=None):
+def _finding(rule, detail, file, line, req=None, ac=None, methods=None):
     message = f"{file}:{line}: {rule}: {detail}"
     return {"rule": rule, "file": file, "line": line, "req": req, "ac": ac,
-            "message": message}
+            "methods": methods, "message": message}
 
 
 def _warning(rule, detail, file, line):
@@ -355,8 +434,6 @@ def collect_warnings(root: str, reqs: dict, actors=None):
     already parsed so `spec/actors.md` is not re-read. Returns [warning...]."""
     from hamilton_core import model  # local: model imports this module
     actors = model.parse_actors(root) if actors is None else actors
-    has_child = {r["parent"] for r in reqs.values() if r["parent"] in reqs}
-
     out = []
     for rid, r in reqs.items():
         stmt = r["statement"]
@@ -372,14 +449,15 @@ def collect_warnings(root: str, reqs: dict, actors=None):
                     f"the detail down into acceptance criteria, where the gate "
                     f"can act on it (SKILL.md, Specify).",
                     REQ_REL, r["statement_line"] or r["open_line"]))
-        if rid in has_child and not r["interface"]:
-            out.append(_warning("no-interface",
-                f"{rid} has child requirements, so it is a subsystem boundary, "
-                f"but no 'Interface:' line. Expected: an 'Interface:' naming "
-                f"what crosses the boundary this requirement owns -- that is "
-                f"the integration-test surface. Found: none. "
-                f"Fix: add an 'Interface:' line once the boundary is settled; "
-                f"before then this is expected.",
+        acs = r["acs"].values()
+        if r["parent"] is None and acs and all(ac["methods"] == ["unit"] for ac in acs):
+            out.append(_warning("root-unit-only",
+                f"{rid} is a root requirement -- an actor's goal -- but every "
+                f"one of its criteria is verified by 'unit'. Nothing then "
+                f"exercises the goal the way the actor reaches it, so the gate "
+                f"can be green while the product is broken. Fix: give at least "
+                f"one criterion an actor-facing method (e.g. through the UI or "
+                f"the API the actor uses); if none fits, ask the engineer.",
                 REQ_REL, r["open_line"]))
 
     for aid, a in actors.items():
@@ -396,9 +474,10 @@ def collect_warnings(root: str, reqs: dict, actors=None):
 
 
 def run(root: str):
-    """Returns (findings, warnings, notices, requirement_count, ac_count).
-    `warnings` are advisory (module docstring); `notices` flag configuration
-    that is set but does nothing. Neither changes the exit code."""
+    """Returns (findings, warnings, notices, manual, requirement_count,
+    ac_count). `warnings` are advisory (module docstring); `notices` flag
+    configuration that is set but does nothing. Neither changes the exit code.
+    `manual` lists the "R-nnnn/ACn" a person verifies instead of the gate."""
     if not os.path.isfile(os.path.join(root, REQ_REL)):
         raise UsageError(f"{REQ_REL}: not found (run hamilton check from the "
                          f"project root, the directory that holds spec/)")
@@ -406,6 +485,7 @@ def run(root: str):
     notices = _config_notices(cfg)
 
     reqs, duplicates, malformed = extract(os.path.join(root, REQ_REL))
+    defined = extract_methods(os.path.join(root, REQ_REL))
     n_reqs = len(reqs)
     n_acs = sum(len(r["acs"]) for r in reqs.values())
 
@@ -416,7 +496,7 @@ def run(root: str):
             "-- outside any fenced code block. Found: only the fenced example, "
             "or an empty file. Fix: write a real requirement below the "
             "example, then re-run hamilton check.",
-            REQ_REL, 1)], [], notices, n_reqs, n_acs)
+            REQ_REL, 1)], [], notices, [], n_reqs, n_acs)
 
     out = []
     from hamilton_core import model as _model   # local: model imports this module
@@ -519,9 +599,21 @@ def run(root: str):
                 REQ_REL, reqs[rid]["open_line"], req=rid))
             break
 
-    test_paths = cfg.get("test_paths", ("", 0))[0]
-    covered = set()
-    for req, ac, file, line in scan(root, test_paths):
+    retired = cfg.get("test_paths")
+    if retired is not None:
+        out.append(_finding("retired-config",
+            f"{CONFIG_REL} still sets test_paths, which is retired: a test now "
+            f"counts only under the paths of its criterion's verification "
+            f"method. Expected: one 'paths.<method>=<dirs>' line per method "
+            f"defined in '## {METHODS_HEADING}' in {REQ_REL}. Found: "
+            f"'test_paths={retired[0].strip()}'. Fix: split those directories "
+            f"into paths.<method> keys (e.g. 'paths.unit=tests/unit', "
+            f"'paths.browser=tests/browser') and delete the test_paths line.",
+            CONFIG_REL, retired[1]))
+
+    paths = method_paths(cfg)
+    tags = {}
+    for req, ac, file, line in scan(root, [d for ds in paths.values() for d in ds]):
         if req not in reqs:
             out.append(_finding("orphan-tag",
                 f"the tag '@covers {req}/{ac}' names requirement {req}, which "
@@ -536,40 +628,88 @@ def run(root: str):
                 f"{req} does not define. Expected: {ac} listed as a "
                 f"'- {ac}: ...' line under '## {req}'. Found: {req} defines "
                 f"{_sample(reqs[req]['acs'])}. Fix: point the tag at one of "
-                f"those, or add '- {ac}: <condition> -> <outcome>' under {req}.",
+                f"those, or add '- {ac}: <condition> -> <outcome> [method]' "
+                f"under {req}.",
                 file, line, req=req, ac=ac))
         else:
-            covered.add((req, ac))
+            tags.setdefault((req, ac), []).append((file, line))
 
     verified = read_verified(root)
-    has_paths = bool(test_paths.split())
+    manual, unpathed = [], {}
     for rid, r in reqs.items():
         for acid, ac in sorted(r["acs"].items()):
-            qual = f"{rid}/{acid}"
-            if (rid, acid) not in covered:
-                where = (f"no file under test_paths ({test_paths}) contains it"
-                         if has_paths else
-                         f"test_paths is not set in {CONFIG_REL}, so no tag "
-                         f"can count")
+            qual, methods = f"{rid}/{acid}", ac["methods"]
+            here = tags.get((rid, acid), [])
+            at = "; ".join(f"{f}:{ln}" for f, ln in here)
+            if not methods:
+                out.append(_finding("no-method",
+                    f"{qual} does not say how it is verified. Expected: the "
+                    f"criterion ends in a marker naming a method from '## "
+                    f"{METHODS_HEADING}', e.g. '... -> ... [browser]'. Found: "
+                    f"no marker; {REQ_REL} defines {_sample(defined)}. Fix: "
+                    f"add the marker in a design session -- the method is spec, "
+                    f"ratified by the engineer.",
+                    REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
+            unknown = [m for m in methods if m != MANUAL and m not in defined]
+            if unknown:
+                out.append(_finding("unknown-method",
+                    f"{qual} names {', '.join(unknown)}, which '## "
+                    f"{METHODS_HEADING}' does not define. Expected: every "
+                    f"method in a marker is a bullet '- **name** — what is real "
+                    f"and what is stubbed' in that section above the first "
+                    f"requirement (or '{MANUAL}'). Found: {REQ_REL} defines "
+                    f"{_sample(defined)}. Fix: correct the marker, or define "
+                    f"the method -- both in a design session.",
+                    REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
+            if MANUAL in methods:
+                manual.append(qual)
+            for m in methods:
+                if m in defined and m != MANUAL and m not in paths:
+                    unpathed.setdefault(m, qual)
+            checkable = [m for m in methods if m in defined and m in paths]
+            missing = missing_methods(checkable, paths, [f for f, _ in here])
+            if missing and here and missing == checkable:
+                need = "; ".join(f"paths.{m} ({' '.join(paths[m])})" for m in missing)
+                out.append(_finding("wrong-method",
+                    f"{qual} is tagged, but not where its method is verified. "
+                    f"Expected: '@covers {qual}' in a test under {need}. "
+                    f"Found: the tag at {at}, outside those paths -- that test "
+                    f"verifies the criterion some other way. Fix: write a test "
+                    f"that exercises it by that method, under those paths, and "
+                    f"tag it; moving the tag alone is not enough.",
+                    REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
+            elif missing:
+                need = "; ".join(f"paths.{m} ({' '.join(paths[m])})" for m in missing)
+                found = (f"tagged only at {at}" if here else "no tagged test")
                 out.append(_finding("uncovered",
-                    f"{qual} has an acceptance criterion with no test claiming "
-                    f"it. Expected: a comment '@covers {qual}' in a file under "
-                    f"test_paths (any language -- the tag text is matched, not "
-                    f"the comment syntax). Found: {where}. Fix: add "
-                    f"'@covers {qual}' to the test that exercises this "
-                    f"criterion.",
-                    REQ_REL, ac["line"], req=rid, ac=acid))
+                    f"{qual} has no test for {', '.join(missing)}. Expected: a "
+                    f"comment '@covers {qual}' in a test under {need} (any "
+                    f"language -- the tag text is matched, not the comment "
+                    f"syntax); each method of the criterion needs its own. "
+                    f"Found: {found}. Fix: add a test that exercises this "
+                    f"criterion by that method and tag it '@covers {qual}'.",
+                    REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
             want, seen = sha(ac["text"]), verified.get(qual)
             if seen is not None and seen != want:
                 out.append(_finding("stale",
-                    f"{qual} was reworded since hamilton check last passed. "
-                    f"Expected: the AC text to still hash to {seen} (recorded "
-                    f"in {VERIFIED_REL} at the last green run). Found: it now "
-                    f"hashes to {want}. Its test and implementation may no "
-                    f"longer match what it says. Fix: re-check the "
-                    f"implementation and the '@covers {qual}' test against the "
-                    f"new wording; a clean hamilton check records the new hash.",
-                    REQ_REL, ac["line"], req=rid, ac=acid))
+                    f"{qual} was reworded, or its method changed, since "
+                    f"hamilton check last passed. Expected: the AC text to "
+                    f"still hash to {seen} (recorded in {VERIFIED_REL} at the "
+                    f"last green run). Found: it now hashes to {want}. Its test "
+                    f"and implementation may no longer match what it says. Fix: "
+                    f"re-check the implementation and the '@covers {qual}' test "
+                    f"against the new wording and method; a clean hamilton "
+                    f"check records the new hash.",
+                    REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
+
+    for m, first in sorted(unpathed.items()):
+        out.append(_finding("no-method-paths",
+            f"method '{m}' is used (first by {first}) but {CONFIG_REL} has no "
+            f"paths.{m}, so no test can verify it. Expected: a "
+            f"'paths.{m}=<dirs>' line naming where its tests live. Found: none. "
+            f"Fix: choose the test tool and layout for '{m}' and set paths.{m} "
+            f"in {CONFIG_REL} (a build-phase decision).",
+            REQ_REL, defined[m]["line"]))
 
     out.sort(key=lambda f: (f["file"] or "", f["line"] or 0, f["rule"]))
     # Re-record the AC hashes whenever nothing but `stale` is outstanding: the
@@ -578,12 +718,12 @@ def run(root: str):
     # (which re-runs the suite against the new wording) and then clears.
     if not [f for f in out if f["rule"] != "stale"]:
         write_verified(root, reqs)
-    return out, warnings, notices, n_reqs, n_acs
+    return out, warnings, notices, manual, n_reqs, n_acs
 
 
 def main(as_json: bool = False) -> int:
     try:
-        findings, warnings, notices, n_reqs, n_acs = run(os.getcwd())
+        findings, warnings, notices, manual, n_reqs, n_acs = run(os.getcwd())
     except UsageError as exc:
         if as_json:
             print(json.dumps({"error": str(exc)}))
@@ -593,7 +733,7 @@ def main(as_json: bool = False) -> int:
     if as_json:
         print(json.dumps({"ok": not findings, "findings": findings,
                           "warnings": warnings, "notices": notices,
-                          "requirements": n_reqs,
+                          "manual": manual, "requirements": n_reqs,
                           "acceptance_criteria": n_acs}))
     else:
         for f in findings:
@@ -605,6 +745,10 @@ def main(as_json: bool = False) -> int:
         noun = "criterion" if n_acs == 1 else "criteria"
         print(f"hamilton check: {n_reqs} requirement(s), {n_acs} acceptance {noun}",
               file=sys.stderr)
+        if manual:
+            noun = "criterion" if len(manual) == 1 else "criteria"
+            print(f"hamilton check: {len(manual)} {noun} verified manually, "
+                  f"not by the gate", file=sys.stderr)
         if warnings:
             print(f"hamilton check: {len(warnings)} warning(s) — advisory, "
                   f"not failures", file=sys.stderr)

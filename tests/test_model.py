@@ -9,6 +9,7 @@ import os
 from conftest import copy_fixture
 
 from hamilton_core import model as M
+from hamilton_core.check import extract_methods
 
 
 def load(name, tmp_path):
@@ -23,11 +24,30 @@ def test_parses_requirements_and_actors(tmp_path):
     assert m.actors["A-0001"]["name"] == "End User"
 
 
-def test_interface_field_is_captured(tmp_path):
+def test_methods_are_parsed_per_criterion_and_defined_once(tmp_path):
     m = load("model", tmp_path)
-    assert m.reqs["R-0100"]["interface"].startswith("The public web UI")
-    assert m.reqs["R-0001"]["interface"].startswith("POST /customers")
-    assert m.reqs["R-0004"]["interface"] is None
+    assert m.reqs["R-0001"]["acs"]["AC1"]["methods"] == ["http"]
+    assert m.reqs["R-0004"]["acs"]["AC2"]["methods"] == ["unit"]
+    path = os.path.join(m.root, "spec", "requirements.md")
+    assert set(extract_methods(path)) == {"http", "unit"}
+    assert m.paths == {"http": ["tests"], "unit": ["tests"]}
+
+
+def test_criterion_text_keeps_its_marker(tmp_path):
+    m = load("model", tmp_path)
+    assert m.reqs["R-0001"]["acs"]["AC1"]["text"].endswith("[http]")
+
+
+def test_retired_interface_field_is_dropped_not_stored(tmp_path):
+    d = copy_fixture("model", tmp_path)
+    path = os.path.join(d, "spec", "requirements.md")
+    body = open(path).read().replace(
+        "## R-0001 Create a customer\nParent: R-0100\n",
+        "## R-0001 Create a customer\nParent: R-0100\nInterface: POST /customers\n")
+    open(path, "w").write(body)
+    m = M.Model(d)
+    assert "interface" not in m.reqs["R-0001"]
+    assert not m.malformed
 
 
 def test_actor_field_is_captured_on_requirements(tmp_path):
@@ -93,6 +113,24 @@ def test_requirement_status_rollup(tmp_path):
     assert m.req_status("R-0001") == "covered"
     assert m.req_status("R-0004") == "uncovered"
     assert m.req_status("R-0007") == "stale"
+
+
+def test_criterion_status_follows_its_method(tmp_path):
+    d = copy_fixture("model", tmp_path)
+    path = os.path.join(d, "spec", "requirements.md")
+    body = open(path).read().replace(
+        "- AC1: valid payload -> 201 and a customer id [http]",
+        "- AC1: valid payload -> 201 and a customer id [browser]").replace(
+        "- AC1: the shop is reachable -> the home page renders [http]",
+        "- AC1: the shop is reachable -> the home page renders")
+    open(path, "w").write(
+        body + "\n## R-0200 Looks calm\nActor: A-0001\nStatement: The shop looks calm.\n"
+        "Criteria:\n- AC1: a visitor looks -> it feels calm [manual]\n")
+    m = M.Model(d)
+    assert m.ac_status("R-0001", "AC1") == "uncovered"      # tagged, not under browser
+    assert m.ac_status("R-0100", "AC1") == "no method"
+    assert m.ac_status("R-0200", "AC1") == "manual"
+    assert m.req_status("R-0200") == "manual"
 
 
 def test_status_unknown_without_config(tmp_path):

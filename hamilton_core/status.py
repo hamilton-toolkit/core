@@ -38,22 +38,24 @@ def _counts(root: str):
 
 
 def _coverage(root: str):
-    """(covered, uncovered, stale) AC counts, or None when coverage is unknown
-    (no .hamilton/config, so no test_paths to scan)."""
+    """(covered, uncovered, stale, manual) AC counts, or None when coverage is
+    unknown (no .hamilton/config, so no method paths to scan)."""
     m = M.Model(root)
     if not m.coverage_known:
         return None
-    covered = uncovered = stale = 0
+    covered = uncovered = stale = manual = 0
     for rid, r in m.reqs.items():
-        for acid, ac in r["acs"].items():
-            st = m.ac_status(rid, acid, ac["text"])
+        for acid in r["acs"]:
+            st = m.ac_status(rid, acid)
             if st == "covered":
                 covered += 1
             elif st == "stale":
                 stale += 1
+            elif st == "manual":
+                manual += 1
             else:
                 uncovered += 1
-    return covered, uncovered, stale
+    return covered, uncovered, stale, manual
 
 
 def _git(root: str, *args) -> str | None:
@@ -102,12 +104,14 @@ def render(root: str, phase: str | None = None) -> str:
         lines.append(f"{n_reqs} requirement(s), {n_acs} acceptance {crit} "
                      f"· coverage unknown (no .hamilton/config)")
     else:
-        covered, uncovered, stale = cov
+        covered, uncovered, stale, manual = cov
         tail = f"{covered}/{n_acs} covered"
         if uncovered:
             tail += f" · {uncovered} uncovered"
         if stale:
             tail += f" · {stale} stale"
+        if manual:
+            tail += f" · {manual} manual"
         lines.append(f"{n_reqs} requirement(s), {n_acs} acceptance {crit} "
                      f"· {tail} · {gate}")
 

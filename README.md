@@ -34,12 +34,14 @@ point that it deserved to be taken as seriously as any other kind.
 
 1. **You specify.** In `spec/` you write the vision, the actors, and a tree of
    requirements. Each requirement is one sentence and carries acceptance
-   criteria — observable conditions and their expected outcomes.
+   criteria — observable conditions, their expected outcomes, and how each is
+   verified (in a real browser, over HTTP, as a unit, ...).
 2. **The agent implements.** It writes the code and the tests. Each test
    carries a one-line comment naming the single criterion it covers —
    `@covers R-0001/AC1`.
 3. **`hamilton check` verifies.** It runs your suite and stays red until every
-   criterion has a passing tagged test. Reword a criterion and it goes red
+   criterion has a passing tagged test of the kind its verification method
+   names. Reword a criterion and it goes red
    again until the test and code are reconciled with the new wording.
 
 The acceptance criteria are yours. The rigorous tests that bind to them are the
@@ -56,8 +58,8 @@ have not finished setting.
 
 **Build phase** — the agent writes the code and the tests. It cannot edit
 `spec/`, `.claude/`, or `AGENTS.md`, and of `.hamilton/` only `config` — and
-there only `test_command` / `test_paths`, because picking the test framework
-and layout is a build-time call. It cannot quietly change a requirement to
+there only `test_command` / `paths.<method>`, because picking the test
+framework and layout is a build-time call. It cannot quietly change a requirement to
 match what it built, or rewrite its own rules.
 
 You start a session in a phase with **`hamilton design`** (spec) or
@@ -243,10 +245,10 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton design` | sets **spec** | Write the phase, print the status banner, run a spec-phase session with a kickoff to draft the vision / requirements through the review protocol. Offers to resume an unfinished spec session. |
 | `hamilton build` | sets **build** | Write the phase, print the banner, run a build-phase session with a kickoff to propagate the latest spec change and get `hamilton check` green. Offers to resume an unfinished build session. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
-| `hamilton check [--json]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under `test_paths`, flag reworded criteria as `stale`, validate the requirement tree. Writes `.hamilton/verified` on a clean run. This is the gate — run it in CI. |
+| `hamilton check [--json]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method, flag reworded criteria and changed methods as `stale`, validate the requirement tree, list `manual` criteria. Writes `.hamilton/verified` on a clean run. This is the gate — run it in CI. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
-| `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time, an `i` / `!` marker for whether each interior node carries an `Interface:` yet, and a per-requirement coverage mark. |
-| `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, statement, criteria with coverage status and the file holding each `@covers` tag, `Interface:` / `Actor:`, child requirements. `A-nnnn`: description and the requirements that name it. |
+| `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. |
+| `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
 | `hamilton upgrade [path]` | — | Bring the framework-managed files up to date after installing a newer Hamilton — `AGENTS.md`, `CLAUDE.md`, the `.claude/` tree. Prints a diff, then overwrites. Never touches `spec/`, `.hamilton/phase`, `.hamilton/config`, `.hamilton/verified`. |
 | `hamilton guard` | — | Internal: the `PreToolUse` hook backend that blocks read-only-path edits during a session. Not run by hand. |
 
@@ -259,19 +261,24 @@ touch the gate. All three, plus `hamilton check`, take `--json` for tooling.
 |---|---|
 | `no-test-command` | `.hamilton/config` has no `test_command` (or a blank one). Set it — e.g. `test_command=python -m pytest -q`. |
 | `tests-failed` | `test_command` ran and did not exit 0. Run it yourself to see why, and fix the code or the test. |
-| `uncovered` | An acceptance criterion has no `@covers R-nnnn/ACn` tag in any file under `test_paths`. Add the tag to the test that checks that criterion. |
+| `retired-config` | `.hamilton/config` still sets `test_paths`. Split it into one `paths.<method>=<dirs>` line per verification method and delete it. |
+| `no-method` | A criterion has no `[method]` marker. Add one naming a method from `## Verification methods` (in spec phase). |
+| `unknown-method` | A marker names a method `## Verification methods` does not define. Fix the marker or define the method (in spec phase). |
+| `no-method-paths` | A method is used but `.hamilton/config` has no `paths.<method>`. Set it to the directories holding that method's tests. |
+| `uncovered` | A criterion's method has no `@covers R-nnnn/ACn` tag in any file under that method's paths — with several methods, each needs one. Add a test of that kind and tag it. `manual` criteria need no test. |
+| `wrong-method` | A criterion is tagged, but only under another method's paths — the test proves it the wrong way. Write a test by the criterion's method, under its paths. |
 | `orphan-tag` | A `@covers` tag names a requirement or criterion that `spec/requirements.md` does not declare. Fix the tag, or add the criterion (in spec phase). |
 | `orphan-requirement` | A requirement with no `Parent:` does not name an `Actor:`. Add the `Actor:`, or give it a `Parent:`. |
 | `dangling-ref` | A `Parent:` or `Actor:` value names an entity that isn't declared. Fix the reference, or add the entity. |
 | `cyclic-parent` | Following `Parent:` links from some requirement loops back on itself. Re-point one `Parent:`. |
-| `stale` | A criterion was reworded since the last green check. Re-read it, confirm the tagged test still fits, and run `hamilton check` again — it clears once the run is otherwise clean. |
+| `stale` | A criterion was reworded, or its method changed, since the last green check. Re-read it, confirm the tagged test still fits, and run `hamilton check` again — it clears once the run is otherwise clean. |
 | `malformed` | A requirement is missing its `Statement`, has no criteria, repeats an id, or has a line that doesn't parse — or the file has no real requirements at all. The message names the line. |
 
 It also prints **advisory warnings** — never fail the run, never change the
 exit code: `long-statement` (a `Statement:` over 20 words — it is several
 requirements welded together), `long-description` (an actor `Description:` over
-one sentence), `no-interface` (an interior requirement with no `Interface:`
-line yet). And a **notice** if `.hamilton/config` sets `mutation_command`: that
+one sentence), `root-unit-only` (a root requirement whose criteria are all
+`unit`, so nothing verifies the actor's goal end to end). And a **notice** if `.hamilton/config` sets `mutation_command`: that
 key is reserved for future mutation testing and is not implemented — unset it.
 
 ## The spec files
@@ -309,30 +316,49 @@ The whole model: one `Parent:` tree.
 - A requirement with **no `Parent:`** is a **root** — a system-level goal — and
   must name the `Actor:` whose goal it is. Ratify the root layer first;
   specification is top-down.
-- A requirement **with children** is a subsystem boundary and carries an
-  `Interface:` line — one sentence naming what crosses that boundary. The
-  interior of the tree *is* the architecture.
-- A **leaf** needs neither: just a `Statement:` and criteria.
+- Every other requirement names its `Parent:`.
 
 Every requirement is a `## R-nnnn Short title` block with a one-sentence
 `Statement:` (under 20 words, one behaviour — detail belongs in the criteria)
 and at least one `- ACn:` line, written as `<observable condition> -> <expected
-outcome>` where that shape fits.
+outcome> [method]` where that shape fits.
+
+The file opens with a `## Verification methods` section that defines, once,
+how this project proves a criterion: what a test observes, what is real and
+what is stubbed. Every criterion ends in a marker naming one of them. The agent
+proposes a method per criterion; you ratify it like the criterion itself.
+`manual` is reserved — a person judges it, and `hamilton check` lists it
+without enforcing it.
 
 ```markdown
+## Verification methods
+- **cli** — the installed command run as a subprocess; nothing stubbed.
+- **unit** — one function in isolation, no I/O.
+
 ## R-0001 Initials of a name
 Actor: A-0001
 Statement: initials(name) returns the capitalised first letter of each whitespace-separated word.
 Criteria:
-- AC1: "ada lovelace" -> "AL"
-- AC2: runs of whitespace between words count as one separator
+- AC1: `initials "ada lovelace"` -> prints "AL" [cli]
+- AC2: runs of whitespace between words count as one separator [unit]
 ```
 
-A test that covers one of its criteria:
+Where each method's tests live is a build-phase choice, one line per method in
+`.hamilton/config`:
+
+```
+test_command=python -m pytest -q
+paths.cli=tests/cli
+paths.unit=tests/unit
+```
+
+A tag counts only under the paths of the criterion's method. A test that covers
+one of its criteria:
 
 ```python
-def test_two_words():          # @covers R-0001/AC1
-    assert initials("ada lovelace") == "AL"
+# tests/unit/test_initials.py
+def test_whitespace_runs():    # @covers R-0001/AC2
+    assert initials("ada   lovelace") == "AL"
 ```
 
 A shared field rule — a format, an enum, a validation rule — goes once in a
@@ -381,6 +407,14 @@ It prints a diff of everything it changes, then overwrites those files with the
 current templates, recreates any you deleted, and deletes any it has since
 retired. They belong to the framework, so it does not ask before replacing them
 — keep local changes out of them.
+
+**A project created before verification methods** goes red after upgrading,
+on purpose: `retired-config` for its `test_paths` and `no-method` for every
+criterion. There is no automatic migration. In a `hamilton design` session, add
+the `## Verification methods` section and a marker to each criterion; then, in
+`hamilton build`, the agent replaces `test_paths` with `paths.<method>` keys
+and moves or writes tests to match. Any `Interface:` lines are now ignored —
+delete them at your leisure.
 
 **A project created before sessions moved in-process** still has an
 `agent_command` line in `.hamilton/config` (that file is yours, so `upgrade`

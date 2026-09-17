@@ -2,10 +2,10 @@
 (`hamilton tree`, `hamilton show`). Nothing here writes, and none of it feeds
 `hamilton check`.
 
-The model is one tree (D-014): `spec/requirements.md`, whose interior nodes are
-the architecture and carry an `Interface:`. `spec/actors.md` is a flat supporting
-list. `hamilton check` owns the requirement extractor; this module reuses it,
-adds the actor reader, and the derived views the data model calls for:
+The model is one tree (D-014): `spec/requirements.md`, whose criteria each name
+their verification method (D-019). `spec/actors.md` is a flat supporting list.
+`hamilton check` owns the requirement extractor; this module reuses it, adds
+the actor reader, and the derived views the data model calls for:
 computed dotted paths, rolled-up coverage, reverse links.
 """
 
@@ -14,8 +14,9 @@ from __future__ import annotations
 import os
 import re
 
-from hamilton_core.check import (REQ_REL, UsageError, extract, read_config,
-                                 read_verified, scan, sha)
+from hamilton_core.check import (MANUAL, REQ_REL, UsageError, extract,
+                                 method_paths, missing_methods, read_config,
+                                 read_verified, scan, sha, spec_lines)
 
 ACTORS_REL = "spec/actors.md"
 
@@ -31,19 +32,9 @@ def _entity_lines(path: str):
     the file is absent. The fence skip keeps the template's worked example out
     of the model."""
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = fh.read().splitlines()
+        return spec_lines(path)
     except FileNotFoundError:
         return None
-    out, in_fence = [], False
-    for n, line in enumerate(raw, 1):
-        s = line.strip()
-        if s.startswith("```") or s.startswith("~~~"):
-            in_fence = not in_fence
-            continue
-        if not in_fence and s:
-            out.append((n, s))
-    return out
 
 
 def parse_actors(root: str) -> dict:
@@ -141,7 +132,8 @@ def actor_label(aid: str, actors: dict) -> str:
 
 
 # priority order for the rolled-up requirement mark in `hamilton tree`
-_STATUS_ORDER = ["unknown", "no ACs", "uncovered", "stale", "covered"]
+_STATUS_ORDER = ["unknown", "no ACs", "no method", "uncovered", "stale",
+                 "covered", "manual"]
 
 
 class Model:
@@ -157,28 +149,35 @@ class Model:
             self.reqs, self.duplicates, self.malformed = {}, [], []
         self.actors = parse_actors(root)
         try:
-            cfg = read_config(root)
+            self.paths = method_paths(read_config(root))
             self.coverage_known = True
-            test_paths = cfg.get("test_paths", ("", 0))[0]
         except UsageError:
+            self.paths = {}
             self.coverage_known = False
-            test_paths = ""
         self.tags: dict = {}
-        for q, a, f, ln in scan(root, test_paths):
+        for q, a, f, ln in scan(root, [d for ds in self.paths.values() for d in ds]):
             self.tags.setdefault((q, a), []).append((f, ln))
-        self.covered = set(self.tags)
         self.verified = read_verified(root)
 
     # -- coverage ---------------------------------------------------------- #
 
-    def ac_status(self, rid: str, acid: str, text: str) -> str:
+    def ac_status(self, rid: str, acid: str) -> str:
+        """The gate's view of one AC: `no method` without a marker, `uncovered`
+        while a method has no tag under its paths, then `stale`, `manual` when
+        a person verifies it, else `covered`."""
         if not self.coverage_known:
             return "unknown"
-        if (rid, acid) not in self.covered:
+        ac = self.reqs[rid]["acs"][acid]
+        if not ac["methods"]:
+            return "no method"
+        files = [f for f, _ in self.tags.get((rid, acid), [])]
+        if missing_methods(ac["methods"], self.paths, files):
             return "uncovered"
         seen = self.verified.get(f"{rid}/{acid}")
-        if seen is not None and seen != sha(text):
+        if seen is not None and seen != sha(ac["text"]):
             return "stale"
+        if set(ac["methods"]) == {MANUAL}:
+            return "manual"
         return "covered"
 
     def req_status(self, rid: str) -> str:
@@ -187,7 +186,7 @@ class Model:
             return "unknown"
         if not r["acs"]:
             return "no ACs"
-        seen = {self.ac_status(rid, a, ac["text"]) for a, ac in r["acs"].items()}
+        seen = {self.ac_status(rid, a) for a in r["acs"]}
         for s in _STATUS_ORDER:
             if s in seen:
                 return s

@@ -1,9 +1,8 @@
 """`hamilton tree` -- the requirement tree.
 
-One row per requirement: the computed dotted path, the id in
-parentheses, a one-line statement, an `>` marker on an interior node that
-carries an `Interface:`, and a rolled-up coverage mark. Read-only; `--json`
-emits the rows as data. Exit 0, or 2 outside a project.
+One row per requirement: the computed dotted path, the id in parentheses, a
+one-line statement, and a rolled-up coverage mark. Read-only; `--json` emits
+the rows as data. Exit 0, or 2 outside a project.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ def rows(root: str) -> list[dict]:
     m = M.Model(root)
     paths = M.dotted_paths({k: r["parent"] for k, r in m.reqs.items()})
     order = sorted(m.reqs, key=lambda k: M.path_key(paths.get(k, "")))
-    has_child = {r["parent"] for r in m.reqs.values() if r["parent"] in m.reqs}
     out = []
     for rid in order:
         r = m.reqs[rid]
@@ -33,11 +31,8 @@ def rows(root: str) -> list[dict]:
             "statement": r["statement"],
             "parent": r["parent"],
             "actor": r.get("actor"),
-            "interface": r["interface"],
-            "boundary": rid in has_child,
             "status": m.req_status(rid),
-            "criteria": {a: m.ac_status(rid, a, ac["text"])
-                         for a, ac in sorted(r["acs"].items())},
+            "criteria": {a: m.ac_status(rid, a) for a in sorted(r["acs"])},
             "_text": M.oneline(r["statement"] or r["title"] or "(no statement)"),
         })
     return out
@@ -50,12 +45,8 @@ def _render(rows: list[dict]) -> str:
     wi = max(len(r["id"]) for r in rows)
     out = []
     for r in rows:
-        mark = "i" if (r["boundary"] and r["interface"]) else \
-               "!" if r["boundary"] else " "
-        out.append(f"{r['path']:<{wp}}  {mark} ({r['id']:<{wi}})  "
+        out.append(f"{r['path']:<{wp}}  ({r['id']:<{wi}})  "
                    f"{r['_text']}   [{r['status']}]")
-    out.append("")
-    out.append("  i = interior node with an Interface:   ! = interior, no Interface: yet")
     return "\n".join(out)
 
 

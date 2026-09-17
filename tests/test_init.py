@@ -116,11 +116,12 @@ def test_phase_file_contains_spec(tmp_path):
     assert (tmp_path / ".hamilton" / "phase").read_text().strip() == "spec"
 
 
-def test_config_has_test_command_and_test_paths(tmp_path):
+def test_config_has_test_command_and_method_paths(tmp_path):
     run_init(tmp_path)
     cfg = (tmp_path / ".hamilton" / "config").read_text()
     assert re.search(r"^test_command=", cfg, re.M)
-    assert re.search(r"^test_paths=tests\s*$", cfg, re.M)
+    assert re.search(r"^# paths\.\w+=", cfg, re.M)       # an example, not a guess
+    assert not re.search(r"^test_paths=", cfg, re.M)
 
 
 def test_settings_json_wires_pretooluse_guard_hook(tmp_path):
