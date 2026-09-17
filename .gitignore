@@ -5,3 +5,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+.idea
+
+# Local agent pointer: each developer decides (see AGENTS.md)
+CLAUDE.md

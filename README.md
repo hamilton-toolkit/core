@@ -62,17 +62,55 @@ match what it built, or rewrite its own rules.
 
 You start a session in a phase with **`hamilton design`** (spec) or
 **`hamilton build`** (build). Each writes the phase to `.hamilton/phase`,
-prints a status banner, then runs your agent as a child process holding the
-terminal, with a one-line kickoff so the session starts working straight away.
-The phase is fixed for that whole session: it exports `HAMILTON_SESSION`, and
-`design` / `build` refuse to run when that is already set, so an agent can't
-relaunch itself into the other phase. A `PreToolUse` hook blocks edits to
-read-only paths during the session as fast feedback.
+prints a status banner, then runs the session with a one-line kickoff so it
+starts working straight away. The phase is fixed for that whole session: it
+exports `HAMILTON_SESSION`, and `design` / `build` refuse to run when that is
+already set, so an agent can't relaunch itself into the other phase. Writes to
+read-only paths are refused during the session as fast feedback.
 
 None of this is unbypassable — unset the variable, edit the phase file by hand,
-or run the agent directly and you are outside it. It stops drift, not a
+or run an agent directly and you are outside it. It stops drift, not a
 determined operator. `hamilton check` run in CI, which ignores the phase
 entirely, is the gate that enforces the outcome for real.
+
+### How a session runs
+
+Hamilton drives the session turn by turn rather than handing you an agent
+terminal. Three things follow from Hamilton being able to see what is
+happening:
+
+- **Questions are Hamilton's.** The agent asks through a tool; Hamilton renders
+  the choices as a cursor list — arrows or Tab to move, Enter to commit, or
+  pick *Type my own answer* to write something else. Moving the highlight sends
+  nothing, so a mis-pick costs a keystroke rather than the session. Piped or
+  non-interactive input falls back to a numbered list, and `NO_COLOR` is
+  honoured.
+- **Typing is not one line.** Alt+Enter (or Ctrl+J) opens a new line, Enter
+  sends — a requirement or a correction is usually a paragraph. All four arrow
+  keys move the cursor, and pasting a multi-line block pastes it rather than
+  submitting at the first line break. Once sent, your text is reprinted as
+  plain text, so copying it from the terminal gives it back exactly as typed.
+- **You can see when it is thinking.** An `Engineering…` indicator runs while
+  the agent works, with elapsed time once it passes a couple of seconds, and
+  gets out of the way whenever it needs to show you something or ask.
+- **Finishing a piece of work is not the end of the session.** When the agent
+  gives its closing summary, Hamilton shows you the next step — another change,
+  a change to requirements you pick from the tree, a decomposition or a
+  completeness pass — and the work carries on in the same conversation, so
+  nothing already read or ratified is thrown away. *Finish this session* is on that menu, and on every question the
+  agent asks, so a session opened by mistake can be left at the first prompt.
+- **An interrupted session can be resumed.** Every turn writes
+  `.hamilton/session`; the next launch in the same phase offers to pick up
+  where you left off — which is what you want when a session dies mid-spec.
+
+Hamilton runs on Claude, through the Claude Agent SDK, which installs with it.
+The model is reached behind a single adapter: the session driver, the phase
+gate and the question flow know nothing about which model is answering, so
+supporting another one is a new adapter rather than a rewrite. Today there is
+one.
+
+It is early: the session does not narrow the agent's tool surface beyond the
+phase gate.
 
 ## Quick start
 
@@ -82,13 +120,13 @@ Get this repository onto your machine (`git clone`, or you may already have it)
 and `cd` into it. This checkout *is* the distribution — `hamilton-core` is not
 published anywhere.
 
-Requires Python 3.11+. There are no dependencies — standard library only.
+Requires Python 3.11+ and the Claude Agent SDK, which comes in as a dependency.
 
 Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 194 passing
+$ python -m pytest -q          # expects 263 passing
 ```
 
 ### 2. Link it into a separate test project
@@ -138,9 +176,6 @@ a fenced example to replace), `.hamilton/` (`phase`, `config`), `AGENTS.md`
 with `CLAUDE.md` pointing at it, and `.claude/` (the phase-guard hook settings
 and the `hamilton` skill). `AGENTS.md` and `.claude/` belong to the framework
 and stay as written.
-
-If your coding agent is not `claude`, set `agent_command` in `.hamilton/config`
-before the next step.
 
 ### 4. Specify, build, check
 
@@ -205,11 +240,11 @@ requirements; extend an existing spec with `hamilton design`.
 | Command | Phase | What it does |
 |---|---|---|
 | `hamilton init [path]` | — | Scaffold a project: `spec/`, `.hamilton/`, `AGENTS.md` / `CLAUDE.md`, `.claude/`. Refuses if `.hamilton/` already exists. |
-| `hamilton design` | sets **spec** | Write the phase, print the status banner, launch the agent scoped to spec phase with a kickoff to draft the vision / requirements through the review protocol. |
-| `hamilton build` | sets **build** | Write the phase, print the banner, launch the agent scoped to build phase with a kickoff to propagate the latest spec change and get `hamilton check` green. |
+| `hamilton design` | sets **spec** | Write the phase, print the status banner, run a spec-phase session with a kickoff to draft the vision / requirements through the review protocol. Offers to resume an unfinished spec session. |
+| `hamilton build` | sets **build** | Write the phase, print the banner, run a build-phase session with a kickoff to propagate the latest spec change and get `hamilton check` green. Offers to resume an unfinished build session. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
 | `hamilton check [--json]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under `test_paths`, flag reworded criteria as `stale`, validate the requirement tree. Writes `.hamilton/verified` on a clean run. This is the gate — run it in CI. |
-| `hamilton status` | read-only | Print the project snapshot the launcher shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
+| `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time, an `i` / `!` marker for whether each interior node carries an `Interface:` yet, and a per-requirement coverage mark. |
 | `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, statement, criteria with coverage status and the file holding each `@covers` tag, `Interface:` / `Actor:`, child requirements. `A-nnnn`: description and the requirements that name it. |
 | `hamilton upgrade [path]` | — | Bring the framework-managed files up to date after installing a newer Hamilton — `AGENTS.md`, `CLAUDE.md`, the `.claude/` tree. Prints a diff, then overwrites. Never touches `spec/`, `.hamilton/phase`, `.hamilton/config`, `.hamilton/verified`. |
@@ -324,9 +359,11 @@ Related limits, stated plainly:
   `long-description` warnings, but nothing in it turns a build red by itself.
 - **IDs are hand-written.** A repeated `R-nnnn` is caught by `hamilton check`
   (`malformed`), not prevented as you type.
-- **The Claude Code hook and skill are one supported agent, not the only one.**
-  The launcher works with any `agent_command`; the per-edit `PreToolUse` hook
-  ships for Claude Code only.
+- **Hamilton runs on Claude, and only Claude.** The model sits behind one
+  adapter and nothing above it is Claude-specific, so a second model is an
+  adapter away — but that adapter does not exist yet.
+- **The agent's tool surface is not narrowed.** The phase gate governs what can
+  be written, not what can be run or read.
 
 ## Upgrading the scaffold
 
@@ -345,10 +382,9 @@ current templates, recreates any you deleted, and deletes any it has since
 retired. They belong to the framework, so it does not ask before replacing them
 — keep local changes out of them.
 
-**A project created before the launcher** has no `agent_command` line in
-`.hamilton/config` (that file is yours, so `upgrade` won't add it). Add
-`agent_command=claude` — or whatever starts your agent — by hand, or the first
-`hamilton design` / `hamilton build` stops with "agent_command is not set".
+**A project created before sessions moved in-process** still has an
+`agent_command` line in `.hamilton/config` (that file is yours, so `upgrade`
+won't touch it). Nothing reads it any more — delete it at your leisure.
 
 ## The rationale
 

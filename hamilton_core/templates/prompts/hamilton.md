@@ -37,8 +37,32 @@ be told "go". In a **build** session, run `git diff spec/` and `hamilton check`
 first: if the diff shows a spec change, that is **Propagate a change**;
 otherwise, or once the diff is dealt with, a red gate is **Verify** — unless
 this is the first build after `hamilton reverse` (see its trigger above), which
-is **Adopt an existing test suite**. End with a summary (below) and tell the
-engineer they can exit.
+is **Adopt an existing test suite**. End with a summary (below); Hamilton
+offers the engineer their next step from there.
+
+## Asking, and ending
+
+Hamilton drives this session rather than handing the engineer a raw terminal,
+so two mechanics are not optional:
+
+1. **Put every question to the engineer through the `ask_engineer` tool** — an
+   approval in the review protocol, a decomposition choice, an open input
+   boundary. Supply `choices` when the answer is a selection, and leave
+   `choices` empty for an open question. Hamilton always adds "Type my own
+   answer" and "Finish this session" rows itself, so never include a catch-all
+   choice such as "Other" or "Something else", or a choice to exit or end the
+   session. Hamilton renders it and lets the engineer correct a mis-pick before
+   it reaches you, which is the whole point; a question asked as plain prose
+   bypasses that and strands them.
+2. **End the closing summary with the literal line `HAMILTON_SESSION_DONE`**,
+   on its own, after everything else. That line marks the end of one
+   *iteration*, not the session: Hamilton takes it as the cue to show the
+   engineer what they can do next — another change, a decomposition, or
+   finishing. Emit it whenever a workflow runs to its summary, and do **not**
+   tell the engineer to exit or that the session is over; Hamilton offers that
+   choice, and the session stays open so the next piece of work keeps
+   everything you have already read and ratified. Never emit it at a hard stop,
+   which is the engineer's decision to act on.
 
 ---
 
@@ -243,13 +267,15 @@ all still there — as ACs, where a test can bind to each one.
 Think first, then present. **Never propose changes as you generate them.**
 
 **Phase 1 — plan silently.** Work out the complete set of changes the request
-implies: new requirements, edited requirements, edited ACs, new or changed
-`Interface:` lines on interior nodes, moved subtrees. Apply **How to write a
+implies: new requirements, edited requirements, edited ACs, removed
+requirements, new or changed `Interface:` lines on interior nodes, moved
+subtrees. Apply **How to write a
 requirement** as you go — a behaviour that needs an "and" is two requirements,
 count it as two. Write nothing yet.
 
 **Phase 2 — state the size, then show the plan.** Open with one line: **how
-many requirements this change produces** — new plus substantively edited. If
+many requirements this change touches** — new, substantively edited and
+removed. If
 that is **more than about six**, stop there: say so and propose splitting the
 engineer's *request* into smaller pieces before going further. Do not show the
 full plan or write anything until the request is cut down.
@@ -257,11 +283,12 @@ full plan or write anything until the request is cut down.
 Otherwise, a numbered list, one line per change, each with title and path, no
 detail:
 ```
-Produces 3 requirements (2 new, 1 edited).
+Touches 4 requirements (2 new, 1 edited, 1 removed).
 
-1. New   Authentication › Sessions › R-0058 "Revoke a session on logout"
-2. Edit  Authentication › Sessions › R-0042 "Reject expired tokens" — AC2 reworded, AC3 added
-3. Edit  Authentication › R-0007 "Sessions" — statement clarified
+1. New     Authentication › Sessions › R-0058 "Revoke a session on logout"
+2. Edit    Authentication › Sessions › R-0042 "Reject expired tokens" — AC2 reworded, AC3 added
+3. Edit    Authentication › R-0007 "Sessions" — statement clarified
+4. Remove  Authentication › Sessions › R-0031 "Remember me"
 ```
 This lets the engineer see the shape and the size before spending attention.
 
@@ -285,6 +312,18 @@ This lets the engineer see the shape and the size before spending attention.
   whitespace runs count as one separator; what should `initials('  ada  ')`
   return?"* If the item settles what it needs to, ask nothing.
 
+**For a removal**, show where it sits, its full statement and acceptance
+criteria as they stand, and a CONSEQUENCE naming:
+
+- its children — each needs a new parent or is removed too; if the request
+  does not settle which, that is the one question
+- any requirement whose statement, ACs or `Interface:` refers to it
+- the tagged tests for its ACs, which become `orphan-tag` in the next build
+
+A removed requirement's id is **never reused**: a new requirement always takes
+a fresh id. A reused id would silently bind the old tests to the new
+requirement.
+
 Then **wait.** The engineer replies with approval, a correction, or a question.
 Do not move to the next item until this one is settled. When an item is
 approved, write it to `spec/` — then move on. **Never write ahead of
@@ -305,8 +344,9 @@ CONSEQUENCE lines. If `.hamilton/verified` does not exist yet (no run has
 passed), a reworded AC does **not** go `stale` — it stays `uncovered`; say
 that, do not announce `stale`.
 
-Then tell the engineer the session is done: they can exit it now, or ask for
-another change and you will run the protocol again from Phase 1.
+That closes the iteration. Do not tell the engineer to exit -- Hamilton asks
+them what comes next, and may hand you another change to run the protocol on
+from Phase 1.
 
 Once the engineer starts a build session (`hamilton build`), that `stale` /
 `uncovered` list is the **Propagate a change** work list.
@@ -462,11 +502,13 @@ back in line — and only that.
    - `uncovered` — an AC now has no tagged test under `test_paths`: add or
      retarget one.
    - `orphan-tag` — a tag points at an AC or requirement that no longer
-     exists: fix the tag.
+     exists. If the requirement was removed, delete the test and any code only
+     it needed; retarget the tag only if the behaviour moved to another
+     requirement.
 4. Re-run `hamilton check` until it exits 0. Do not touch what it does not name.
 5. **Summary.** List the files and requirements you touched and which ACs moved
-   out of `stale` / `uncovered`. Then tell the engineer the build is done and
-   they can exit the session.
+   out of `stale` / `uncovered`. That closes the iteration; Hamilton asks the
+   engineer what comes next.
 
 ## Verify
 
@@ -479,8 +521,8 @@ back in line — and only that.
    - **An acceptance criterion** — immutable. Needing to change one is a hard
      stop (see below).
 3. Re-run `hamilton check`. Exit 0.
-4. **Summary.** Say what you changed to get to green, then tell the engineer
-   the build is done and they can exit the session.
+4. **Summary.** Say what you changed to get to green. That closes the
+   iteration; Hamilton asks the engineer what comes next.
 
 ## Adopt an existing test suite — build phase
 
@@ -525,7 +567,7 @@ failing on logic, that is a **Verify** problem and comes first.
    — the adoption is complete and from here it is the normal loop.
 5. **Summary.** ACs bound to an existing test, ACs given a new test, ACs that
    hard-stopped back to spec, and any code with no covering requirement. Then
-   tell the engineer they can exit the session.
+   that closes the iteration; Hamilton asks the engineer what comes next.
 
 ## Test authoring
 
