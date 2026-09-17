@@ -65,6 +65,13 @@ ENDED = "(the engineer ended the session)"
 WORKING = "Engineering"
 FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
+# Choices that duplicate the fixed rows Hamilton adds to every question: a
+# catch-all ("Other") or a way out ("Exit session"). The agent is told not to
+# offer them; any that slip through are dropped.
+_FIXED_ROW_DUPLICATE = re.compile(
+    r"^\W*(other|something else|type my own|none of these|exit|quit"
+    r"|(finish|end|close)\s+(the\s+|this\s+)?session)\b", re.I)
+
 STYLE = Style.from_dict({
     "prompt": "bold",
     "hint": "ansibrightblack",
@@ -370,6 +377,7 @@ class Console:
         """A question from the agent. Its answer goes back to the model, so
         finishing here reads as an interruption -- the engineer is leaving
         mid-thought, and the checkpoint should stay resumable."""
+        q = self._without_fixed_rows(q)
         with self._paused():
             self._show(q)
             if not q.choices:
@@ -385,10 +393,11 @@ class Console:
             return value
 
     def choose(self, q: P.Question) -> str | None:
-        """Hamilton's own menu. `None` means the engineer is done."""
+        """Hamilton's own menu: its steps and a finish, nothing typed.
+        `None` means the engineer is done."""
         with self._paused():
             self._show(q)
-            kind, value = self._resolve(q)
+            kind, value = self._resolve(q, own_answer=False)
             return None if kind in (ABORT, FINISH) else value
 
     def _show(self, q: P.Question) -> None:
@@ -398,8 +407,16 @@ class Console:
         if q.prompt:
             self.say(markdown(q.prompt, self.paint))
 
-    def _resolve(self, q: P.Question) -> tuple[str, str]:
-        return self._pick(q) if self._interactive() else self._numbered(q)
+    def _resolve(self, q: P.Question, own_answer: bool = True) -> tuple[str, str]:
+        if self._interactive():
+            return self._pick(q, own_answer)
+        return self._numbered(q, own_answer)
+
+    @staticmethod
+    def _without_fixed_rows(q: P.Question) -> P.Question:
+        choices = tuple(c for c in q.choices
+                        if not _FIXED_ROW_DUPLICATE.match(c.label))
+        return P.Question(q.prompt, choices, q.header)
 
     def _free_text(self) -> str | None:
         while True:
@@ -422,23 +439,25 @@ class Console:
         self.say(echo(text))
         return text
 
-    def _pick(self, q: P.Question) -> tuple[str, str]:
+    def _pick(self, q: P.Question, own_answer: bool) -> tuple[str, str]:
         """The cursor list. Moving the highlight sends nothing; Enter does."""
+        fixed = ([OTHER] if own_answer else []) + [FINISH_ROW]
         rows = ([(c.label, c.description) for c in q.choices]
-                + [(OTHER, ""), (FINISH_ROW, "")])
+                + [(label, "") for label in fixed])
         with self._session():
             idx = picker(rows).run()
         if idx is None:
             return ABORT, ""
-        if idx == len(q.choices):               # "Type my own answer"
-            answer = self._free_text()
-            return (TEXT, answer) if answer is not None else (ABORT, "")
-        if idx == len(q.choices) + 1:           # "Finish this session"
+        label = rows[idx][0]
+        if idx < len(q.choices):
+            self.say(self.paint.green(f"  {label}"))
+            return CHOICE, label
+        if label == FINISH_ROW:
             return FINISH, ""
-        self.say(self.paint.green(f"  {rows[idx][0]}"))
-        return CHOICE, rows[idx][0]
+        answer = self._free_text()
+        return (TEXT, answer) if answer is not None else (ABORT, "")
 
-    def _numbered(self, q: P.Question) -> tuple[str, str]:
+    def _numbered(self, q: P.Question, own_answer: bool) -> tuple[str, str]:
         """No-TTY fallback: the same question as a numbered list. Typing is
         already how you answer here, so only the finish row is added."""
         for i, c in enumerate(q.choices, 1):
@@ -447,7 +466,8 @@ class Console:
         last = len(q.choices) + 1
         self.say(f"  {last}) {FINISH_ROW}")
         while True:
-            raw = self._read(f"choose 1-{last}, or type your own answer> ")
+            raw = self._read(f"choose 1-{last}"
+                             f"{', or type your own answer' if own_answer else ''}> ")
             if raw is None:
                 return ABORT, ""
             if raw.isdigit():
@@ -456,6 +476,6 @@ class Console:
                     return FINISH, ""
                 if 1 <= n <= len(q.choices):
                     return CHOICE, q.choices[n - 1].label
-                self.say("  not a choice on the list -- pick again, or type an answer")
-            elif raw:
+                self.say("  not a choice on the list -- pick again")
+            elif raw and own_answer:
                 return TEXT, raw

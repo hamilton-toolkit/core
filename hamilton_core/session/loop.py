@@ -41,8 +41,7 @@ from hamilton_core.session.modes import Mode
 SESSION_ENV = "HAMILTON_SESSION"
 PHASE_REL = ".hamilton/phase"
 
-NEXT_PROMPT = ("That iteration is done. What next? Pick a step, type your own, "
-               "or finish the session.")
+NEXT_PROMPT = "That iteration is done. What next? Pick a step, or finish the session."
 
 RESUME_KICKOFF = (
     "Resuming this Hamilton session after an interruption. Re-read the state "
@@ -63,9 +62,7 @@ def next_step(console: Console, mode: Mode) -> str | None:
     ))
     if answer is None:
         return None
-    # A label maps to its instruction; anything else is the engineer's own
-    # next step, in their words, and is sent as-is.
-    return dict(steps).get(answer, answer)
+    return dict(steps)[answer]
 
 
 async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,

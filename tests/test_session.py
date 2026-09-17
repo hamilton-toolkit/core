@@ -116,10 +116,11 @@ def test_a_continued_iteration_stays_resumable(tmp_path):
     assert cp.done is False and cp.resumable is True
 
 
-def test_the_engineer_can_type_their_own_next_step(tmp_path):
+def test_the_next_step_menu_offers_no_typed_answer(tmp_path):
     a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
-    rc, out, cp = drive(tmp_path, a, keys="split R-0004 into two\n" + "\n")
-    assert a.sent[1] == "split R-0004 into two"
+    rc, out, cp = drive(tmp_path, a, keys="split R-0004 into two\n" + "1\n" + "\n")
+    assert "type your own" not in out
+    assert "review protocol" in a.sent[1]       # the typed text was not sent
 
 
 def test_each_menu_choice_carries_its_own_instruction(tmp_path):

@@ -20,7 +20,6 @@ Anything a future non-SDK harness would do differently belongs in this file.
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import AsyncIterator
 
 from claude_agent_sdk import (
@@ -45,13 +44,9 @@ _ASK_DESCRIPTION = (
     "decomposition choice, an open input boundary. Supply `choices` when the "
     "answer is a selection; leave it empty for an open question. Hamilton "
     "always adds 'Type my own answer' and 'Finish this session' rows itself, "
-    "so do not include a catch-all choice such as 'Other' or 'Something else'."
+    "so do not include a catch-all choice such as 'Other' or 'Something else', "
+    "or a choice to exit or end the session."
 )
-
-# Catch-all choices duplicate Hamilton's own "Type my own answer" row. The
-# description asks the model not to send them; this drops any that slip through.
-_CATCH_ALL = re.compile(
-    r"^\W*(other|something else|type my own|none of these)\b", re.I)
 
 _ASK_SCHEMA = {
     "prompt": str,
@@ -72,7 +67,6 @@ def _as_question(args: dict) -> P.Question:
                                     str(c.get("description", ""))))
         else:
             choices.append(P.Choice(str(c)))
-    choices = [c for c in choices if not _CATCH_ALL.match(c.label)]
     return P.Question(prompt=str(args.get("prompt", "")),
                       choices=tuple(choices),
                       header=str(args.get("header", "")))

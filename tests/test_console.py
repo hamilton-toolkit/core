@@ -192,9 +192,10 @@ def test_choose_returns_the_chosen_label():
     assert c.choose(QUESTION) == "R-0009"
 
 
-def test_choose_passes_through_a_typed_answer():
-    c, _ = console("something else entirely\n")
-    assert c.choose(QUESTION) == "something else entirely"
+def test_choose_takes_no_typed_answer():
+    c, out = console("something else entirely\n" + "2\n")
+    assert c.choose(QUESTION) == "R-0009"
+    assert "type your own answer" not in out.getvalue()
 
 
 def test_ending_input_at_a_menu_is_also_a_finish():
@@ -273,10 +274,39 @@ def test_tab_moves_the_highlight_like_the_arrows(tty):
 
 def test_picking_type_my_own_answer_opens_the_editor(tty):
     c, _ = tty("\t\t\r", "in my own words\r")
-    assert c.choose(QUESTION) == "in my own words"
+    assert c.ask(QUESTION) == "in my own words"
+
+
+def test_hamiltons_own_menu_has_no_type_my_own_answer_row(tty):
+    c, _ = tty("\t\t\r")                     # third row is Finish here
+    assert c.choose(QUESTION) is None
 
 
 def test_picking_finish_ends_the_session(tty):
     c, _ = tty("\x1b[B" * 3 + "\r")
     assert c.ask(QUESTION) == C.ENDED
     assert c.aborted is True
+
+
+# --- choices that duplicate the fixed rows ------------------------------------
+
+def test_catch_all_and_exit_choices_are_dropped_since_hamilton_adds_its_own():
+    q = P.Question("Exit, or another change?", (
+        P.Choice("Exit session"), P.Choice("Another change"),
+        P.Choice("Something else — let me explain"), P.Choice("Other"),
+        P.Choice("Finish this session"), P.Choice("End the session")))
+    assert C.Console._without_fixed_rows(q).choices == (P.Choice("Another change"),)
+
+
+def test_a_real_choice_that_merely_mentions_those_words_is_kept():
+    q = P.Question("p", (P.Choice("Use the other repo"),
+                         P.Choice("Finish the vision first"),
+                         P.Choice("Exitcode handling")))
+    assert C.Console._without_fixed_rows(q).choices == q.choices
+
+
+def test_the_agents_exit_choice_never_reaches_the_numbered_list():
+    c, out = console("\n")
+    c.ask(P.Question("Exit, or another change?",
+                     (P.Choice("Exit session"), P.Choice("Another change"))))
+    assert "Exit session" not in out.getvalue()

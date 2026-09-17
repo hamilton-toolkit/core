@@ -69,15 +69,6 @@ def test_choices_may_be_bare_strings_or_absent():
     assert _as_question({"prompt": "p"}).choices == ()
 
 
-def test_a_catch_all_choice_is_dropped_since_hamilton_adds_its_own():
-    q = _as_question({"prompt": "p", "choices": [
-        "Yes", "No", "Something else — let me explain", {"label": "Other"}]})
-    assert q.choices == (P.Choice("Yes"), P.Choice("No"))
-    # a real choice that merely mentions "other" is kept
-    assert _as_question({"prompt": "p", "choices": ["Use the other repo"]}).choices \
-        == (P.Choice("Use the other repo"),)
-
-
 # --- the phase gate, as an SDK permission result ----------------------------
 
 def test_a_forbidden_write_is_denied_with_the_policy_message():

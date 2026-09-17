@@ -50,9 +50,10 @@ so two mechanics are not optional:
    boundary. Supply `choices` when the answer is a selection, and leave
    `choices` empty for an open question. Hamilton always adds "Type my own
    answer" and "Finish this session" rows itself, so never include a catch-all
-   choice such as "Other" or "Something else". Hamilton renders it and lets the
-   engineer correct a mis-pick before it reaches you, which is the whole point;
-   a question asked as plain prose bypasses that and strands them.
+   choice such as "Other" or "Something else", or a choice to exit or end the
+   session. Hamilton renders it and lets the engineer correct a mis-pick before
+   it reaches you, which is the whole point; a question asked as plain prose
+   bypasses that and strands them.
 2. **End the closing summary with the literal line `HAMILTON_SESSION_DONE`**,
    on its own, after everything else. That line marks the end of one
    *iteration*, not the session: Hamilton takes it as the cue to show the

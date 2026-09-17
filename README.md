@@ -95,9 +95,8 @@ happening:
   gets out of the way whenever it needs to show you something or ask.
 - **Finishing a piece of work is not the end of the session.** When the agent
   gives its closing summary, Hamilton shows you the next step — another change,
-  a decomposition, a completeness pass, or your own instruction — and the work
-  carries on in the same conversation, so nothing already read or ratified is
-  thrown away. *Finish this session* is on that menu, and on every question the
+  a decomposition or a completeness pass — and the work carries on in the same
+  conversation, so nothing already read or ratified is thrown away. *Finish this session* is on that menu, and on every question the
   agent asks, so a session opened by mistake can be left at the first prompt.
 - **An interrupted session can be resumed.** Every turn writes
   `.hamilton/session`; the next launch in the same phase offers to pick up
@@ -126,7 +125,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 266 passing
+$ python -m pytest -q          # expects 249 passing
 ```
 
 ### 2. Link it into a separate test project
