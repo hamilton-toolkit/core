@@ -20,7 +20,13 @@ containing `@AGENTS.md` (or symlink it); it is gitignored on purpose.
 
 ## Git
 
-- **Gitflow.** Work follows the gitflow branching model.
+- **Branching.** Trunk-based development with release branches:
+  - `main` is the latest development state. Never commit to it directly.
+  - Implement on a feature branch off `main` and merge back through a pull
+    request.
+  - Once a release's scope is fixed, a release branch is cut from `main`. It
+    only takes fixes during QA while `main` moves on; its fixes are ported back
+    to `main` after the release.
 - **Commit messages** are concise: one short line saying what changed. No
   attribution trailers such as `Co-Authored-By`.
 
