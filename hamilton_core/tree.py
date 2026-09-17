@@ -15,14 +15,17 @@ import sys
 from hamilton_core import model as M
 
 
-def _rows(m: M.Model):
+def rows(root: str) -> list[dict]:
+    """The requirement tree as rows in path order -- what `hamilton tree`
+    prints, and what anything else offering the tree should read."""
+    m = M.Model(root)
     paths = M.dotted_paths({k: r["parent"] for k, r in m.reqs.items()})
     order = sorted(m.reqs, key=lambda k: M.path_key(paths.get(k, "")))
     has_child = {r["parent"] for r in m.reqs.values() if r["parent"] in m.reqs}
-    rows = []
+    out = []
     for rid in order:
         r = m.reqs[rid]
-        rows.append({
+        out.append({
             "path": paths.get(rid, "?"),
             "id": rid,
             "title": M.req_title(rid, m.reqs),
@@ -36,10 +39,10 @@ def _rows(m: M.Model):
                          for a, ac in sorted(r["acs"].items())},
             "_text": M.oneline(r["statement"] or r["title"] or "(no statement)"),
         })
-    return rows
+    return out
 
 
-def _render(rows) -> str:
+def _render(rows: list[dict]) -> str:
     if not rows:
         return "hamilton tree: spec/requirements.md declares no requirements"
     wp = max(len(r["path"]) for r in rows)
@@ -61,10 +64,10 @@ def main(as_json: bool = False) -> int:
         print("hamilton tree: spec/ not found (run from the project root)",
               file=sys.stderr)
         return 2
-    rows = _rows(M.Model(root))
+    found = rows(root)
     if as_json:
         print(json.dumps({"rows": [{k: v for k, v in r.items()
-                                    if not k.startswith("_")} for r in rows]}))
+                                    if not k.startswith("_")} for r in found]}))
     else:
-        print(_render(rows))
+        print(_render(found))
     return 0

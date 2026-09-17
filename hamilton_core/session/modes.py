@@ -13,8 +13,16 @@ from typing import Callable
 
 from hamilton_core.check import REQ_REL, extract
 
-# A step offered after an iteration: (label shown, instruction sent).
-Step = tuple[str, str]
+
+@dataclass(frozen=True)
+class Step:
+    """A step offered after an iteration. `instruction` is what the agent is
+    sent. A step that `picks_requirements` first lets the engineer choose
+    requirements from the tree and describe the change; its instruction is a
+    template with `{requirements}` and `{change}`."""
+    label: str
+    instruction: str
+    picks_requirements: bool = False
 
 
 @dataclass(frozen=True)
@@ -33,20 +41,25 @@ class Mode:
 # protocol lives.
 
 _SPEC_STEPS: tuple[Step, ...] = (
-    ("Specify another change",
-     "The engineer has another change to the specification. Run the Specify "
-     "review protocol from Phase 1: ask what the change is, plan it "
-     "silently, state the size, then present it one item at a time and "
-     "write each to `spec/` only on approval."),
-    ("Decompose a requirement further",
-     "The engineer wants to decompose an existing requirement into "
-     "children. Render `hamilton tree`, ask which requirement to take, then "
-     "run the review protocol for the new children and for the parent's "
-     "`Interface:` line."),
-    ("Check the tree adds up",
-     "Render `hamilton tree` and read it upward: for each parent, ask "
-     "whether its children add up to it. Report any gap you find, then run "
-     "the review protocol for whatever the engineer decides to fix."),
+    Step("Specify another change",
+         "The engineer has another change to the specification. Run the "
+         "Specify review protocol from Phase 1: ask what the change is, plan "
+         "it silently, state the size, then present it one item at a time and "
+         "write each to `spec/` only on approval."),
+    Step("Change specific requirements",
+         "The engineer selected {requirements} and wants: {change}\n\nRun the "
+         "Specify review protocol from Phase 1 for exactly this change. It may "
+         "edit, remove or add requirements.",
+         picks_requirements=True),
+    Step("Decompose a requirement further",
+         "The engineer wants to decompose an existing requirement into "
+         "children. Render `hamilton tree`, ask which requirement to take, "
+         "then run the review protocol for the new children and for the "
+         "parent's `Interface:` line."),
+    Step("Check the tree adds up",
+         "Render `hamilton tree` and read it upward: for each parent, ask "
+         "whether its children add up to it. Report any gap you find, then "
+         "run the review protocol for whatever the engineer decides to fix."),
 )
 
 
@@ -107,13 +120,13 @@ BUILD = Mode(
             "check` to confirm the gate is green before opening a merge "
             "request."),
     next_steps=(
-        ("Take another build task",
-         "The engineer has more for you to build. Ask what it is, then follow "
-         "the Implement / Propagate a change workflow and get `hamilton check` "
-         "green."),
-        ("Re-run the gate",
-         "Run `hamilton check` again and report what it says. If it is red, "
-         "follow the Verify workflow until it is green."),
+        Step("Take another build task",
+             "The engineer has more for you to build. Ask what it is, then "
+             "follow the Implement / Propagate a change workflow and get "
+             "`hamilton check` green."),
+        Step("Re-run the gate",
+             "Run `hamilton check` again and report what it says. If it is "
+             "red, follow the Verify workflow until it is green."),
     ),
 )
 

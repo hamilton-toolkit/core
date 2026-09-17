@@ -33,10 +33,11 @@ import os
 
 from hamilton_core import guard as _guard
 from hamilton_core import status as _status
+from hamilton_core import tree as _tree
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import ClaudeSdkAdapter
 from hamilton_core.session.console import Console
-from hamilton_core.session.modes import Mode
+from hamilton_core.session.modes import Mode, Step
 
 SESSION_ENV = "HAMILTON_SESSION"
 PHASE_REL = ".hamilton/phase"
@@ -51,18 +52,45 @@ RESUME_KICKOFF = (
 )
 
 
-def next_step(console: Console, mode: Mode) -> str | None:
+def next_step(console: Console, mode: Mode, root: str) -> str | None:
     """Offer the step after a completed iteration. Returns the instruction to
-    send the agent, or None to finish the session."""
-    steps = mode.next_steps
-    answer = console.choose(P.Question(
-        NEXT_PROMPT,
-        tuple(P.Choice(label, "") for label, _ in steps),
-        "Iteration complete",
-    ))
-    if answer is None:
+    send the agent, or None to finish the session. A step the engineer backs
+    out of shows the menu again."""
+    steps = {s.label: s for s in mode.next_steps}
+    while True:
+        answer = console.choose(P.Question(
+            NEXT_PROMPT,
+            tuple(P.Choice(label) for label in steps),
+            "Iteration complete",
+        ))
+        if answer is None:
+            return None
+        step = steps[answer]
+        if not step.picks_requirements:
+            return step.instruction
+        instruction = _targeted_change(console, step, root)
+        if instruction is not None:
+            return instruction
+
+
+def _targeted_change(console: Console, step: Step, root: str) -> str | None:
+    """Let the engineer pick requirements from the tree and say what should
+    change. None if the tree is empty or they back out."""
+    rows = _tree.rows(root)
+    if not rows:
+        console.note("The spec has no requirements yet -- nothing to pick.")
         return None
-    return dict(steps)[answer]
+    labels = {r["id"]: f'{r["id"]} "{r["title"] or r["_text"]}"' for r in rows}
+    options = [(r["id"], "  " * r["path"].count(".") + labels[r["id"]])
+               for r in rows]
+    chosen = console.select("Which requirements?", options)
+    if not chosen:
+        return None
+    change = console.text("What should change?")
+    if change is None:
+        return None
+    return step.instruction.format(
+        requirements=", ".join(labels[rid] for rid in chosen), change=change)
 
 
 async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
@@ -107,7 +135,7 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
                 break
 
             if done:
-                text = await asyncio.to_thread(next_step, console, mode)
+                text = await asyncio.to_thread(next_step, console, mode, root)
                 cp.done = text is None  # only a chosen finish completes it
                 cp.save(root)
                 continue

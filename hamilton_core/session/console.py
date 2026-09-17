@@ -36,17 +36,17 @@ import threading
 import time
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import Application, create_app_session
+from prompt_toolkit.application import Application, create_app_session, get_app
 from prompt_toolkit.cursor_shapes import CursorShape
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.input import create_input
 from prompt_toolkit.key_binding import KeyBindings, KeyPress
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout import Dimension, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.output import create_output
 from prompt_toolkit.styles import Style
-from prompt_toolkit.widgets import RadioList
+from prompt_toolkit.widgets import CheckboxList, RadioList
 
 from hamilton_core.session import protocol as P
 
@@ -60,6 +60,7 @@ FINISH_ROW = "Finish this session"
 # and the two callers below read it accordingly.
 CHOICE, TEXT, FINISH, ABORT = "choice", "text", "finish", "abort"
 PICK_HINT = "↑/↓ or Tab to move · Enter to select"
+SELECT_HINT = "↑/↓ to move · Space to tick · Enter to confirm · Esc to go back"
 EDIT_HINT = "Alt+Enter (or Ctrl+J) for a new line · Enter to send"
 ENDED = "(the engineer ended the session)"
 WORKING = "Engineering"
@@ -163,29 +164,14 @@ def editor(hint: str) -> PromptSession:
     )
 
 
-def picker(rows: list[tuple[str, str]]) -> Application:
-    """The cursor list for a question. `rows` are (label, description); the
-    app's result is the chosen row's index, or None if the engineer left."""
-    options = [(i, FormattedText([("", label)]
-                                 + ([("class:description", f"  {desc}")] if desc else [])))
-               for i, (label, desc) in enumerate(rows)]
-    radio = RadioList(
-        values=options,
-        select_on_focus=True,
-        open_character="",
-        select_character="❯",
-        close_character="",
-        show_cursor=False,
-        show_numbers=False,
-        selected_style="",
-        checked_style="class:chosen",
-        show_scrollbar=False,
-    )
+def _list_app(widget, hint: str, accept) -> Application:
+    """A list the engineer moves through and confirms with Enter. The result
+    is `accept()`, or None if they leave (Esc, Ctrl+D)."""
     kb = KeyBindings()
 
     @kb.add("enter", eager=True)
-    def _select(event):
-        event.app.exit(result=radio.current_value)
+    def _confirm(event):
+        event.app.exit(result=accept())
 
     @kb.add("tab")
     def _down(event):
@@ -204,14 +190,59 @@ def picker(rows: list[tuple[str, str]]) -> Application:
     def _interrupt(event):
         event.app.exit(exception=KeyboardInterrupt())
 
-    hint = Window(FormattedTextControl([("class:hint", f"  {PICK_HINT}")]),
-                  height=1)
+    # A long list scrolls instead of pushing its top off the screen.
+    widget.window.height = lambda: Dimension(
+        max=max(3, get_app().output.get_size().rows - 4))
+    hint_row = Window(FormattedTextControl([("class:hint", f"  {hint}")]),
+                      height=1)
     return Application(
-        layout=Layout(HSplit([radio, hint]), focused_element=radio),
+        layout=Layout(HSplit([widget, hint_row]), focused_element=widget),
         key_bindings=kb,
         style=STYLE,
         erase_when_done=True,
     )
+
+
+def picker(rows: list[tuple[str, str]]) -> Application:
+    """The cursor list for a question. `rows` are (label, description); the
+    app's result is the chosen row's index, or None if the engineer left."""
+    options = [(i, FormattedText([("", label)]
+                                 + ([("class:description", f"  {desc}")] if desc else [])))
+               for i, (label, desc) in enumerate(rows)]
+    radio = RadioList(
+        values=options,
+        select_on_focus=True,
+        open_character="",
+        select_character="❯",
+        close_character="",
+        show_cursor=False,
+        show_numbers=False,
+        selected_style="",
+        checked_style="class:chosen",
+        show_scrollbar=False,
+    )
+    return _list_app(radio, PICK_HINT, lambda: radio.current_value)
+
+
+def checklist(options: list[tuple[str, str]]) -> Application:
+    """A list to tick several rows of. `options` are (value, label); the app's
+    result is the ticked values, or the highlighted one if none is ticked."""
+    boxes = CheckboxList(
+        values=options,
+        open_character="[",
+        select_character="x",
+        close_character="]",
+        selected_style="class:chosen",
+        checked_style="",
+    )
+
+    def ticked():
+        # `_selected_index` is the highlighted row; the widget has no public
+        # accessor for it.
+        return (list(boxes.current_values)
+                or [boxes.values[boxes._selected_index][0]])
+
+    return _list_app(boxes, SELECT_HINT, ticked)
 
 
 class Console:
@@ -400,6 +431,29 @@ class Console:
             kind, value = self._resolve(q, own_answer=False)
             return None if kind in (ABORT, FINISH) else value
 
+    def select(self, prompt: str, options: list[tuple[str, str]]) -> list[str] | None:
+        """Several of `options` ((value, label) rows), chosen by Hamilton's
+        own flow. Returns the chosen values, or None if the engineer backs
+        out."""
+        with self._paused():
+            self._show(P.Question(prompt))
+            if self._interactive():
+                with self._session():
+                    chosen = checklist(options).run()
+                if chosen:
+                    labels = dict(options)
+                    self.say(self.paint.green("\n".join(labels[v] for v in chosen)))
+                return chosen
+            return self._numbered_many(options)
+
+    def text(self, prompt: str) -> str | None:
+        """An open question from Hamilton's own flow. None if the engineer
+        backs out -- unlike `ask`, that does not end the session."""
+        with self._paused():
+            self._show(P.Question(prompt))
+            answer = self._input(hint=f"Enter on its own goes back · {EDIT_HINT}")
+        return answer if answer and answer.strip() else None
+
     def _show(self, q: P.Question) -> None:
         self.say()
         if q.header:
@@ -479,3 +533,16 @@ class Console:
                 self.say("  not a choice on the list -- pick again")
             elif raw and own_answer:
                 return TEXT, raw
+
+    def _numbered_many(self, options: list[tuple[str, str]]) -> list[str] | None:
+        """No-TTY fallback for `select`: numbers separated by commas."""
+        for i, (_value, label) in enumerate(options, 1):
+            self.say(f"  {i}) {label}")
+        while True:
+            raw = self._read("choose numbers, e.g. 1,3 (empty to go back)> ")
+            if not raw:
+                return None
+            picks = [p.strip() for p in raw.split(",")]
+            if all(p.isdigit() and 1 <= int(p) <= len(options) for p in picks):
+                return [options[int(p) - 1][0] for p in picks]
+            self.say("  not numbers on the list -- pick again")

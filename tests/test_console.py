@@ -310,3 +310,44 @@ def test_the_agents_exit_choice_never_reaches_the_numbered_list():
     c.ask(P.Question("Exit, or another change?",
                      (P.Choice("Exit session"), P.Choice("Another change"))))
     assert "Exit session" not in out.getvalue()
+
+
+# --- selecting several rows ------------------------------------------------------
+
+OPTIONS = [("R-0001", 'R-0001 "Authentication"'),
+           ("R-0007", '  R-0007 "Sessions"'),
+           ("R-0042", '    R-0042 "Reject expired tokens"')]
+
+
+def test_ticked_rows_are_returned_and_reprinted(tty):
+    c, out = tty(" \x1b[B\x1b[B \r")
+    assert c.select("Which?", OPTIONS) == ["R-0001", "R-0042"]
+    assert 'R-0042 "Reject expired tokens"' in out.getvalue()
+
+
+def test_enter_with_nothing_ticked_takes_the_highlighted_row(tty):
+    c, _ = tty("\x1b[B\r")
+    assert c.select("Which?", OPTIONS) == ["R-0007"]
+
+
+def test_leaving_the_selection_goes_back(tty):
+    c, _ = tty("\x04")
+    assert c.select("Which?", OPTIONS) is None
+    assert c.aborted is False
+
+
+def test_numbered_selection_takes_comma_separated_numbers():
+    c, out = console("1,4\n" + "1, 3\n")
+    assert c.select("Which?", OPTIONS) == ["R-0001", "R-0042"]
+    assert "not numbers on the list" in out.getvalue()
+
+
+def test_an_empty_numbered_selection_goes_back():
+    c, _ = console("\n")
+    assert c.select("Which?", OPTIONS) is None
+
+
+def test_an_empty_text_answer_goes_back_without_ending_the_session():
+    c, _ = console("\n")
+    assert c.text("What should change?") is None
+    assert c.aborted is False

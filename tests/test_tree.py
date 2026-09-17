@@ -107,3 +107,12 @@ def test_outside_a_project_exits_2(tmp_path):
     p = run_tree(tmp_path)
     assert p.returncode == 2
     assert "not found" in p.stderr
+
+
+def test_rows_are_what_the_json_prints(tmp_path):
+    from hamilton_core import tree as T
+    d = copy_fixture("model", tmp_path)
+    printed = json.loads(run_tree(d, "--json").stdout)["rows"]
+    public = [{k: v for k, v in r.items() if not k.startswith("_")}
+              for r in T.rows(d)]
+    assert public == printed

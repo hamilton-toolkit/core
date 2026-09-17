@@ -11,6 +11,8 @@ import contextlib
 import io
 from pathlib import Path
 
+from conftest import copy_fixture
+
 from hamilton_core.session import loop as L
 from hamilton_core.session.console import Console
 from hamilton_core.session import protocol as P
@@ -82,7 +84,7 @@ def drive(tmp_path, adapter, keys=""):
     return rc, out.getvalue(), P.Checkpoint.load(str(tmp_path))
 
 
-FINISH = "4\n"        # the spec menu's three steps, then "Finish this session"
+FINISH = "5\n"        # the spec menu's four steps, then "Finish this session"
 
 
 def test_a_finished_iteration_offers_the_next_step_instead_of_exiting(tmp_path):
@@ -125,8 +127,8 @@ def test_the_next_step_menu_offers_no_typed_answer(tmp_path):
 
 def test_each_menu_choice_carries_its_own_instruction(tmp_path):
     for pick, expected in (("1\n", "review protocol"),
-                           ("2\n", "decompose"),
-                           ("3\n", "add up")):
+                           ("3\n", "decompose"),
+                           ("4\n", "add up")):
         a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")],
                         session_ref="s1")
         drive(tmp_path, a, keys=pick + "\n")
@@ -191,6 +193,43 @@ def test_the_adapter_is_closed_even_when_a_turn_raises(tmp_path):
     assert a.closed is True
 
 
+# --- changing specific requirements ---------------------------------------------
+
+def test_picked_requirements_and_the_change_are_sent_to_the_agent(tmp_path):
+    root = copy_fixture("tree", tmp_path)
+    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    c, out = console("2\n" + "3\n" + "let tokens expire after an hour\n" + "\n")
+    asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
+    assert 'R-0042 "Reject expired tokens"' in a.sent[1]
+    assert "let tokens expire after an hour" in a.sent[1]
+    assert "{requirements}" not in a.sent[1]
+
+
+def test_the_tree_is_offered_indented_by_depth(tmp_path):
+    root = copy_fixture("tree", tmp_path)
+    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    c, out = console("2\n" + "1\n" + "x\n" + "\n")
+    asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
+    assert '  1) R-0001 "Authentication"' in out.getvalue()
+    assert '  3)     R-0042 "Reject expired tokens"' in out.getvalue()
+
+
+def test_backing_out_of_the_pick_shows_the_menu_again(tmp_path):
+    root = copy_fixture("tree", tmp_path)
+    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    c, out = console("2\n" + "\n" + "1\n" + "\n")      # back out, then step 1
+    asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
+    assert out.getvalue().count("Iteration complete") == 2
+    assert "review protocol" in a.sent[1]
+
+
+def test_an_empty_tree_has_nothing_to_pick(tmp_path):
+    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    rc, out, cp = drive(tmp_path, a, keys="2\n" + "1\n" + "\n")
+    assert "nothing to pick" in out
+    assert "review protocol" in a.sent[1]
+
+
 # --- modes --------------------------------------------------------------------
 
 def test_every_mode_is_a_cli_command_and_complete():
@@ -199,6 +238,11 @@ def test_every_mode_is_a_cli_command_and_complete():
         assert mode.name == name
         assert mode.phase in ("spec", "build")
         assert mode.kickoff and mode.footer and mode.help and mode.next_steps
+        for step in mode.next_steps:
+            assert step.label and step.instruction
+            if step.picks_requirements:
+                assert "{requirements}" in step.instruction
+                assert "{change}" in step.instruction
     parser_help = io.StringIO()
     with contextlib.redirect_stdout(parser_help):
         try:
