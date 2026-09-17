@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = []
+dependencies = ["claude-agent-sdk>=0.2"]
 
 [project.urls]
 Homepage = "https://github.com/hamilton-toolkit/core"
@@ -36,7 +36,7 @@ test = ["pytest"]
 hamilton = "hamilton_core.cli:main"
 
 [tool.setuptools]
-packages = ["hamilton_core"]
+packages = ["hamilton_core", "hamilton_core.session"]
 
 [tool.setuptools.package-data]
 hamilton_core = [

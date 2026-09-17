@@ -8,11 +8,17 @@ import sys
 from hamilton_core import check as _check
 from hamilton_core import guard as _guard
 from hamilton_core import init as _init
-from hamilton_core import launch as _launch
 from hamilton_core import show as _show
 from hamilton_core import status as _status
 from hamilton_core import tree as _tree
 from hamilton_core import upgrade as _upgrade
+
+
+def _session():
+    """Imported on demand: it pulls in the agent SDK, which the read-only
+    commands (`check`, `tree`, `show`, `status`, `guard`) have no use for."""
+    from hamilton_core.session import loop
+    return loop
 
 
 def main(argv=None) -> int:
@@ -26,10 +32,10 @@ def main(argv=None) -> int:
     p_init.add_argument("path", nargs="?", default=None,
                         help="target directory (default: current directory)")
     sub.add_parser("guard", help="phase-gate PreToolUse hook backend")
-    sub.add_parser("design", help="set phase to spec, then launch the agent (agent_command)")
-    sub.add_parser("build", help="set phase to build, then launch the agent (agent_command)")
-    sub.add_parser("reverse", help="brownfield: set phase to spec, then launch "
-                   "the agent to derive a first spec from an existing codebase")
+    sub.add_parser("design", help="set phase to spec, then run the spec session")
+    sub.add_parser("build", help="set phase to build, then run the build session")
+    sub.add_parser("reverse", help="brownfield: set phase to spec, then run a "
+                   "session that derives a first spec from an existing codebase")
 
     sub.add_parser("status", help="print a read-only project snapshot (phase, "
                    "counts, coverage, recent spec changes)")
@@ -54,11 +60,11 @@ def main(argv=None) -> int:
     if args.cmd == "guard":
         return _guard.main()
     if args.cmd == "design":
-        return _launch.main("spec")
+        return _session().main("spec")
     if args.cmd == "build":
-        return _launch.main("build")
+        return _session().main("build")
     if args.cmd == "reverse":
-        return _launch.main("spec", verb="reverse", kickoff_key="reverse")
+        return _session().main("spec", verb="reverse", kickoff_key="reverse")
     if args.cmd == "status":
         return _status.main()
     if args.cmd == "tree":

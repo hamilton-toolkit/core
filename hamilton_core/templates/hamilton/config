@@ -1,13 +1,6 @@
 # Hamilton project configuration. `key=value` per line; `#` starts a comment;
 # the value is the literal text after the first `=`.
 #
-# agent_command  the command that starts your coding agent. Defaults to
-#               `claude`. `hamilton design` / `hamilton build` set the phase
-#               and then run this as a child process, so the agent is scoped to
-#               a phase it cannot change. Split on whitespace and run with NO
-#               shell: flags are fine (`claude --foo`), but env prefixes
-#               (`FOO=bar claude`), pipes and `&&` are not -- wrap those in a
-#               script. Read-only during a `build` session.
 # test_command  the test suite, run from the project root by `hamilton check`.
 #               Must exit 0 on success. Use `python -m pytest`, not bare
 #               `pytest`, so the project root is importable from the tests.
@@ -20,7 +13,6 @@
 #               5.3). Not implemented yet -- if you set it, `hamilton check`
 #               prints a notice every run and does NOT run it. Leave it unset.
 
-agent_command=claude
 test_command=
 test_paths=tests
 # mutation_command=

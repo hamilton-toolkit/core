@@ -298,39 +298,32 @@ rules the agent is meant to follow — an agent must not relax what constrains i
 through a hooked tool). The one exception is `.hamilton/config`: which test
 framework runs and where the tests live (`test_command`, `test_paths`) are
 build-time decisions, so the file is writable in `build`. A path hook cannot
-lock individual lines, so `agent_command` is writable there too — read only at
-the next launch, and visible in the config diff a reviewer sees.
+lock individual lines, so the whole file is writable there — and visible in the
+config diff a reviewer sees.
 
-There are **two enforcement layers, with different reach**. They are not one
-uniform guarantee.
+There are **two enforcement layers**. They are not one uniform guarantee.
 
-**1. The launcher — any agent.** The engineer runs `hamilton design` (Step 1)
-or `hamilton build` (Step 2); each sets `.hamilton/phase`, prints a status
-banner (phase, requirement / coverage counts, the last three `spec/` changes),
-then runs the configured agent (`agent_command`) as a **child process** and
-waits, with a one-line kickoff appended as the final argument so the session
-starts working immediately — `build` no longer needs a manual "build now". When
-the agent exits, Hamilton prints a short footer and the phase persists in
-`.hamilton/phase` for the next launch. Self-switching is closed by an inherited
-marker: `HAMILTON_SESSION` is exported before the agent starts, every child
-process inherits it, and `design` / `build` refuse to run when it is set — so
-an agent that shells out to `hamilton build` from inside a `design` session is
-blocked. This works for **any** `agent_command` (the kickoff assumes the agent
-takes a positional prompt, as Claude Code does; another agent would need a
-wrapper script). It scopes *which phase a session is in*; it does **not**, by
-itself, stop the agent writing to `spec/` during a build session — it only
-fixes what phase that session is.
+**1. The session launch.** The engineer runs `hamilton design` (Step 1) or
+`hamilton build` (Step 2); each sets `.hamilton/phase`, prints a status banner
+(phase, requirement / coverage counts, the last three `spec/` changes), then
+drives the agent session with a one-line kickoff so it starts working
+immediately — `build` needs no manual "build now". When the session ends,
+Hamilton prints a short footer and the phase persists in `.hamilton/phase` for
+the next launch. Self-switching is closed by an inherited marker:
+`HAMILTON_SESSION` is exported before the agent starts, every child process
+inherits it, and `design` / `build` refuse to run when it is set — so an agent
+that shells out to `hamilton build` from inside a `design` session is blocked.
+This scopes *which phase a session is in*; it does **not**, by itself, stop the
+agent writing to `spec/` during a build session — it only fixes what phase that
+session is.
 
-**2. The `PreToolUse` hook — Claude Code only.** Inside a Claude Code session,
-the hook denies the file-editing tools (`Write` / `Edit` / `MultiEdit` /
-`NotebookEdit`) on the read-only paths for the current phase — this is what
-actually stops an in-session edit to `spec/` (in build) or to source (in
-spec). It ships as a `.claude/` hook and exists only for that agent. **Under a
-different `agent_command`, this layer is absent:** the phase is set correctly
-at launch, but nothing prevents that agent editing `spec/` mid-session. Closing
-it for any agent would mean making the read-only paths read-only at the
-filesystem level around the launch (e.g. `chmod -R a-w spec/` for a build
-session, restored on exit) — a candidate, not built.
+**2. The write gate.** Hamilton refuses the file-editing tools (`Write` /
+`Edit` / `MultiEdit` / `NotebookEdit`) on the read-only paths for the current
+phase — this is what actually stops an in-session edit to `spec/` (in build) or
+to source (in spec). One policy (`hamilton guard`'s `decide`) backs both the
+in-process permission callback the session installs and the `.claude/`
+`PreToolUse` hook, so the two cannot disagree; in a Hamilton session both run.
+The hook is what still covers a `claude` session started outside Hamilton.
 
 **Neither layer is an unbypassable boundary.** An operator who unsets
 `HAMILTON_SESSION`, edits `.hamilton/phase` by hand, `chmod`s the paths back,
@@ -415,6 +408,6 @@ Periodic reconciliation: an agent diffs actual code behavior against the spec an
 
 - **Language-agnostic.** The process must not assume a stack. The coding agent selects test framework and tooling.
 - **Greenfield start, or brownfield adoption (D-018).** A new project writes its spec first. An existing codebase is adopted with `hamilton reverse`, which *derives* a first spec from the code and its git history — capturing intent and the load-bearing decisions, deliberately under-specified relative to the implementation, module by module. Ownership is unchanged (§6.2): the agent proposes, the engineer ratifies. The first `hamilton build` after it binds the existing tests to the derived criteria.
-- **Agent-agnostic.** The coding agent is named in `.hamilton/config` (`agent_command`) and launched by `hamilton design` / `hamilton build` / `hamilton reverse`; nothing in the framework is specific to one agent CLI. The scaffold ships a Claude Code hook and skill because that is one supported agent, not the only one. The launcher appends a kickoff instruction as a positional argument, which assumes the agent CLI takes a prompt that way (Claude Code does); an agent that does not would be wrapped in a script, or a later `agent_prompt=off` opt-out would suppress the kickoff.
+- **One agent, behind a seam.** Hamilton drives the session itself — `hamilton design` / `hamilton build` / `hamilton reverse` run the agent in process rather than handing over the terminal, which is what lets Hamilton own the question flow (so a mis-picked option can be taken back), end the session when the phase's work is done, and checkpoint every turn so an interrupted session resumes. That control is only purchasable by speaking a specific agent's protocol, so the earlier agent-agnostic launcher (`agent_command`, any CLI as a child process) was **retired**: it could set the phase but could see nothing inside the session. The dependency is contained rather than diffused — a single `AgentAdapter` (today `claude_agent_sdk`) is the only thing that knows which model is answering; the session driver, the write gate and the question flow are written against Hamilton's own event vocabulary. A second model is a second adapter. None exists yet, and the honest statement of today's position is: Hamilton runs on Claude.
 - **Team collaboration via Git / GitLab.**
 - **Enforced gating** rather than advisory.

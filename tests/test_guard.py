@@ -246,4 +246,57 @@ def test_deny_is_nonzero_with_a_stderr_message_and_no_stdout(tmp_path):
 
 
 # --- the phase is set by `hamilton design` / `hamilton build`, not a slash
-#     command; the launcher has its own test module (test_launch.py).
+#     command; the session driver has its own test module (test_session.py).
+
+
+# --- one policy, two call sites ----------------------------------------------
+#
+# `guard.decide` is what both the subprocess hook backend (above) and the
+# session driver's in-process permission callback consult. If they could
+# disagree, a write blocked on one path would slip through on the other, so the
+# two are pinned to each other here rather than tested separately.
+
+from hamilton_core import guard as _guard  # noqa: E402
+
+POLICY_CASES = [
+    ("spec", "spec/requirements.md"),
+    ("spec", "src/x.py"),
+    ("spec", "README.md"),
+    ("build", "src/x.py"),
+    ("build", "tests/test_x.py"),
+    ("build", "spec/requirements.md"),
+    ("build", ".hamilton/config"),
+    ("build", ".hamilton/verified"),
+    ("build", ".claude/settings.json"),
+    ("build", "AGENTS.md"),
+    ("build", "CLAUDE.md"),
+    ("banana", "src/x.py"),
+]
+
+
+def test_decide_agrees_with_the_hook_backend_on_every_case(tmp_path):
+    for i, (phase, rel) in enumerate(POLICY_CASES):
+        root = tmp_path / f"case{i}"
+        root.mkdir()
+        make_project(root, phase)
+        target = str(root / rel)
+
+        msg = _guard.decide(str(root), target)
+        proc = run_guard(root, payload(target))
+
+        allowed_in_process = msg is None
+        allowed_by_hook = proc.returncode == 0
+        assert allowed_in_process == allowed_by_hook, (phase, rel, msg, proc.returncode)
+        if msg is not None:
+            assert msg.strip() == proc.stderr.strip(), (phase, rel)
+
+
+def test_decide_allows_when_there_is_no_phase_file(tmp_path):
+    (tmp_path / "spec").mkdir()
+    assert _guard.decide(str(tmp_path), str(tmp_path / "spec" / "x.md")) is None
+
+
+def test_decide_resolves_a_relative_target_against_the_root(tmp_path):
+    make_project(tmp_path, "spec")
+    assert _guard.decide(str(tmp_path), "spec/requirements.md") is None
+    assert _guard.decide(str(tmp_path), "src/x.py") is not None

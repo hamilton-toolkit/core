@@ -37,8 +37,31 @@ be told "go". In a **build** session, run `git diff spec/` and `hamilton check`
 first: if the diff shows a spec change, that is **Propagate a change**;
 otherwise, or once the diff is dealt with, a red gate is **Verify** — unless
 this is the first build after `hamilton reverse` (see its trigger above), which
-is **Adopt an existing test suite**. End with a summary (below) and tell the
-engineer they can exit.
+is **Adopt an existing test suite**. End with a summary (below); Hamilton
+offers the engineer their next step from there.
+
+## Asking, and ending
+
+Hamilton drives this session rather than handing the engineer a raw terminal,
+so two mechanics are not optional:
+
+1. **Put every question to the engineer through the `ask_engineer` tool** — an
+   approval in the review protocol, a decomposition choice, an open input
+   boundary. Supply `choices` when the answer is a selection, and leave
+   `choices` empty for an open question. Hamilton always adds "Type my own
+   answer" and "Finish this session" rows itself, so never include a catch-all
+   choice such as "Other" or "Something else". Hamilton renders it and lets the
+   engineer correct a mis-pick before it reaches you, which is the whole point;
+   a question asked as plain prose bypasses that and strands them.
+2. **End the closing summary with the literal line `HAMILTON_SESSION_DONE`**,
+   on its own, after everything else. That line marks the end of one
+   *iteration*, not the session: Hamilton takes it as the cue to show the
+   engineer what they can do next — another change, a decomposition, or
+   finishing. Emit it whenever a workflow runs to its summary, and do **not**
+   tell the engineer to exit or that the session is over; Hamilton offers that
+   choice, and the session stays open so the next piece of work keeps
+   everything you have already read and ratified. Never emit it at a hard stop,
+   which is the engineer's decision to act on.
 
 ---
 
@@ -305,8 +328,9 @@ CONSEQUENCE lines. If `.hamilton/verified` does not exist yet (no run has
 passed), a reworded AC does **not** go `stale` — it stays `uncovered`; say
 that, do not announce `stale`.
 
-Then tell the engineer the session is done: they can exit it now, or ask for
-another change and you will run the protocol again from Phase 1.
+That closes the iteration. Do not tell the engineer to exit -- Hamilton asks
+them what comes next, and may hand you another change to run the protocol on
+from Phase 1.
 
 Once the engineer starts a build session (`hamilton build`), that `stale` /
 `uncovered` list is the **Propagate a change** work list.
@@ -465,8 +489,8 @@ back in line — and only that.
      exists: fix the tag.
 4. Re-run `hamilton check` until it exits 0. Do not touch what it does not name.
 5. **Summary.** List the files and requirements you touched and which ACs moved
-   out of `stale` / `uncovered`. Then tell the engineer the build is done and
-   they can exit the session.
+   out of `stale` / `uncovered`. That closes the iteration; Hamilton asks the
+   engineer what comes next.
 
 ## Verify
 
@@ -479,8 +503,8 @@ back in line — and only that.
    - **An acceptance criterion** — immutable. Needing to change one is a hard
      stop (see below).
 3. Re-run `hamilton check`. Exit 0.
-4. **Summary.** Say what you changed to get to green, then tell the engineer
-   the build is done and they can exit the session.
+4. **Summary.** Say what you changed to get to green. That closes the
+   iteration; Hamilton asks the engineer what comes next.
 
 ## Adopt an existing test suite — build phase
 
@@ -525,7 +549,7 @@ failing on logic, that is a **Verify** problem and comes first.
    — the adoption is complete and from here it is the normal loop.
 5. **Summary.** ACs bound to an existing test, ACs given a new test, ACs that
    hard-stopped back to spec, and any code with no covering requirement. Then
-   tell the engineer they can exit the session.
+   that closes the iteration; Hamilton asks the engineer what comes next.
 
 ## Test authoring
 
