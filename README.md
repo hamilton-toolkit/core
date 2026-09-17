@@ -81,14 +81,15 @@ happening:
 
 - **Questions are Hamilton's.** The agent asks through a tool; Hamilton renders
   the choices as a cursor list — arrows or Tab to move, Enter to commit, or
-  pick *type my own answer* to write something else. Moving the highlight sends
+  pick *Type my own answer* to write something else. Moving the highlight sends
   nothing, so a mis-pick costs a keystroke rather than the session. Piped or
   non-interactive input falls back to a numbered list, and `NO_COLOR` is
   honoured.
 - **Typing is not one line.** Alt+Enter (or Ctrl+J) opens a new line, Enter
-  sends — a requirement or a correction is usually a paragraph. Arrows, Home /
-  End, Delete and Ctrl+U edit the buffer, and pasting a multi-line block pastes
-  it rather than submitting at the first line break.
+  sends — a requirement or a correction is usually a paragraph. All four arrow
+  keys move the cursor, and pasting a multi-line block pastes it rather than
+  submitting at the first line break. Once sent, your text is reprinted as
+  plain text, so copying it from the terminal gives it back exactly as typed.
 - **You can see when it is thinking.** An `Engineering…` indicator runs while
   the agent works, with elapsed time once it passes a couple of seconds, and
   gets out of the way whenever it needs to show you something or ask.

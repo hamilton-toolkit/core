@@ -1,20 +1,20 @@
 """Terminal rendering for a session: styling, the question picker, the input
 editor, and the working indicator.
 
-Three things matter here beyond looking tidy.
+Every session mode talks to the engineer through this one class, so the
+interaction is identical whatever the mode.
 
 **Nothing is sent until Enter.** On a real terminal a question is a cursor
 list: arrows or Tab move the highlight, and only Enter commits. Moving is free,
 so a mis-pick costs a keystroke instead of the session -- which was the point
-of driving the session in-process at all. There is no separate confirmation
-step; Enter *is* the confirmation.
+of driving the session in-process at all.
 
-**Typing is not limited to one line.** Alt+Enter (or Ctrl+J, for terminals that
-swallow the first) opens a new line; Enter sends. A requirement or a correction
-is often a paragraph, and a single-line prompt quietly punishes that. Rows after
-the `> ` prompt are indented under it, the caret is drawn as a reverse-video
-cell, and all four arrow keys move it. Copy and paste stay with the terminal
-(Ctrl+Shift+C/V); a paste arrives bracketed, so its newlines are text.
+**Typing is not limited to one line.** Alt+Enter (or Ctrl+J) opens a new line;
+Enter sends. The editor and the picker are `prompt_toolkit`, not our own: it
+owns cursor movement, wrapping and bracketed paste. Both erase themselves when
+done, and what was sent is reprinted as plain text. The terminal wraps that
+itself, so copying it from the scrollback gives the text as typed, without
+line breaks the editor's own wrapping would add.
 
 **It degrades rather than breaks.** Without a TTY (a pipe, a test, a dumb
 terminal) questions render as a numbered list, input is read a line at a time,
@@ -31,21 +31,27 @@ import contextlib
 import itertools
 import os
 import re
-import select
-import shutil
 import sys
 import threading
 import time
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application, create_app_session
+from prompt_toolkit.cursor_shapes import CursorShape
+from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.input import create_input
+from prompt_toolkit.key_binding import KeyBindings, KeyPress
+from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.output import create_output
+from prompt_toolkit.styles import Style
+from prompt_toolkit.widgets import RadioList
+
 from hamilton_core.session import protocol as P
 
-try:  # POSIX only; absence just means the terminal features are unavailable
-    import termios
-    import tty
-except ImportError:  # pragma: no cover -- exercised on Windows, not in CI
-    termios = tty = None
-
 ESC = "\x1b"
+PROMPT = "> "
 OTHER = "Type my own answer"
 FINISH_ROW = "Finish this session"
 
@@ -58,6 +64,13 @@ EDIT_HINT = "Alt+Enter (or Ctrl+J) for a new line · Enter to send"
 ENDED = "(the engineer ended the session)"
 WORKING = "Engineering"
 FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+STYLE = Style.from_dict({
+    "prompt": "bold",
+    "hint": "ansibrightblack",
+    "description": "ansibrightblack",
+    "chosen": "bold ansicyan",
+})
 
 
 def supports_color(stream) -> bool:
@@ -110,241 +123,104 @@ def elapsed(seconds: float) -> str:
     return f"{s}s" if s < 60 else f"{s // 60}m{s % 60:02d}s"
 
 
-# --- layout -------------------------------------------------------------------
-
-def text_rows(buf: str, width: int) -> list[tuple[int, int]]:
-    """The buffer as screen rows: (start, end) slices of `buf`, hard-wrapped at
-    `width` and split at explicit newlines. Hamilton wraps rather than leaving
-    it to the terminal so the cursor arithmetic below is exact.
-
-    A line that is empty, or that exactly fills its last row, gets an empty row
-    after it: that is where the caret sits at its end."""
-    rows: list[tuple[int, int]] = []
-    start = 0
-    for line in buf.split("\n"):
-        n = len(line)
-        rows.extend((start + i, start + min(i + width, n))
-                    for i in range(0, n, width))
-        if n % width == 0:
-            rows.append((start + n, start + n))
-        start += n + 1
-    return rows
+def echo(text: str) -> str:
+    """How a sent answer is reprinted: the prompt, then the text with lines
+    after a newline indented under it. Long lines are left for the terminal
+    to wrap, so a copy from the scrollback has no breaks we added."""
+    return PROMPT + text.replace("\n", "\n" + " " * len(PROMPT))
 
 
-def caret_rc(buf: str, pos: int, width: int) -> tuple[int, int]:
-    """(row, column) of the caret at `pos`, under `text_rows`."""
-    rows = text_rows(buf, width)
-    for r, (s, e) in enumerate(rows):
-        # the end of a full row is shown at the start of the row after it
-        if s <= pos < e or (pos == e and e - s < width):
-            return r, pos - s
-    s, _ = rows[-1]
-    return len(rows) - 1, pos - s
+# --- prompt_toolkit widgets ---------------------------------------------------
+
+def editor(hint: str) -> PromptSession:
+    """The multi-line input every prompt uses."""
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    def _send(event):
+        event.current_buffer.validate_and_handle()
+
+    @kb.add("escape", "enter")
+    @kb.add("c-j")
+    def _newline(event):
+        event.current_buffer.insert_text("\n")
+
+    return PromptSession(
+        multiline=True,
+        key_bindings=kb,
+        prompt_continuation=lambda width, _line, _wrap: " " * width,
+        cursor=CursorShape.BLOCK,
+        placeholder=FormattedText([("class:hint", hint)]),
+        erase_when_done=True,
+        style=STYLE,
+    )
 
 
-def move_vertical(buf: str, pos: int, width: int, delta: int,
-                  goal: int | None) -> tuple[int, int]:
-    """Move the caret `delta` rows, keeping to the `goal` column across short
-    rows. Past the first row it goes to the start, past the last to the end.
-    Returns (pos, goal)."""
-    rows = text_rows(buf, width)
-    row, col = caret_rc(buf, pos, width)
-    goal = col if goal is None else goal
-    target = row + delta
-    if target < 0:
-        return 0, goal
-    if target >= len(rows):
-        return len(buf), goal
-    s, e = rows[target]
-    last = e - s if e - s < width else width - 1
-    return s + min(goal, last), goal
+def picker(rows: list[tuple[str, str]]) -> Application:
+    """The cursor list for a question. `rows` are (label, description); the
+    app's result is the chosen row's index, or None if the engineer left."""
+    options = [(i, FormattedText([("", label)]
+                                 + ([("class:description", f"  {desc}")] if desc else [])))
+               for i, (label, desc) in enumerate(rows)]
+    radio = RadioList(
+        values=options,
+        select_on_focus=True,
+        open_character="",
+        select_character="❯",
+        close_character="",
+        show_cursor=False,
+        show_numbers=False,
+        selected_style="",
+        checked_style="class:chosen",
+        show_scrollbar=False,
+    )
+    kb = KeyBindings()
 
+    @kb.add("enter", eager=True)
+    def _select(event):
+        event.app.exit(result=radio.current_value)
 
-# --- keys ---------------------------------------------------------------------
+    @kb.add("tab")
+    def _down(event):
+        event.app.key_processor.feed(KeyPress(Keys.Down), first=True)
 
-def read_key(read) -> str:
-    """One keypress for the picker. `read(n)` returns up to n bytes."""
-    ch = read(1)
-    if not ch:
-        return "eof"
-    if ch == b"\x1b":
-        return {b"[A": "up", b"[B": "down",
-                b"[Z": "up"}.get(read(2), "esc")   # [Z is shift-tab
-    if ch in (b"\r", b"\n"):
-        return "enter"
-    if ch == b"\t":
-        return "down"
-    if ch == b"\x03":
-        return "interrupt"
-    if ch == b"\x04":
-        return "eof"
-    return "other"
+    @kb.add("s-tab")
+    def _up(event):
+        event.app.key_processor.feed(KeyPress(Keys.Up), first=True)
 
+    @kb.add("escape", eager=True)
+    @kb.add("c-d")
+    def _leave(event):
+        event.app.exit(result=None)
 
-def _waiting(fd, timeout: float) -> bool:
-    return bool(select.select([fd], [], [], timeout)[0])
+    @kb.add("c-c")
+    def _interrupt(event):
+        event.app.exit(exception=KeyboardInterrupt())
 
-
-# Bracketed paste: the terminal brackets pasted text in these markers, so a
-# newline inside a paste is text rather than a Return. Without it a pasted
-# paragraph submits at its first line break and the rest is read as keystrokes.
-PASTE_ON = f"{ESC}[?2004h"
-PASTE_OFF = f"{ESC}[?2004l"
-PASTE_START = b"200~"
-PASTE_END = b"\x1b[201~"
-
-# The editor draws its own caret as a reverse-video cell, so the terminal's
-# cursor is hidden while it runs.
-HIDE_CURSOR = f"{ESC}[?25l"
-SHOW_CURSOR = f"{ESC}[?25h"
-
-_CSI = {b"A": "up", b"B": "down", b"C": "right", b"D": "left",
-        b"H": "home", b"F": "end", b"1~": "home", b"7~": "home",
-        b"4~": "end", b"8~": "end", b"3~": "delete"}
-
-
-def _csi(fd) -> bytes:
-    """The remainder of a CSI sequence, up to and including its final byte."""
-    seq = b""
-    while len(seq) < 32:
-        ch = os.read(fd, 1)
-        if not ch:
-            break
-        seq += ch
-        if 0x40 <= ch[0] <= 0x7E:
-            break
-    return seq
-
-
-def read_paste(fd) -> str:
-    """Pasted text, to its end marker. Newlines are normalised: a terminal may
-    send CR, LF or CRLF for the same line break."""
-    buf = b""
-    while not buf.endswith(PASTE_END):
-        ch = os.read(fd, 1)
-        if not ch:
-            break
-        buf += ch
-    if buf.endswith(PASTE_END):
-        buf = buf[:-len(PASTE_END)]
-    text = buf.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
-    # A tab or a stray control character would take a width the layout
-    # arithmetic does not know about.
-    text = text.replace("\t", "    ")
-    return "".join(c for c in text if c == "\n" or c >= " ")
-
-
-def read_edit_key(fd) -> tuple[str, str]:
-    """One keypress for the input editor, as (name, text).
-
-    Escape has to be disambiguated by waiting: bare Esc, Alt+Enter (`Esc` then
-    Return), an arrow key (`Esc [ A`) and the start of a paste (`Esc [ 2 0 0 ~`)
-    all begin the same way.
-    """
-    b = os.read(fd, 1)
-    if not b:
-        return "eof", ""
-    if b == b"\x1b":
-        if not _waiting(fd, 0.05):
-            return "esc", ""
-        nxt = os.read(fd, 1)
-        if nxt in (b"\r", b"\n"):
-            return "newline", ""
-        if nxt == b"[":
-            seq = _csi(fd)
-            if seq == PASTE_START:
-                return "paste", read_paste(fd)
-            return _CSI.get(seq, "other"), ""
-        return "other", ""
-    if b == b"\r":
-        return "submit", ""
-    if b == b"\n":          # Ctrl+J, for terminals that keep Alt+Enter
-        return "newline", ""
-    if b == b"\x7f":
-        return "backspace", ""
-    if b == b"\x03":
-        return "interrupt", ""
-    if b == b"\x04":
-        return "eof", ""
-    if b == b"\x15":
-        return "kill", ""
-    if b < b" ":
-        return "other", ""
-    return "char", _utf8(fd, b)
-
-
-def _utf8(fd, first: bytes) -> str:
-    b0 = first[0]
-    extra = 3 if b0 >= 0xF0 else 2 if b0 >= 0xE0 else 1 if b0 >= 0xC0 else 0
-    data = first + (os.read(fd, extra) if extra else b"")
-    return data.decode("utf-8", "replace")
-
-
-def select_loop(count: int, read, draw) -> int | None:
-    """Move a highlight over `count` rows until Enter. Returns the chosen index,
-    or None if the engineer ended it. Pure control flow -- `read` and `draw` are
-    injected, which is what makes it testable without a terminal."""
-    idx, first = 0, True
-    while True:
-        draw(idx, first)
-        first = False
-        key = read()
-        if key == "up":
-            idx = (idx - 1) % count
-        elif key == "down":
-            idx = (idx + 1) % count
-        elif key == "enter":
-            return idx
-        elif key == "interrupt":
-            raise KeyboardInterrupt
-        elif key in ("eof", "esc"):
-            return None
-
-
-def edit_keys(buf: str, pos: int, key: str, ch: str) -> tuple[str, int]:
-    """Apply one keypress to the edit buffer. Pure, so the editing rules are
-    testable without a terminal."""
-    if key in ("char", "paste"):
-        return buf[:pos] + ch + buf[pos:], pos + len(ch)
-    if key == "newline":
-        return buf[:pos] + "\n" + buf[pos:], pos + 1
-    if key == "backspace" and pos:
-        return buf[:pos - 1] + buf[pos:], pos - 1
-    if key == "delete":
-        return buf[:pos] + buf[pos + 1:], pos
-    if key == "left":
-        return buf, max(0, pos - 1)
-    if key == "right":
-        return buf, min(len(buf), pos + 1)
-    if key == "home":
-        return buf, 0
-    if key == "end":
-        return buf, len(buf)
-    if key == "kill":
-        return "", 0
-    return buf, pos
-
-
-def apply_key(buf: str, pos: int, key: str, ch: str, width: int,
-              goal: int | None) -> tuple[str, int, int | None]:
-    """`edit_keys` plus up/down, which need the layout. `goal` is the column
-    up/down aim for; any other key forgets it."""
-    if key in ("up", "down"):
-        pos, goal = move_vertical(buf, pos, width, -1 if key == "up" else 1, goal)
-        return buf, pos, goal
-    buf, pos = edit_keys(buf, pos, key, ch)
-    return buf, pos, None
+    hint = Window(FormattedTextControl([("class:hint", f"  {PICK_HINT}")]),
+                  height=1)
+    return Application(
+        layout=Layout(HSplit([radio, hint]), focused_element=radio),
+        key_bindings=kb,
+        style=STYLE,
+        erase_when_done=True,
+    )
 
 
 class Console:
     """Everything the engineer sees. `aborted` goes true when they end the
-    session at a prompt (EOF/Esc), which the driver checks after the turn."""
+    session at a prompt (EOF/Esc), which the driver checks after the turn.
 
-    def __init__(self, out=None, inp=None, color=None) -> None:
+    `terminal` returns the context `prompt_toolkit` runs in. It defaults to
+    this console's own streams; tests pass a pipe input instead, which also
+    makes the console interactive."""
+
+    def __init__(self, out=None, inp=None, color=None, terminal=None) -> None:
         self._out = out or sys.stderr
         self._in = inp or sys.stdin
         self.aborted = False
         self.paint = Paint(supports_color(self._out) if color is None else color)
+        self._terminal = terminal
         self._lock = threading.RLock()
         self._stop = None          # set while the indicator thread runs
         self._thread = None
@@ -373,17 +249,18 @@ class Console:
         return line.strip()
 
     def _interactive(self) -> bool:
-        if termios is None:
-            return False
+        if self._terminal is not None:
+            return True
         try:
             return bool(self._in.isatty() and self._out.isatty())
         except (AttributeError, ValueError):
             return False
 
-    def _width(self) -> int:
-        # One short of the real width: a line that exactly fills the terminal
-        # leaves the cursor in a position terminals disagree about.
-        return max(20, shutil.get_terminal_size((80, 24)).columns - 1)
+    def _session(self):
+        if self._terminal is not None:
+            return self._terminal()
+        return create_app_session(input=create_input(self._in),
+                                  output=create_output(self._out))
 
     # --- the working indicator -----------------------------------------------
 
@@ -472,8 +349,7 @@ class Console:
         """The engineer's own next message, or None to end the session."""
         with self._paused():
             self.say()
-            raw = self._input(self.paint.bold("> "),
-                              hint="Enter on its own ends the session.")
+            raw = self._input(hint=f"Enter on its own ends the session · {EDIT_HINT}")
         if raw is None or raw.strip() == "" or raw.strip() in ("/exit", "/quit"):
             return None
         return raw
@@ -527,134 +403,40 @@ class Console:
 
     def _free_text(self) -> str | None:
         while True:
-            answer = self._input(self.paint.bold("> "))
+            answer = self._input(hint=EDIT_HINT)
             if answer is None:
                 return None
             if answer.strip():
                 return answer
 
-    def _input(self, prompt: str, hint: str | None = None) -> str | None:
-        """Multi-line where the terminal allows it, one line where it doesn't."""
+    def _input(self, hint: str) -> str | None:
+        """Multi-line where the terminal allows it, one line where it doesn't.
+        On a terminal the editor erases itself and the answer is reprinted."""
         if not self._interactive():
-            return self._read(prompt)
-        self.note("  " + (f"{hint} " if hint else "") + EDIT_HINT)
-        return self._edit(prompt)
-
-    # --- the multi-line editor ----------------------------------------------
-
-    def _edit(self, prompt: str) -> str | None:
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", prompt)
-        fd = self._in.fileno()
-        saved = termios.tcgetattr(fd)
-        buf, pos, at, goal = "", 0, 0, None
+            return self._read(PROMPT)
         try:
-            tty.setraw(fd)
-            self._raw(PASTE_ON + HIDE_CURSOR)
-            while True:
-                at = self._draw_input(prompt, plain, buf, pos, at)
-                key, ch = read_edit_key(fd)
-                if key == "submit":
-                    break
-                if key == "interrupt":
-                    raise KeyboardInterrupt
-                if key == "eof" and not buf:
-                    return None
-                buf, pos, goal = apply_key(buf, pos, key, ch,
-                                           self._text_width(plain), goal)
-            # Repaint once more without the caret, ending on the last row, so
-            # the newline below lands after the block rather than inside it.
-            self._draw_input(prompt, plain, buf, len(buf), at, caret=False)
-        finally:
-            self._raw(PASTE_OFF + SHOW_CURSOR)
-            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        self._raw("\r\n")
-        return buf
-
-    def _text_width(self, plain: str) -> int:
-        return max(1, self._width() - len(plain))
-
-    def _draw_input(self, prompt: str, plain: str, buf: str, pos: int,
-                    cursor_row: int, caret: bool = True) -> int:
-        """Repaint the input block and leave the cursor where the caret is.
-
-        The prompt sits on the first row; every row after it is indented by the
-        prompt's width, so a multi-line answer reads as one left-aligned block.
-
-        Returns the row the caret ended on, which the next call needs: the
-        repaint starts by going back to the top of the block, and the cursor is
-        wherever the caret was left -- not on the last row. Assuming otherwise
-        walks the cursor up into output printed earlier, which the clear below
-        then erases.
-        """
-        indent = len(plain)
-        width = self._text_width(plain)
-        rows = text_rows(buf, width)
-        crow, ccol = caret_rc(buf, pos, width)
-
-        out = [f"{ESC}[{cursor_row}A" if cursor_row else "", "\r", f"{ESC}[J"]
-        for r, (s, e) in enumerate(rows):
-            text = buf[s:e]
-            if caret and r == crow:
-                under = text[ccol] if ccol < len(text) else " "
-                text = f"{text[:ccol]}{ESC}[7m{under}{ESC}[27m{text[ccol + 1:]}"
-            # The prompt is styled; the arithmetic above used its plain text.
-            out.append(("\r\n" + " " * indent if r else prompt) + text)
-
-        end_row = len(rows) - 1
-        if end_row > crow:
-            out.append(f"{ESC}[{end_row - crow}A")
-        out.append(f"\r{ESC}[{indent + ccol}C" if indent + ccol else "\r")
-        self._raw("".join(out))
-        return crow
-
-    # --- the picker -----------------------------------------------------------
+            with self._session():
+                text = editor(hint).prompt([("class:prompt", PROMPT)])
+        except EOFError:
+            return None
+        self.say(echo(text))
+        return text
 
     def _pick(self, q: P.Question) -> tuple[str, str]:
         """The cursor list. Moving the highlight sends nothing; Enter does."""
         rows = ([(c.label, c.description) for c in q.choices]
                 + [(OTHER, ""), (FINISH_ROW, "")])
-        fd = self._in.fileno()
-        saved = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            idx = select_loop(
-                len(rows),
-                lambda: read_key(lambda n: os.read(fd, n)),
-                lambda i, first: self._draw(rows, i, first),
-            )
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-
-        self._erase(len(rows) + 1)
+        with self._session():
+            idx = picker(rows).run()
         if idx is None:
             return ABORT, ""
-        if idx == len(q.choices):               # "type my own answer"
+        if idx == len(q.choices):               # "Type my own answer"
             answer = self._free_text()
             return (TEXT, answer) if answer is not None else (ABORT, "")
-        if idx == len(q.choices) + 1:           # "finish this session"
+        if idx == len(q.choices) + 1:           # "Finish this session"
             return FINISH, ""
         self.say(self.paint.green(f"  {rows[idx][0]}"))
         return CHOICE, rows[idx][0]
-
-    def _draw(self, rows, idx: int, first: bool) -> None:
-        # Raw mode: newlines must carry the return themselves. Rows are clipped
-        # to the terminal: a line that wrapped would throw the cursor-up count
-        # out and corrupt every redraw after it.
-        width = self._width()
-        out = [] if first else [f"{ESC}[{len(rows) + 1}A"]
-        for i, (label, desc) in enumerate(rows):
-            body = f" {'❯' if i == idx else ' '} {label}"[:width]
-            tail = f"  {desc}"[:max(0, width - len(body))] if desc else ""
-            line = self.paint.selected(body) if i == idx else body
-            if tail:
-                line += self.paint.dim(tail)
-            out.append(f"{ESC}[2K{line}\r\n")
-        out.append(f"{ESC}[2K{self.paint.dim('  ' + PICK_HINT)}\r\n")
-        self._raw("".join(out))
-
-    def _erase(self, lines: int) -> None:
-        """Clear the list we drew, leaving the cursor where it started."""
-        self._raw(f"{ESC}[{lines}A" + f"{ESC}[2K\n" * lines + f"{ESC}[{lines}A")
 
     def _numbered(self, q: P.Question) -> tuple[str, str]:
         """No-TTY fallback: the same question as a numbered list. Typing is

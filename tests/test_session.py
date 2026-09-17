@@ -7,11 +7,14 @@ non-SDK harness is tested the same way.
 """
 
 import asyncio
+import contextlib
 import io
+from pathlib import Path
 
 from hamilton_core.session import loop as L
 from hamilton_core.session.console import Console
 from hamilton_core.session import protocol as P
+from hamilton_core.session.modes import BUILD, DESIGN, MODES
 
 
 class FakeAdapter:
@@ -75,7 +78,7 @@ def test_checkpoint_ignores_keys_it_does_not_know(tmp_path):
 
 def drive(tmp_path, adapter, keys=""):
     c, out = console(keys)
-    rc = asyncio.run(L.drive(str(tmp_path), "spec", "KICKOFF", adapter, c))
+    rc = asyncio.run(L.drive(str(tmp_path), DESIGN, "KICKOFF", adapter, c))
     return rc, out.getvalue(), P.Checkpoint.load(str(tmp_path))
 
 
@@ -132,7 +135,7 @@ def test_each_menu_choice_carries_its_own_instruction(tmp_path):
 def test_a_build_session_is_offered_build_steps(tmp_path):
     a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
     c, out = console("1\n" + "\n")
-    asyncio.run(L.drive(str(tmp_path), "build", "KICKOFF", a, c, "build"))
+    asyncio.run(L.drive(str(tmp_path), BUILD, "KICKOFF", a, c))
     assert "hamilton check" in a.sent[1]
     assert "Take another build task" in out.getvalue()
 
@@ -181,7 +184,32 @@ def test_the_adapter_is_closed_even_when_a_turn_raises(tmp_path):
     a = Boom()
     c, _ = console()
     try:
-        asyncio.run(L.drive(str(tmp_path), "spec", "K", a, c))
+        asyncio.run(L.drive(str(tmp_path), DESIGN, "K", a, c))
     except RuntimeError:
         pass
     assert a.closed is True
+
+
+# --- modes --------------------------------------------------------------------
+
+def test_every_mode_is_a_cli_command_and_complete():
+    from hamilton_core import cli
+    for name, mode in MODES.items():
+        assert mode.name == name
+        assert mode.phase in ("spec", "build")
+        assert mode.kickoff and mode.footer and mode.help and mode.next_steps
+    parser_help = io.StringIO()
+    with contextlib.redirect_stdout(parser_help):
+        try:
+            cli.main(["--help"])
+        except SystemExit:
+            pass
+    for name in MODES:
+        assert name in parser_help.getvalue()
+
+
+def test_reverse_refuses_a_spec_that_already_has_content(tmp_path):
+    reverse = MODES["reverse"]
+    assert reverse.precheck(str(tmp_path)) is None     # no spec yet: fine
+    populated = Path(__file__).parent / "fixtures" / "clean"
+    assert "already has" in reverse.precheck(str(populated))

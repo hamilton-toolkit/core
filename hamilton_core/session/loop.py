@@ -17,6 +17,8 @@ that an agent shells out to from inside a session is refused: the phase is
 fixed for the session. As ever this stops drift, not a determined operator --
 `hamilton check` in CI is the authoritative gate.
 
+What differs between the modes is defined once, in `modes`.
+
 Written against `protocol` alone: the vendor SDK lives behind
 `claude_sdk_adapter`, and nothing in this file knows which model is answering.
 
@@ -28,97 +30,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 
 from hamilton_core import guard as _guard
 from hamilton_core import status as _status
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import ClaudeSdkAdapter
 from hamilton_core.session.console import Console
+from hamilton_core.session.modes import Mode
 
 SESSION_ENV = "HAMILTON_SESSION"
 PHASE_REL = ".hamilton/phase"
-
-# The opening instruction each session starts on, so it begins working instead
-# of waiting to be told "go". The real protocol lives in the `hamilton` skill;
-# these only point at it.
-KICKOFF = {
-    "spec": (
-        "Start the Hamilton spec/design session now: follow the `hamilton` "
-        "skill's Specify workflow from the top -- greet me, summarise the "
-        "current spec state; if the spec is empty and `spec/vision.md` is still "
-        "the scaffold, offer to help me draft the vision first, then move on to "
-        "the root requirements; otherwise ask whether I want to draft the "
-        "initial spec or modify/extend existing requirements. Then run the "
-        "review protocol."
-    ),
-    "build": (
-        "Start the Hamilton build session now: follow the `hamilton` skill's "
-        "\"Propagate a change\" / \"Verify\" workflow immediately -- run "
-        "`git diff spec/` and `hamilton check`, bring the code and tests to "
-        "green, then give the closing summary. If this is the first build after "
-        "`hamilton reverse` (no `.hamilton/verified`, most ACs uncovered, the "
-        "spec only just landed in `git log -- spec`), follow \"Adopt an "
-        "existing test suite\" instead. Do not wait for further instruction."
-    ),
-    "reverse": (
-        "Start the Hamilton reverse (brownfield) session now: follow the "
-        "`hamilton` skill's \"Reverse-engineer the spec from existing code\" "
-        "workflow from the top -- survey the codebase and its git history, "
-        "show me the frame you infer (what the system is for, its actors, the "
-        "module map) and let me correct it, draft `spec/vision.md`, then derive "
-        "the requirement tree module by module. Propose every piece and wait "
-        "for my approval before writing it -- the spec captures intent and the "
-        "load-bearing decisions, it does not restate the code."
-    ),
-}
-
-FOOTER = {
-    "spec": ("hamilton design: session ended (phase 'spec'). Run `hamilton "
-             "build` to implement the changes, or `hamilton design` again to "
-             "keep specifying."),
-    "build": ("hamilton build: session ended (phase 'build'). Run `hamilton "
-              "check` to confirm the gate is green before opening a merge "
-              "request."),
-    "reverse": ("hamilton reverse: session ended (phase 'spec'). `hamilton "
-                "check` will be red on `uncovered` until you run `hamilton "
-                "build` -- that session binds the existing tests to the "
-                "derived criteria. Run `hamilton design` to keep refining the "
-                "spec."),
-}
-
-# What Hamilton offers once the agent says an iteration is complete. The
-# summary it just gave is the record of that iteration; this is the same
-# decision a fresh session would open with, minus losing the conversation --
-# the agent keeps everything it has already read and ratified.
-NEXT_STEPS = {
-    "spec": (
-        ("Specify another change",
-         "The engineer has another change to the specification. Run the Specify "
-         "review protocol from Phase 1: ask what the change is, plan it "
-         "silently, state the size, then present it one item at a time and "
-         "write each to `spec/` only on approval."),
-        ("Decompose a requirement further",
-         "The engineer wants to decompose an existing requirement into "
-         "children. Render `hamilton tree`, ask which requirement to take, then "
-         "run the review protocol for the new children and for the parent's "
-         "`Interface:` line."),
-        ("Check the tree adds up",
-         "Render `hamilton tree` and read it upward: for each parent, ask "
-         "whether its children add up to it. Report any gap you find, then run "
-         "the review protocol for whatever the engineer decides to fix."),
-    ),
-    "build": (
-        ("Take another build task",
-         "The engineer has more for you to build. Ask what it is, then follow "
-         "the Implement / Propagate a change workflow and get `hamilton check` "
-         "green."),
-        ("Re-run the gate",
-         "Run `hamilton check` again and report what it says. If it is red, "
-         "follow the Verify workflow until it is green."),
-    ),
-}
-NEXT_STEPS["reverse"] = NEXT_STEPS["spec"]
 
 NEXT_PROMPT = ("That iteration is done. What next? Pick a step, type your own, "
                "or finish the session.")
@@ -131,26 +52,10 @@ RESUME_KICKOFF = (
 )
 
 
-def _verb(phase: str) -> str:
-    return "design" if phase == "spec" else "build"
-
-
-def _live_requirement_count(root: str) -> int:
-    """Real requirements in spec/requirements.md -- 0 if the file is absent or
-    holds only the fenced example. `hamilton reverse` refuses on a non-empty
-    spec (it derives a *first* spec)."""
-    from hamilton_core.check import REQ_REL, extract
-    path = os.path.join(root, REQ_REL)
-    if not os.path.isfile(path):
-        return 0
-    reqs, _dupes, _malformed = extract(path)
-    return len(reqs)
-
-
-def next_step(console: Console, kickoff_key: str) -> str | None:
+def next_step(console: Console, mode: Mode) -> str | None:
     """Offer the step after a completed iteration. Returns the instruction to
     send the agent, or None to finish the session."""
-    steps = NEXT_STEPS[kickoff_key]
+    steps = mode.next_steps
     answer = console.choose(P.Question(
         NEXT_PROMPT,
         tuple(P.Choice(label, "") for label, _ in steps),
@@ -163,8 +68,8 @@ def next_step(console: Console, kickoff_key: str) -> str | None:
     return dict(steps).get(answer, answer)
 
 
-async def drive(root: str, phase: str, kickoff: str, adapter: P.AgentAdapter,
-                console: Console, kickoff_key: str = "spec") -> int:
+async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
+                console: Console) -> int:
     """Run turns until the engineer finishes or ends the session.
 
     A `PhaseDone` is an *iteration* boundary, not the end: the agent has given
@@ -172,7 +77,7 @@ async def drive(root: str, phase: str, kickoff: str, adapter: P.AgentAdapter,
     and everything the agent has already read and ratified -- still live.
     Checkpoints after every turn; that is the resume path.
     """
-    cp = P.Checkpoint(phase=phase, session_ref=adapter.session_ref)
+    cp = P.Checkpoint(phase=mode.phase, session_ref=adapter.session_ref)
     text: str | None = kickoff
     rc = 0
     try:
@@ -205,7 +110,7 @@ async def drive(root: str, phase: str, kickoff: str, adapter: P.AgentAdapter,
                 break
 
             if done:
-                text = await asyncio.to_thread(next_step, console, kickoff_key)
+                text = await asyncio.to_thread(next_step, console, mode)
                 cp.done = text is None  # only a chosen finish completes it
                 cp.save(root)
                 continue
@@ -218,49 +123,43 @@ async def drive(root: str, phase: str, kickoff: str, adapter: P.AgentAdapter,
     return rc
 
 
-def main(phase: str, *, verb: str | None = None,
-         kickoff_key: str | None = None) -> int:
-    verb = verb or _verb(phase)
-    kickoff_key = kickoff_key or phase
+def main(mode: Mode) -> int:
     root = os.getcwd()
     console = Console()
 
+    def refuse(message: str, rc: int = 1) -> int:
+        console.error(f"{mode.name}: {message}")
+        return rc
+
     if not os.path.isdir(os.path.join(root, ".hamilton")):
-        console.error(f"{verb}: no .hamilton/ here -- run from a Hamilton "
-                      f"project root (`hamilton init` first).")
-        return 2
+        return refuse("no .hamilton/ here -- run from a Hamilton project root "
+                      "(`hamilton init` first).", 2)
 
     existing = os.environ.get(SESSION_ENV)
     if existing:
-        console.error(f"{verb}: already inside a Hamilton session "
-                      f"({SESSION_ENV}={existing!r}). A session's phase is "
-                      f"fixed when it is launched; the agent cannot switch it. "
-                      f"Exit this session and run from a plain shell.")
-        return 1
+        return refuse(f"already inside a Hamilton session ({SESSION_ENV}="
+                      f"{existing!r}). A session's phase is fixed when it is "
+                      f"launched; the agent cannot switch it. Exit this "
+                      f"session and run from a plain shell.")
 
-    if kickoff_key == "reverse":
-        n = _live_requirement_count(root)
-        if n:
-            console.error(f"{verb}: spec/requirements.md already has {n} "
-                          f"requirement(s). `hamilton reverse` derives a first "
-                          f"spec from an existing codebase; it will not run "
-                          f"against a spec that already has content. Run "
-                          f"`hamilton design` to extend the existing spec.")
-            return 1
+    problem = mode.precheck(root) if mode.precheck else None
+    if problem:
+        return refuse(problem)
 
     with open(os.path.join(root, PHASE_REL), "w", encoding="utf-8") as fh:
-        fh.write(phase)
-    os.environ[SESSION_ENV] = phase
+        fh.write(mode.phase)
+    os.environ[SESSION_ENV] = mode.phase
 
-    console.banner(_status.render(root, phase))
+    console.banner(_status.render(root, mode.phase))
 
-    kickoff = KICKOFF[kickoff_key]
+    kickoff = mode.kickoff
     resume_ref = None
     cp = P.Checkpoint.load(root)
-    if cp and cp.resumable and cp.phase == phase and console.offer_resume(cp):
+    if (cp and cp.resumable and cp.phase == mode.phase
+            and console.offer_resume(cp)):
         resume_ref, kickoff = cp.session_ref, RESUME_KICKOFF
 
-    console.note(f"hamilton {verb}: phase is '{phase}'; "
+    console.note(f"hamilton {mode.name}: phase is '{mode.phase}'; "
                  f"{'resumed' if resume_ref else 'new'} session.")
 
     adapter = ClaudeSdkAdapter(
@@ -270,13 +169,12 @@ def main(phase: str, *, verb: str | None = None,
         resume_ref=resume_ref,
     )
     try:
-        rc = asyncio.run(drive(root, phase, kickoff, adapter, console,
-                               kickoff_key))
+        rc = asyncio.run(drive(root, mode, kickoff, adapter, console))
     except KeyboardInterrupt:
         console.error("interrupted -- the checkpoint is kept, "
-                      f"`hamilton {verb}` will offer to resume.")
+                      f"`hamilton {mode.name}` will offer to resume.")
         return 130
 
     console.say()
-    console.note(FOOTER[kickoff_key])
+    console.note(mode.footer)
     return rc

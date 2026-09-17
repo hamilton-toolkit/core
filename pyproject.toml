@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = ["claude-agent-sdk>=0.2"]
+dependencies = ["claude-agent-sdk>=0.2", "prompt_toolkit>=3.0.52"]
 
 [project.urls]
 Homepage = "https://github.com/hamilton-toolkit/core"

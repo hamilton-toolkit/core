@@ -12,6 +12,7 @@ from hamilton_core import show as _show
 from hamilton_core import status as _status
 from hamilton_core import tree as _tree
 from hamilton_core import upgrade as _upgrade
+from hamilton_core.session.modes import MODES
 
 
 def _session():
@@ -32,10 +33,8 @@ def main(argv=None) -> int:
     p_init.add_argument("path", nargs="?", default=None,
                         help="target directory (default: current directory)")
     sub.add_parser("guard", help="phase-gate PreToolUse hook backend")
-    sub.add_parser("design", help="set phase to spec, then run the spec session")
-    sub.add_parser("build", help="set phase to build, then run the build session")
-    sub.add_parser("reverse", help="brownfield: set phase to spec, then run a "
-                   "session that derives a first spec from an existing codebase")
+    for mode in MODES.values():
+        sub.add_parser(mode.name, help=mode.help)
 
     sub.add_parser("status", help="print a read-only project snapshot (phase, "
                    "counts, coverage, recent spec changes)")
@@ -59,12 +58,8 @@ def main(argv=None) -> int:
         return _init.main(args.path)
     if args.cmd == "guard":
         return _guard.main()
-    if args.cmd == "design":
-        return _session().main("spec")
-    if args.cmd == "build":
-        return _session().main("build")
-    if args.cmd == "reverse":
-        return _session().main("spec", verb="reverse", kickoff_key="reverse")
+    if args.cmd in MODES:
+        return _session().main(MODES[args.cmd])
     if args.cmd == "status":
         return _status.main()
     if args.cmd == "tree":
