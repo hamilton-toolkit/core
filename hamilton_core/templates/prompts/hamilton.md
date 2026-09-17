@@ -267,13 +267,15 @@ all still there — as ACs, where a test can bind to each one.
 Think first, then present. **Never propose changes as you generate them.**
 
 **Phase 1 — plan silently.** Work out the complete set of changes the request
-implies: new requirements, edited requirements, edited ACs, new or changed
-`Interface:` lines on interior nodes, moved subtrees. Apply **How to write a
+implies: new requirements, edited requirements, edited ACs, removed
+requirements, new or changed `Interface:` lines on interior nodes, moved
+subtrees. Apply **How to write a
 requirement** as you go — a behaviour that needs an "and" is two requirements,
 count it as two. Write nothing yet.
 
 **Phase 2 — state the size, then show the plan.** Open with one line: **how
-many requirements this change produces** — new plus substantively edited. If
+many requirements this change touches** — new, substantively edited and
+removed. If
 that is **more than about six**, stop there: say so and propose splitting the
 engineer's *request* into smaller pieces before going further. Do not show the
 full plan or write anything until the request is cut down.
@@ -281,11 +283,12 @@ full plan or write anything until the request is cut down.
 Otherwise, a numbered list, one line per change, each with title and path, no
 detail:
 ```
-Produces 3 requirements (2 new, 1 edited).
+Touches 4 requirements (2 new, 1 edited, 1 removed).
 
-1. New   Authentication › Sessions › R-0058 "Revoke a session on logout"
-2. Edit  Authentication › Sessions › R-0042 "Reject expired tokens" — AC2 reworded, AC3 added
-3. Edit  Authentication › R-0007 "Sessions" — statement clarified
+1. New     Authentication › Sessions › R-0058 "Revoke a session on logout"
+2. Edit    Authentication › Sessions › R-0042 "Reject expired tokens" — AC2 reworded, AC3 added
+3. Edit    Authentication › R-0007 "Sessions" — statement clarified
+4. Remove  Authentication › Sessions › R-0031 "Remember me"
 ```
 This lets the engineer see the shape and the size before spending attention.
 
@@ -308,6 +311,18 @@ This lets the engineer see the shape and the size before spending attention.
   Ask about that specific case, never "is this ok?" — e.g. *"AC2 says
   whitespace runs count as one separator; what should `initials('  ada  ')`
   return?"* If the item settles what it needs to, ask nothing.
+
+**For a removal**, show where it sits, its full statement and acceptance
+criteria as they stand, and a CONSEQUENCE naming:
+
+- its children — each needs a new parent or is removed too; if the request
+  does not settle which, that is the one question
+- any requirement whose statement, ACs or `Interface:` refers to it
+- the tagged tests for its ACs, which become `orphan-tag` in the next build
+
+A removed requirement's id is **never reused**: a new requirement always takes
+a fresh id. A reused id would silently bind the old tests to the new
+requirement.
 
 Then **wait.** The engineer replies with approval, a correction, or a question.
 Do not move to the next item until this one is settled. When an item is
@@ -487,7 +502,9 @@ back in line — and only that.
    - `uncovered` — an AC now has no tagged test under `test_paths`: add or
      retarget one.
    - `orphan-tag` — a tag points at an AC or requirement that no longer
-     exists: fix the tag.
+     exists. If the requirement was removed, delete the test and any code only
+     it needed; retarget the tag only if the behaviour moved to another
+     requirement.
 4. Re-run `hamilton check` until it exits 0. Do not touch what it does not name.
 5. **Summary.** List the files and requirements you touched and which ACs moved
    out of `stale` / `uncovered`. That closes the iteration; Hamilton asks the
