@@ -3,7 +3,7 @@ counts. Assertions run against `--json`. Fixtures are copied to a temp dir
 first (see conftest) because a passing run writes `.hamilton/verified`.
 
 The model is one requirement tree (D-014): `spec/requirements.md` plus a flat
-`spec/actors.md`. There is no components/modules model.
+`spec/actors.md`. Every AC names its verification method (D-019).
 """
 
 import re
@@ -24,13 +24,19 @@ EXPECT = {
     "orphan-requirement": (1, {"orphan-requirement"},      1),
     "dangling-ref":       (1, {"dangling-ref"},            1),
     "cyclic-parent":      (1, {"cyclic-parent"},           1),
+    "no-method":          (1, {"no-method"},               1),
+    "unknown-method":     (1, {"unknown-method"},          1),
+    "no-method-paths":    (1, {"no-method-paths"},         1),
+    "wrong-method":       (1, {"wrong-method"},            1),
+    "retired-config":     (1, {"retired-config"},          1),
 }
 ONE_RULE = [n for n in EXPECT if n not in ("clean", "multi-violation")]
 FAILING = [n for n in EXPECT if n != "clean"]
 
 RULES = {"no-test-command", "tests-failed", "uncovered", "orphan-tag",
          "orphan-requirement", "dangling-ref", "cyclic-parent", "stale",
-         "malformed"}
+         "malformed", "retired-config", "no-method", "unknown-method",
+         "no-method-paths", "wrong-method"}
 
 
 @pytest.mark.parametrize("name", list(EXPECT))
@@ -110,7 +116,7 @@ def test_tests_failed_points_at_the_config_and_reports_the_exit_status(tmp_path)
 
 def test_blank_test_command_is_its_own_rule_not_tests_failed(tmp_path):
     d = copy_fixture("clean", tmp_path)
-    open(f"{d}/.hamilton/config", "w").write("test_command=\ntest_paths=tests\n")
+    open(f"{d}/.hamilton/config", "w").write("test_command=\npaths.http=tests\npaths.unit=tests\n")
     proc = run_check(d, "--json")
     import json
     payload = json.loads(proc.stdout)
@@ -121,7 +127,7 @@ def test_blank_test_command_is_its_own_rule_not_tests_failed(tmp_path):
 
 def test_missing_test_command_key_is_no_test_command(tmp_path):
     d = copy_fixture("clean", tmp_path)
-    open(f"{d}/.hamilton/config", "w").write("test_paths=tests\n")
+    open(f"{d}/.hamilton/config", "w").write("paths.http=tests\npaths.unit=tests\n")
     proc = run_check(d, "--json")
     import json
     payload = json.loads(proc.stdout)
@@ -138,8 +144,8 @@ def test_uncovered_names_the_uncovered_ac(tmp_path):
     assert f["req"] == "R-0001" and f["ac"] == "AC2"
 
 
-def test_tag_outside_test_paths_does_not_count(tmp_path):
-    # the uncovered fixture tags AC2 in notes/coverage.txt, which is not a test path
+def test_tag_outside_method_paths_does_not_count(tmp_path):
+    # the uncovered fixture tags AC2 in notes/coverage.txt, which no method's paths hold
     _, payload = run_json("uncovered", tmp_path)
     assert {(f["req"], f["ac"]) for f in payload["findings"]} == {("R-0001", "AC2")}
 
@@ -205,6 +211,20 @@ def test_cyclic_parent_shows_the_loop(tmp_path):
     f = payload["findings"][0]
     assert f["rule"] == "cyclic-parent"
     assert "R-0001 -> R-0002 -> R-0001" in f["message"]
+
+
+def test_retired_interface_field_is_recognised_and_ignored(tmp_path):
+    """A pre-D-019 `Interface:` line must not make an otherwise clean spec
+    fail, and raises no finding or warning."""
+    d = copy_fixture("clean", tmp_path)
+    body = open(f"{d}/spec/requirements.md").read().replace(
+        "Actor: A-0001\n", "Actor: A-0001\nInterface: HTTP bearer token.\n")
+    open(f"{d}/spec/requirements.md", "w").write(body)
+    import json
+    proc = run_check(d, "--json")
+    payload = json.loads(proc.stdout)
+    assert proc.returncode == 0
+    assert payload["findings"] == [] and payload["warnings"] == []
 
 
 def test_retired_component_field_is_recognised_and_ignored(tmp_path):
@@ -309,3 +329,112 @@ def test_zero_requirements_fails(tmp_path):
     assert payload["requirements"] == 0
     assert {f["rule"] for f in payload["findings"]} == {"malformed"}
     assert "no requirements" in payload["findings"][0]["message"].lower()
+
+
+# -- verification methods (D-019) ------------------------------------- #
+
+def _spec(d, criteria, methods="- **http** — requests to the running service.\n"
+                                "- **unit** — one module in isolation.\n"):
+    open(f"{d}/spec/requirements.md", "w").write(
+        "# Requirements\n\n## Verification methods\n" + methods +
+        "\n## R-0001\nActor: A-0001\nStatement: a rule.\nCriteria:\n" + criteria)
+
+
+def _json(d):
+    import json
+    proc = run_check(d, "--json")
+    return proc.returncode, json.loads(proc.stdout)
+
+
+def test_wrong_method_names_where_the_tag_is_and_where_it_must_be(tmp_path):
+    _, payload = run_json("wrong-method", tmp_path)
+    f = payload["findings"][0]
+    assert (f["req"], f["ac"], f["methods"]) == ("R-0001", "AC2", ["browser"])
+    assert "tests/covers.js:2" in f["message"]
+    assert "paths.browser (tests/browser)" in f["message"]
+
+
+def test_a_tag_under_the_method_paths_satisfies_it(tmp_path):
+    d = copy_fixture("wrong-method", tmp_path)
+    import os
+    os.makedirs(f"{d}/tests/browser")
+    open(f"{d}/tests/browser/wizard.js", "w").write("// @covers R-0001/AC2\n")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+
+
+def test_no_method_paths_is_reported_once_per_method(tmp_path):
+    d = copy_fixture("no-method-paths", tmp_path)
+    body = open(f"{d}/spec/requirements.md").read().replace(
+        "-> 401 and no user data in the response body [http]",
+        "-> 401 and no user data in the response body [browser]")
+    open(f"{d}/spec/requirements.md", "w").write(body)
+    _, payload = _json(d)
+    assert [f["rule"] for f in payload["findings"]] == ["no-method-paths"]
+    assert payload["findings"][0]["file"] == "spec/requirements.md"
+
+
+def test_multi_method_ac_needs_a_tag_under_each_method(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    import os
+    open(f"{d}/.hamilton/config", "w").write(
+        "test_command=true\npaths.http=tests/http\npaths.unit=tests/unit\n")
+    _spec(d, "- AC1: a -> b [unit, http]\n")
+    os.remove(f"{d}/tests/covers.js")
+    os.makedirs(f"{d}/tests/unit")
+    open(f"{d}/tests/unit/a.js", "w").write("// @covers R-0001/AC1\n")
+    _, payload = _json(d)
+    f = payload["findings"]
+    assert [x["rule"] for x in f] == ["uncovered"]
+    assert f[0]["methods"] == ["unit", "http"] and "has no test for http" in f[0]["message"]
+    os.makedirs(f"{d}/tests/http")
+    open(f"{d}/tests/http/a.js", "w").write("// @covers R-0001/AC1\n")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+
+
+def test_manual_needs_no_tag_and_is_listed(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    _spec(d, "- AC1: a -> b [http]\n- AC2: looks calm -> approved [manual]\n")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+    assert payload["manual"] == ["R-0001/AC2"]
+    human = run_check(d)
+    assert "1 criterion verified manually, not by the gate" in human.stderr
+
+
+def test_manual_is_reserved_and_needs_no_definition(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    _spec(d, "- AC1: a -> b [http]\n- AC2: c -> d [manual]\n",
+          methods="- **http** — requests to the running service.\n")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+
+
+def test_no_manual_criteria_gives_an_empty_list(tmp_path):
+    _, payload = run_json("clean", tmp_path)
+    assert payload["manual"] == []
+
+
+def test_changing_the_method_makes_the_ac_stale(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    assert run_check(d).returncode == 0                 # records the hashes
+    body = open(f"{d}/spec/requirements.md").read().replace(
+        "-> accepted [http]", "-> accepted [unit]")
+    open(f"{d}/spec/requirements.md", "w").write(body)
+    _, payload = _json(d)
+    assert [(f["rule"], f["ac"]) for f in payload["findings"]] == [("stale", "AC2")]
+
+
+def test_methods_section_after_a_requirement_is_malformed(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    open(f"{d}/spec/requirements.md", "a").write(
+        "\n## Verification methods\n- **unit** — one module.\n")
+    _, payload = _json(d)
+    assert any(f["rule"] == "malformed" and "Verification methods" in f["message"]
+               for f in payload["findings"])
+
+
+def test_findings_on_a_criterion_carry_its_methods(tmp_path):
+    _, payload = run_json("uncovered", tmp_path)
+    assert payload["findings"][0]["methods"] == ["http"]

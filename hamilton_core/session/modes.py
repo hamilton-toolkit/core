@@ -53,8 +53,7 @@ _SPEC_STEPS: tuple[Step, ...] = (
     Step("Decompose a requirement further",
          "The engineer wants to decompose an existing requirement into "
          "children. Render `hamilton tree`, ask which requirement to take, "
-         "then run the review protocol for the new children and for the "
-         "parent's `Interface:` line."),
+         "then run the review protocol for the new children."),
     Step("Check the tree adds up",
          "Render `hamilton tree` and read it upward: for each parent, ask "
          "whether its children add up to it. Report any gap you find, then "

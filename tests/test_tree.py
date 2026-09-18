@@ -1,7 +1,7 @@
 """`hamilton tree` -- the one requirement tree (D-014).
 
 `model` fixture: root R-0100 with children R-0001 and R-0007; R-0004 a child of
-R-0001. R-0100 and R-0001 are interior nodes and carry an `Interface:`.
+R-0001.
 Coverage rolls the requirements up to covered / uncovered / stale.
 """
 
@@ -40,22 +40,10 @@ def test_rows_show_the_one_line_statement(tmp_path):
     assert "Customer creation rejects an invalid name." in out
 
 
-def test_interior_node_marker_reflects_the_interface(tmp_path):
-    """`i` = interior with an Interface:, `!` = interior still missing one."""
-    d = copy_fixture("model", tmp_path)
-    rows = {l.split("(")[1].split(")")[0]: l
-            for l in run_tree(d).stdout.splitlines() if "(R-" in l}
-    assert " i (R-0100" in rows["R-0100"]
-    assert " i (R-0001" in rows["R-0001"]
-    assert " i (" not in rows["R-0004"] and " ! (" not in rows["R-0004"]
-    # drop R-0001's Interface -> its marker flips to `!`
-    path = os.path.join(d, "spec", "requirements.md")
-    body = open(path).read().replace(
-        "Interface: POST /customers taking a JSON payload, returning 201 and an id.\n", "")
-    open(path, "w").write(body)
-    rows = {l.split("(")[1].split(")")[0]: l
-            for l in run_tree(d).stdout.splitlines() if "(R-" in l}
-    assert " ! (R-0001" in rows["R-0001"]
+def test_rows_carry_no_interface_marker_or_legend(tmp_path):
+    out = tree("model", tmp_path).stdout
+    assert "Interface" not in out
+    assert all(l.split()[1].startswith("(R-") for l in out.splitlines() if l.strip())
 
 
 def test_coverage_status_marked_per_requirement(tmp_path):
@@ -81,9 +69,7 @@ def test_json_rows(tmp_path):
     assert by_id["R-0004"]["parent"] == "R-0001"
     assert by_id["R-0100"]["path"] == "1" and by_id["R-0100"]["parent"] is None
     assert by_id["R-0100"]["actor"] == "A-0001"
-    assert by_id["R-0100"]["boundary"] is True
-    assert by_id["R-0001"]["interface"].startswith("POST /customers")
-    assert by_id["R-0004"]["boundary"] is False
+    assert "interface" not in by_id["R-0001"] and "boundary" not in by_id["R-0001"]
     assert by_id["R-0007"]["status"] == "stale"
     assert by_id["R-0001"]["criteria"] == {"AC1": "covered"}
     assert by_id["R-0004"]["label"].startswith('R-0004 "')

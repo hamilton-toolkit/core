@@ -1,20 +1,23 @@
 ---
 name: hamilton
-description: Use in a repository scaffolded by `hamilton init`. Covers the spec-phase review protocol for drafting requirement changes, implementing code against a ratified requirement, propagating a spec change into the code, getting `hamilton check` back to green, deriving a first spec from an existing codebase (`hamilton reverse`), and adopting an existing test suite against that derived spec. The model is one requirement tree; its interior nodes are the architecture.
+description: Use in a repository scaffolded by `hamilton init`. Covers the spec-phase review protocol for drafting requirement changes, implementing code against a ratified requirement, propagating a spec change into the code, getting `hamilton check` back to green, deriving a first spec from an existing codebase (`hamilton reverse`), and adopting an existing test suite against that derived spec. The model is one requirement tree; every acceptance criterion names how it is verified.
 ---
 
 # Hamilton workflows
 
-`spec/requirements.md` is the whole model — one `Parent:` tree, whose interior
-nodes are the architecture. `spec/actors.md` is a flat supporting list.
+`spec/requirements.md` is the whole model — one `Parent:` tree of
+requirements and their acceptance criteria. It opens with a `## Verification
+methods` section, and every criterion ends in a marker naming one of those
+methods, e.g. `[browser]`. `spec/actors.md` is a flat supporting list.
 `spec/` is writable only in `spec` phase; code and tests only in `build` phase.
 `hamilton check` runs the test suite (`test_command` in `.hamilton/config`),
-checks that every acceptance criterion has a `@covers`-tagged test under
-`test_paths`, and flags any criterion whose **AC text** was reworded since the
-last green run — it hashes AC text only, so a changed title or statement
-produces no finding. Its findings carry `file:line` and a rule — treat them as
-the work list. It also prints advisory **warnings** (`long-statement`,
-`long-description`, `no-interface`) that never fail a run but flag spec prose
+checks that every acceptance criterion has a `@covers`-tagged test under the
+paths of its method (`paths.<method>` in `.hamilton/config`), and flags any
+criterion whose **AC text** — marker included — changed since the last green
+run. It hashes AC text only, so a changed title or statement produces no
+finding. Its findings carry `file:line` and a rule — treat them as the work
+list. It also prints advisory **warnings** (`long-statement`,
+`long-description`, `root-unit-only`) that never fail a run but flag spec prose
 that needs attention — see **How to write a requirement**.
 
 ## Which workflow?
@@ -125,6 +128,12 @@ specification is top-down). Then enter **Phase 1** of the review protocol with
 that as the initial spec. Do not re-ask whether this is an initial or an
 extending change — the vision step already settled it.
 
+**Verification methods before the first requirement.** On a new project, once
+the actors are ratified and before you propose the first requirement, propose
+the `## Verification methods` section (see **How to write a requirement**) in
+one review turn: each method, what it observes, what it stubs. Write it on
+approval. Every AC you propose afterwards names one of these methods.
+
 ### How to show a requirement
 
 These rules apply every time you name or display a requirement — in the plan,
@@ -136,9 +145,8 @@ in review, in the summary, anywhere. Not just in review.
    - `hamilton show <ID>` — one entity, `R-nnnn` or `A-nnnn`: its fields, its
      coverage, and what refers to it (a requirement's children; an actor's
      requirements).
-   - `hamilton tree` — the requirement outline with computed dotted paths, a
-     coverage mark per requirement, and a marker on each interior node showing
-     whether it carries an `Interface:` yet.
+   - `hamilton tree` — the requirement outline with computed dotted paths and
+     a coverage mark per requirement.
 2. **Show the path, not the parent.** Walk the `Parent:` chain to the root and
    render it by title:
    `Authentication › Sessions › Reject expired tokens`.
@@ -158,10 +166,8 @@ in review, in the summary, anywhere. Not just in review.
 4. **Statement and ACs together, always.** The statement is what the
    requirement means; the ACs are what `hamilton check` enforces. Show both for
    every item. Neither is skippable.
-5. **For an interior node, show its `Interface:`.** A requirement with children
-   is a subsystem boundary; its `Interface:` line is the contract that will be
-   integration-tested. Show it with the statement, and for an edit show
-   *before* and *after*.
+5. **Every AC with its method.** Show the marker as part of the AC. Justify the
+   method in one line only when it is not obvious.
 
 ### How to write a requirement
 
@@ -172,16 +178,6 @@ decomposing any of them. A root requirement has no `Parent:` and names the
 another requirement. `hamilton check` fails a root with no `Actor:`
 (`orphan-requirement`) and a `Parent` or `Actor` that names nothing
 (`dangling-ref`).
-
-**The tree is both the problem and the solution structure.** Leaf requirements
-are behaviour to implement and test directly. A requirement with children is a
-subsystem: decomposing it *is* the architectural decision. Give every interior
-node an **`Interface:`** line — one sentence naming what crosses the boundary
-that requirement owns (the data, the calls, the protocol). That line is the
-integration-test surface. `hamilton check` emits a
-`no-interface` *warning* (advisory, never a failure) for an interior node with
-no `Interface:` yet — expected while you are still decomposing, a debt to
-close once the boundary is settled.
 
 **Completeness review.** After the root layer is ratified, run `hamilton tree`
 and read it **upward**: for each parent, ask *do these children add up to
@@ -195,18 +191,46 @@ where the gate can act on it. `hamilton check` emits a `long-statement`
 *warning* (advisory, never a failure) for any Statement over 20 words; treat it
 as a split you owe the engineer, not as noise.
 
-**INTERFACE — one sentence, on every interior node.** Name what crosses the
-boundary, not how the subsystem works inside. Same "and" test as a Statement:
-if it needs an "and" listing several unrelated things, the decomposition
-underneath it is probably wrong.
+**METHOD — every AC names how it is verified.** The method is spec: it says
+what a test must observe and what it may stub, and the engineer ratifies it with
+the AC. The tool that runs it (Playwright, pytest, ...) is not part of it — that
+stays a build-phase choice. Methods are defined once, in `## Verification
+methods` at the top of `spec/requirements.md`: one bullet `- **name** — what is
+real and what is stubbed`, e.g.
+
+```
+## Verification methods
+- **browser** — the running site in a real browser at 375px and 1280px; real backend; external services stubbed.
+- **http** — requests to the running backend; external services stubbed and the calls they received asserted.
+- **unit** — one module in isolation, no I/O.
+```
+
+Propose a method for every AC; the engineer refines it. Choose by what the AC
+observes, never by what is cheapest to test:
+
+- an outcome the actor observes -> through the actor's channel (e.g. `browser`
+  for a visitor of a website, `http` for an API client);
+- a calculation or rule without I/O -> `unit`;
+- data crossing to an external system -> `http`, with the stub's received calls
+  asserted;
+- a subjective quality (looks, feel) -> first make it checkable, e.g. a
+  screenshot compared against an approved reference kept in `spec/`; `manual`
+  only as a last resort. `manual` is reserved: it needs no definition and no
+  test, and `hamilton check` lists it as not machine-verified.
+- **every root needs at least one AC with an actor-facing method.** A root
+  whose ACs are all `unit` proves the parts, never the goal — `hamilton check`
+  warns `root-unit-only`. If no actor-facing method fits, ask the engineer.
+- Two methods on one AC (`[unit, http]`) are allowed, and each then needs its
+  own test. It is rare: it usually means the AC is two ACs — prefer splitting.
 
 **DESCRIPTION (actors) — one sentence.** The external role and what it needs
 from the system. Same "and" test as a Statement. A
 Description that runs to a second sentence gets a `long-description` warning.
 
 **Shared field rules go in a `## Domain vocabulary` section**, not in
-statements. Put it at the top of `spec/requirements.md`, above the first
-`## R-nnnn` — everything there is prose that `hamilton check` ignores. Define a
+statements. Put it at the top of `spec/requirements.md`, next to `## Verification
+methods` and above the first `## R-nnnn` — `hamilton check` reads only the
+methods section there and ignores the rest as prose. Define a
 format, an enum, or a validation rule once, and reference it by name from the
 ACs that need it. Never restate a shared rule inside a Statement.
 
@@ -240,23 +264,23 @@ down into ACs:
 ## R-0050 Import a customer CSV
 Statement: An uploaded customer CSV is imported into the account store.
 Criteria:
-- AC1: file with up to 10,000 rows -> accepted for processing
-- AC2: file with more than 10,000 rows -> 413, nothing stored
-- AC3: every row valid against the account schema -> all rows stored, stored count returned
+- AC1: file with up to 10,000 rows -> accepted for processing [http]
+- AC2: file with more than 10,000 rows -> 413, nothing stored [http]
+- AC3: every row valid against the account schema -> all rows stored, stored count returned [http]
 
 ## R-0051 Reject a CSV with any malformed row
 Parent: R-0050
 Statement: A customer CSV with any malformed row is rejected whole.
 Criteria:
-- AC1: one row fails the account schema -> 422, zero rows stored
-- AC2: the rejection names the first failing row number and column
+- AC1: one row fails the account schema -> 422, zero rows stored [http]
+- AC2: the rejection names the first failing row number and column [unit]
 
 ## R-0052 Notify the uploader when an import finishes
 Parent: R-0050
 Statement: The uploader is emailed a summary when an import finishes.
 Criteria:
-- AC1: import finishes -> summary email to the uploader within five minutes
-- AC2: the email states rows accepted and rows rejected
+- AC1: import finishes -> summary email to the uploader within five minutes [http]
+- AC2: the email states rows accepted and rows rejected [http]
 ```
 
 Nothing was lost. "10,000 rows", "reject the whole file", "five minutes" are
@@ -268,8 +292,8 @@ Think first, then present. **Never propose changes as you generate them.**
 
 **Phase 1 — plan silently.** Work out the complete set of changes the request
 implies: new requirements, edited requirements, edited ACs, removed
-requirements, new or changed `Interface:` lines on interior nodes, moved
-subtrees. Apply **How to write a
+requirements, new or changed methods (on an AC or in `## Verification
+methods`), moved subtrees. Apply **How to write a
 requirement** as you go — a behaviour that needs an "and" is two requirements,
 count it as two. Write nothing yet.
 
@@ -296,10 +320,12 @@ This lets the engineer see the shape and the size before spending attention.
 
 - **where it lands** — the tree fragment (rule 3), titles not ids
 - **statement** — the full text; for an edit, *before* and *after*
-- **acceptance criteria** — all of them; for an edit, *before* and *after*
+- **acceptance criteria** — all of them, each with its method; for an edit,
+  *before* and *after*
 - **CONSEQUENCE** — what this makes true elsewhere: which ACs become
-  `uncovered`, which passing tests go `stale`, which interior node now needs an
-  `Interface:` because it just gained a child. Name them specifically. State a
+  `uncovered`, which passing tests go `stale` — changing an AC's method is a
+  consequence just like rewording it, and its old test no longer counts. Name
+  them specifically. State a
   shared dependency once, on the first item that has it — do not repeat it on
   every dependent item.
 - **ASSUMPTIONS** — only the ones you made for *this* item that the engineer
@@ -307,7 +333,7 @@ This lets the engineer see the shape and the size before spending attention.
   for several items at once. If an assumption exists only because of the open
   question below, put it in the question, not both.
 - **one question** — only if a real decision is still open: an input boundary
-  the ACs do not settle, or a decomposition / interface choice you had to guess.
+  the ACs do not settle, or a decomposition or method choice you had to guess.
   Ask about that specific case, never "is this ok?" — e.g. *"AC2 says
   whitespace runs count as one separator; what should `initials('  ada  ')`
   return?"* If the item settles what it needs to, ask nothing.
@@ -317,7 +343,7 @@ criteria as they stand, and a CONSEQUENCE naming:
 
 - its children — each needs a new parent or is removed too; if the request
   does not settle which, that is the one question
-- any requirement whose statement, ACs or `Interface:` refers to it
+- any requirement whose statement or ACs refer to it
 - the tagged tests for its ACs, which become `orphan-tag` in the next build
 
 A removed requirement's id is **never reused**: a new requirement always takes
@@ -390,7 +416,9 @@ Read, and write nothing yet:
    design rationale you would otherwise have to reconstruct or ask about.
 
 Produce a **module map**: each subsystem, a one-line purpose, and a one-line
-guess at what crosses its boundary (its future `Interface:`).
+guess at what crosses its boundary. Note too how the existing tests observe the
+system (unit, HTTP, browser, ...) — the raw material for the verification
+methods.
 
 ### Phase B — confirm the frame (interview)
 
@@ -399,7 +427,9 @@ Before proposing a single requirement, show the engineer:
 - what you think the system is **for**, and **who** uses it;
 - the **actor list** you would write (`## A-nnnn`, name, one-sentence
   description);
-- the **module map** with your per-module purpose.
+- the **module map** with your per-module purpose;
+- the **`## Verification methods`** you would write — what each observes and
+  stubs.
 
 Ask them to correct it. A wrong mental model is cheapest to fix here, before any
 requirement is built on it.
@@ -419,24 +449,26 @@ Run the **Specify review protocol** (Phases 1–4, one item at a time, wait for
 approval, write on approval) and every rule in **How to show a requirement** and
 **How to write a requirement**. Two brownfield specifics:
 
-1. **Roots first, from the entry points.** Propose and ratify the whole root
-   layer of actor-level goals before decomposing any of it (top-down, as
+1. **Methods, then roots.** Write the ratified `## Verification methods`
+   section first. Then propose and ratify the whole root layer of actor-level
+   goals from the entry points before decomposing any of it (top-down, as
    always).
 2. **Then one module at a time**, ratified before you move to the next. The
    ~6-requirements cap in Phase 2 applies **per module** — if a module needs
    more than that, propose a coarser cut first. For each module:
-   - Propose the **interior requirement** for the boundary and its
-     **`Interface:`** line — what crosses it, in intent and prose. The module's
-     public surface is a hint; lift it to intent, do not paste the signature.
+   - Propose the **interior requirement** for the module — what it is for, in
+     intent and prose. The module's public surface is a hint; lift it to
+     intent, do not paste the signature.
    - Decompose into **leaf requirements** — `Statement` + ACs — that capture the
      *observable, important* behaviour: the "if this changed silently it would
-     be a bug" altitude. Not every branch, not every message string.
+     be a bug" altitude. Not every branch, not every message string. Propose a
+     method for each AC by what it observes (**How to write a requirement**),
+     not by where the existing test happens to sit.
    - For each notable **design decision** you found — a choice of algorithm,
      protocol, wire or file format, ordering guarantee, a hard limit, an
      error-handling stance — say in the CONSEQUENCE / ASSUMPTIONS lines which
      bucket it is in:
-     - **load-bearing intent** — record it, as an AC or in the `Interface:`
-       line;
+     - **load-bearing intent** — record it as an AC;
      - **implementation choice** — leave it unspecified; the next agent may
        revisit it. Name it under ASSUMPTIONS so the engineer can pull it back
        into the spec if they disagree.
@@ -474,19 +506,22 @@ test suite**.
 
 ## Implement
 
-1. Read the ratified requirement in `spec/requirements.md`, and the
-   `Interface:` line on its nearest interior ancestor — that is the contract
-   your code sits behind. Implement against exactly those. Code that no AC asks
-   for is deleted, not kept.
+1. Read the ratified requirement in `spec/requirements.md`, its ancestors, and
+   the definitions of its ACs' methods in `## Verification methods`. Implement
+   against exactly those. Code that no AC asks for is deleted, not kept.
 2. Author tests — see **Test authoring**. Each test carries a comment
-   `@covers R-nnnn/ACn` naming the one AC it exercises, in a file under a
-   directory listed in `test_paths`.
-3. Run `hamilton check`. Resolve every finding. Exit 0 is the exit criterion.
-   If it reports `no-test-command`, the framework and test layout are yours to
-   choose: set `test_command` and `test_paths` in `.hamilton/config` (the only
-   file under `.hamilton/` you may edit in build phase, and only those two
-   keys) and re-run.
-4. If the ratified requirement or interface proves wrong -> **Hard stops**.
+   `@covers R-nnnn/ACn` naming the one AC it exercises, and exercises it by that
+   AC's method, in a file under that method's `paths.<method>`.
+3. Run `hamilton check`. Resolve every finding. If it reports
+   `no-test-command` or `no-method-paths`, the framework and test layout are
+   yours to choose: set `test_command` and the `paths.<method>` keys in
+   `.hamilton/config` (the only file under `.hamilton/` you may edit in build
+   phase, and only those keys) and re-run.
+4. **Run the product.** For every AC with an actor-facing method, start the
+   system and see the outcome the way the actor would. A green `hamilton check`
+   alone is not done: it proves a tagged test passed, not that the product
+   works.
+5. If the ratified requirement or a method proves wrong -> **Hard stops**.
 
 ## Propagate a change
 
@@ -496,11 +531,17 @@ back in line — and only that.
 1. `git diff spec/` — read what changed and why.
 2. `hamilton check`.
 3. Rework exactly what it names, nothing else:
-   - `stale` — an AC was reworded: re-check the implementation and the
-     `@covers` test against the new wording. A clean `hamilton check` records
-     the new hash.
-   - `uncovered` — an AC now has no tagged test under `test_paths`: add or
-     retarget one.
+   - `stale` — an AC was reworded or its method changed: re-check the
+     implementation and the `@covers` test against the new wording. A new
+     method needs a test by that method. A clean `hamilton check` records the
+     new hash.
+   - `uncovered` — an AC's method has no tagged test under its paths: add one
+     that exercises the AC by that method.
+   - `wrong-method` — the AC is tagged, but under another method's paths:
+     write a test by the AC's method under its paths. Moving the tag is not
+     enough.
+   - `no-method-paths` — a method has no `paths.<method>` yet: choose where
+     its tests live and set the key.
    - `orphan-tag` — a tag points at an AC or requirement that no longer
      exists. If the requirement was removed, delete the test and any code only
      it needed; retarget the tag only if the behaviour moved to another
@@ -541,19 +582,21 @@ failing on logic, that is a **Verify** problem and comes first.
 
 ### Steps
 
-1. **Set `test_command` / `test_paths`** in `.hamilton/config` if they are still
-   blank — discover the project's existing runner and test layout. These are the
-   two keys you may edit in build phase. Run the suite once as-is and confirm it
-   is green before you start.
+1. **Set `test_command` and the `paths.<method>` keys** in `.hamilton/config`
+   if they are still unset — discover the project's existing runner and test
+   layout, and map each directory to the method its tests actually use. These
+   are the keys you may edit in build phase. Run the suite once as-is and
+   confirm it is green before you start.
 2. **For each `uncovered` AC**, in tree order:
    - If an existing test **genuinely asserts that AC's observable condition ->
-     outcome** — not merely exercises the same area of code — add the
+     outcome by the AC's method** — not merely exercises the same area of code,
+     and not a unit test standing in for a `browser` AC — add the
      `@covers R-nnnn/ACn` comment to it. One AC per tag. Do not attach a tag to
      a test that asserts something narrower or different just to clear the
      finding.
    - Otherwise **write a new AC-level test** via the **fresh-subagent rule**
-     (see *Test authoring* — requirement text plus the public signature, not the
-     implementation body). It sits **alongside** the existing unit tests. Do not
+     (see *Test authoring*) under that method's paths. It sits **alongside**
+     the existing tests. Do not
      delete or rewrite them: they still run and still guard against regressions,
      they are simply not the AC binding.
    - Keep the count bounded — a few tests per requirement.
@@ -572,22 +615,28 @@ failing on logic, that is a **Verify** problem and comes first.
 ## Test authoring
 
 - Tests are written by a **fresh subagent** given only the requirement text
-  (`Statement` + `Criteria`) and the unit's public signature — **not** the
-  implementation body. An agent that just wrote the code writes tests that
-  encode its own bugs.
+  (`Statement` + `Criteria`), the definition of the AC's method, and:
+  - for `unit`, the unit's public signature;
+  - for any other method, a running instance of the system and how to reach
+    it — **not** the source.
+
+  Never the implementation body. An agent that just wrote the code writes tests
+  that encode its own bugs.
 - This is an instruction, not an enforced boundary: the subagent shares the
   repo. `hamilton check` confirms only that a tagged test exists and passes —
   it does not judge whether the test is any good. That judgement is the whole
   reason for the fresh-subagent rule.
-- Every test carries its `@covers R-nnnn/ACn` tag, under `test_paths`.
+- Every test carries its `@covers R-nnnn/ACn` tag, exercises the AC by its
+  method, and sits under that method's `paths.<method>`. A `manual` AC gets no
+  test.
 - Keep the count bounded — a few tests per requirement, prioritised, not
   assertion padding.
 
 ## Hard stops
 
 Concept.md 7.4. During **Implement** or **Adopt an existing test suite**, if a
-ratified requirement or interface proves wrong — including an AC that no
-feasible test can bind:
+ratified requirement or method proves wrong — including an AC that no
+feasible test can bind by its method:
 
 - Stop. Report the deviation to the engineer, specifically.
 - Do **not** edit `spec/` — you are in `build` phase and the guard hook blocks
@@ -597,5 +646,5 @@ feasible test can bind:
   the model, then a fresh `hamilton build`. You may continue on other
   already-ratified requirements in the meantime.
 
-Needing to change an acceptance criterion is the same hard stop: ACs are
-immutable during `build`.
+Needing to change an acceptance criterion — its method included — is the same
+hard stop: ACs are immutable during `build`.

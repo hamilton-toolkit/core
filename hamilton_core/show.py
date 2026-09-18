@@ -42,17 +42,16 @@ def _view_requirement(m: M.Model, rid: str):
     path = _req_path(rid, m.reqs)
     crit = []
     for acid, ac in sorted(r["acs"].items()):
-        st = m.ac_status(rid, acid, ac["text"])
+        st = m.ac_status(rid, acid)
         tags = [{"file": f, "line": ln} for f, ln in m.tags.get((rid, acid), [])]
-        crit.append({"id": acid, "text": ac["text"], "status": st, "tags": tags})
+        crit.append({"id": acid, "text": ac["text"], "methods": ac["methods"],
+                     "status": st, "tags": tags})
     children = [{"id": c, "title": M.req_title(c, m.reqs)}
                 for c in m.child_requirements(rid)]
-    boundary = bool(children)
     data = {
         "id": rid, "type": "requirement", "title": r["title"],
         "path": path, "statement": r["statement"],
-        "actor": r.get("actor"), "interface": r["interface"],
-        "boundary": boundary,
+        "actor": r.get("actor"),
         "criteria": crit, "children": children,
     }
 
@@ -66,17 +65,15 @@ def _view_requirement(m: M.Model, rid: str):
         else:
             lines.append("  actor:      (none — a root requirement must name one)")
     lines.append(f"  statement:  {r['statement'] or '(none — malformed)'}")
-    if boundary:
-        lines.append(f"  interface:  {r['interface'] or '(none stated yet)'}")
     lines.append("  criteria:")
     if not crit:
-        lines.append("    (none — malformed)" if not boundary else "    (none)")
+        lines.append("    (none — malformed)")
     for c in crit:
         if c["status"] == "unknown":
             tail = "[coverage unknown — no .hamilton/config]"
         else:
             where = ("; ".join(f"{t['file']}:{t['line']}" for t in c["tags"])
-                     or "no @covers tag in any test path")
+                     or "no @covers tag in any method's paths")
             tail = f"[{c['status']}]  {where}"
         lines.append(f"    {c['id']}  {c['text']}")
         lines.append(f"         {tail}")

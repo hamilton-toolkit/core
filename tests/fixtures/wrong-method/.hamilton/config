@@ -1,0 +1,3 @@
+test_command=true
+paths.http=tests
+paths.browser=tests/browser

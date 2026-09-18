@@ -1,5 +1,5 @@
 """`hamilton check` advisory warnings: `long-statement`, `long-description`
-and `no-interface`.
+and `root-unit-only`.
 
 Warnings never change the exit code and never turn an existing project red --
 they only flag spec prose that has drifted from the authoring rules. The
@@ -83,29 +83,36 @@ def test_single_sentence_description_with_and_does_not_warn(tmp_path):
     assert "long-description" not in {w["rule"] for w in payload["warnings"]}
 
 
-def test_no_interface_fires_for_an_interior_node_without_one(tmp_path):
-    """`model` R-0001 has children and an `Interface:`; drop it and the
-    subsystem boundary is flagged -- as a warning, not a failure."""
+def test_root_unit_only_fires_for_a_root_verified_only_by_unit(tmp_path):
+    """`model` R-0100 is a root with one `http` criterion; make it `unit` and
+    nothing verifies the actor's goal end to end -- a warning, not a failure."""
     d = copy_fixture("model", tmp_path)
     path = os.path.join(d, "spec", "requirements.md")
     body = open(path).read().replace(
-        "Interface: POST /customers taking a JSON payload, returning 201 and an id.\n",
-        "")
+        "the home page renders [http]", "the home page renders [unit]")
     open(path, "w").write(body)
     proc = run_check(d, "--json")
     payload = json.loads(proc.stdout)
-    assert proc.returncode in (0, 1)          # the drop itself adds no finding
-    w = [w for w in payload["warnings"] if w["rule"] == "no-interface"]
-    assert len(w) == 1 and "R-0001" in w[0]["message"]
-    assert "no-interface" not in {f["rule"] for f in payload["findings"]}
+    w = [w for w in payload["warnings"] if w["rule"] == "root-unit-only"]
+    assert len(w) == 1 and "R-0100" in w[0]["message"]
+    assert "root-unit-only" not in {f["rule"] for f in payload["findings"]}
 
 
-def test_a_leaf_requirement_never_gets_no_interface(tmp_path):
+def test_root_unit_only_spares_a_root_with_one_actor_facing_criterion(tmp_path):
+    d = copy_fixture("model", tmp_path)
+    path = os.path.join(d, "spec", "requirements.md")
+    # a unit AC2 on the root, which keeps its http AC1
+    body = open(path).read().replace("the home page renders [http]\n",
+                        "the home page renders [http]\n- AC2: x -> y [unit]\n")
+    open(path, "w").write(body)
+    payload = json.loads(run_check(d, "--json").stdout)
+    assert "root-unit-only" not in warnings_of(payload)
+
+
+def test_root_unit_only_never_fires_for_a_child(tmp_path):
     _, payload = run_json("model", tmp_path)
-    # R-0004 and R-0007 are leaves; neither should be flagged
-    flagged = {w["message"] for w in payload["warnings"]
-               if w["rule"] == "no-interface"}
-    assert not any("R-0004" in m or "R-0007" in m for m in flagged)
+    # R-0004 is all `unit` but has a Parent
+    assert "root-unit-only" not in warnings_of(payload)
 
 
 def test_warnings_do_not_change_a_failing_exit_code(tmp_path):
@@ -123,7 +130,7 @@ def test_warnings_are_not_findings(tmp_path):
     _, payload = run_json("warnings", tmp_path)
     for f in payload["findings"]:
         assert f["rule"] not in ("long-statement", "long-description",
-                                 "no-interface")
+                                 "root-unit-only")
 
 
 @pytest.mark.parametrize("name", ["clean", "tree", "model", "stale", "uncovered"])

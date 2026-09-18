@@ -33,6 +33,15 @@ def test_render_reports_counts_and_coverage(tmp_path):
     assert "gate last passed" in out
 
 
+def test_render_counts_manual_criteria_apart(tmp_path):
+    root = copy_fixture("tree", tmp_path)
+    path = os.path.join(root, "spec", "requirements.md")
+    body = open(path).read().replace("-> accepted [http]", "-> accepted [manual]")
+    open(path, "w").write(body)
+    out = status.render(root, "spec")
+    assert "0/4 covered" in out and "2 uncovered" in out and "1 manual" in out
+
+
 def test_render_coverage_unknown_without_config(tmp_path):
     root = copy_fixture("tree", tmp_path)
     os.remove(os.path.join(root, ".hamilton", "config"))

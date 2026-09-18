@@ -82,7 +82,7 @@ def test_upgrade_never_touches_spec_or_hamilton_state(tmp_path):
     protected = {
         "spec/requirements.md": "SENTINEL requirements\n",
         "spec/actors.md": "SENTINEL actors\n",
-        ".hamilton/config": "test_command=SENTINEL\ntest_paths=tests\n",
+        ".hamilton/config": "test_command=SENTINEL\npaths.unit=tests\n",
         ".hamilton/phase": "build",
         ".hamilton/verified": "R-0001/AC1 sha256:deadbeef\n",
     }

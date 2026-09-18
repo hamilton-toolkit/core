@@ -1,12 +1,13 @@
 # Data Model — Definition Side (PoC)
 
 Deliberately minimal; see §7 for what is intentionally absent. Reflects D-014
-— the model is one requirement tree.
+— the model is one requirement tree — and D-019 — every acceptance criterion
+names its verification method, and `Interface:` is retired.
 
 Companion to `concept.md`. Covers the **definition** side only (the left leg of
 the V). Verification-side artifacts are out of scope here. In the PoC the
-verification side is deliberately thin: `@covers R-nnnn/ACn` tags in the code,
-and `.hamilton/verified` (one hash per AC, written by `hamilton check` on a
+verification side is deliberately thin: `@covers R-nnnn/ACn` tags in
+the tests under each method's paths, and `.hamilton/verified` (one hash per AC, written by `hamilton check` on a
 passing run). The falsification ledger described in earlier drafts was removed
 — see `concept.md` §5.3.
 
@@ -18,10 +19,11 @@ passing run). The falsification ledger described in earlier drafts was removed
 |---|---|
 | **Actor** | External entity interacting with the system. Defines the system boundary. A flat supporting list — referenced, never referencing. |
 | **Requirement** | What shall be true, plus its acceptance criteria. The requirements form one `Parent` tree, which is the whole model. |
-| **Interface** | A prose line on an *interior* requirement (one with children) naming what crosses the boundary that requirement owns. Not a separate entity. |
+| **Verification method** | How an acceptance criterion is proven: what a test observes, what is real and what is stubbed. Defined once per project; named by every AC. Not an entity with an id. |
 
-There is no **Component** and no **Module** entity (D-014). The interior of the
-requirement tree is the architecture; the code is the physical model.
+There is no **Component** and no **Module** entity (D-014), and no
+**Interface** (D-019). The tree holds requirements and criteria; the
+architecture lives in the code.
 
 ---
 
@@ -53,13 +55,12 @@ is a flat list — no tree.
 | `id` | yes | `R-nnnn` | |
 | `Parent` | no | `R-nnnn` | Absent = **root requirement** — see the root rule below |
 | `Actor` | on roots | `A-nnnn` | Required on a root; meaningless elsewhere |
-| `Interface` | on interior nodes | prose | Required once the requirement has children: one sentence naming what crosses its boundary. Advisory before then. |
 | `Statement` | yes | prose | One sentence, one behaviour, under 20 words (D-006) |
-| `Criteria` | yes | list, ≥1 | `AC<n>: <observable condition> -> <expected outcome>` |
+| `Criteria` | yes | list, ≥1 | `AC<n>: <observable condition> -> <expected outcome> [<method>, ...]` — the marker names ≥1 method from §2.3 |
 
-`Component` is a **retired field** (D-014): recognised and skipped by the
-extractor so a pre-D-014 `requirements.md` still parses. It is not stored and
-not flagged.
+`Component` (D-014) and `Interface` (D-019) are **retired fields**: recognised
+and skipped by the extractor so an older `requirements.md` still parses. They
+are not stored and not flagged.
 
 **The `Parent` tree is the whole model, and it is mandatory (D-007, D-014).**
 A requirement with no `Parent` is a *root* — a system-level goal, what an actor
@@ -67,36 +68,41 @@ wants from the whole system — and **must** name the `Actor:` whose goal it is.
 Everything else names a `Parent`. Specification proceeds top-down: the root
 layer is ratified before it is decomposed.
 
-The tree is at once *problem* structure and *solution* structure:
-
-- a **leaf** requirement is behaviour to implement and test directly (unit level);
-- an **interior** requirement is a subsystem boundary — decomposing it *is* the
-  architectural decision — and carries an `Interface:` line, which is the
-  integration-test surface (concept §6.1).
-
 The gate fails `orphan-requirement` for a requirement with neither a `Parent`
 nor an `Actor`, and `dangling-ref` for a `Parent` or `Actor` that names no
-declared entity; see §5. An interior node with no `Interface:` yet is the
-advisory `no-interface` warning — expected while a subsystem is still being
-decomposed.
+declared entity; see §5.
 
-### 2.3 Interface — the line on an interior requirement
+### 2.3 Verification method — `## Verification methods`
 
-Not an entity, not an id. A single `Interface:` field on a requirement that has
-children.
+Not an entity, not an id. A `## Verification methods` section at the top of
+`spec/requirements.md`, above the first requirement, defines each method once:
 
-- **Prose, not signature.** It names *what* crosses the boundary — the data, the
-  calls, the protocol, a mandated technology — in intent. The concrete callable
-  form lives in the code and is not duplicated here.
-- **One sentence.** If it needs an "and" listing several unrelated things, the
-  decomposition beneath the node is probably wrong.
-- **Why the human owns it.** Interface errors are the dominant integration
-  failure class (concept §6.1, the Apollo/DBTF lineage). The interface line is
-  the one architectural artefact worth authoring by hand, and it belongs *on
-  the boundary requirement*, not in a parallel file.
-- **Hard-stop anchor.** A ratified interface proving wrong during build is a
-  hard stop (concept §7.4); the deviation names the requirement whose
-  `Interface:` moved.
+| Part | Syntax | Notes |
+|---|---|---|
+| name | `**name**` | lowercase, `[a-z][a-z0-9-]*`; what AC markers reference |
+| description | prose after `—` | what a test observes, what is real, what is stubbed |
+
+- **Every AC names ≥1 method** in a trailing marker, `[browser]` or
+  `[unit, http]`. More than one is rare; it usually means two ACs.
+- **The marker is part of the AC.** It is hashed with the AC text, so changing
+  a method makes the AC `stale`.
+- **`manual` is reserved.** It needs no definition and no test; `hamilton check`
+  lists it as not machine-verified.
+- **The method is spec, the tool is not.** Which framework runs a method's tests
+  and where they live is a build-phase decision: `paths.<method>` in
+  `.hamilton/config`. A `@covers` tag counts for an AC only under the paths of
+  one of its methods, and a multi-method AC needs a tag under each.
+- **Why the human owns it.** Left to the agent, the verification level becomes
+  whatever is cheapest to test: design ACs checked by comparing hex values, a
+  wizard checked by unit-testing its state module while the page wiring it up
+  was broken. The engineer ratifies each method with its AC.
+
+**D-019 — verification method per AC; `Interface:` retired.** Supersedes the
+`Interface:` part of D-014 and the rule that the verification level derives
+from tree position. The level was never enforced, so a gate could be green over
+a broken product, and `Interface:` lines in practice restated the Statement or
+the ACs. The tree is now requirements and ACs only; each AC records the method
+that proves it (concept §4.4, §5.1).
 
 ### Phase note
 
@@ -167,22 +173,25 @@ Name: End User
 Description: Uses the application through the web interface.
 ```
 
-**`spec/requirements.md`** — a root and a child
+**`spec/requirements.md`** — the methods, a root and a child
 ```markdown
+## Verification methods
+- **http** — requests to the running service; external services stubbed.
+- **unit** — one module in isolation, no I/O.
+
 ## R-0001 Requests are authenticated
 Actor: A-0001
-Interface: HTTP bearer-token header on every inbound request; reply is 200 or 401.
 Statement: Every inbound request is authenticated before it is routed.
 Criteria:
-- AC1: no token -> 401
-- AC2: valid token -> the request reaches its handler
+- AC1: no token -> 401 [http]
+- AC2: valid token -> the request reaches its handler [http]
 
 ## R-0042 Reject expired tokens
 Parent: R-0001
 Statement: The auth middleware rejects a request whose token exp claim is in the past.
 Criteria:
-- AC1: expired token -> 401, no user data in response body
-- AC2: token inside the 30s clock-skew window -> accepted
+- AC1: expired token -> 401, no user data in response body [http]
+- AC2: token inside the 30s clock-skew window -> accepted [unit]
 ```
 
 ---
@@ -212,17 +221,29 @@ Requirement tree (D-007, D-014):
 9. `Parent` and `Actor` resolve to a declared entity — failure `dangling-ref`;
    the `Parent` chain is acyclic — failure `cyclic-parent`. **[check]**
 
+Verification methods (D-019):
+10. Every AC ends in a method marker — failure `no-method`. **[check]**
+11. Every method in a marker is defined in `## Verification methods`, or is
+    `manual` — failure `unknown-method`. **[check]**
+12. Every method in use has `paths.<method>` in `.hamilton/config` — failure
+    `no-method-paths`. **[check]**
+13. An AC tagged only outside its methods' paths — failure `wrong-method`;
+    a method with no tag under its paths — failure `uncovered`. **[check]**
+14. `.hamilton/config` sets no retired `test_paths` — failure `retired-config`.
+    **[check]**
+
 Advisory (warn, do not fail):
-10. A `Statement` over 20 words — warning `long-statement`. **[check]**
-11. An `Actor` `Description` that is more than one sentence — warning
+15. A `Statement` over 20 words — warning `long-statement`. **[check]**
+16. An `Actor` `Description` that is more than one sentence — warning
     `long-description`. **[check]**
-12. An interior requirement (has children) with no `Interface:` line — warning
-    `no-interface`. **[check]**
-13. A parent's children do not add up to it — **not checkable**; absence is
+17. A root requirement whose ACs are all `unit` — warning `root-unit-only`.
+    **[check]**
+18. A parent's children do not add up to it — **not checkable**; absence is
     invisible (concept §5.5). Mitigated by reading `hamilton tree` upward.
 
 *(Gone with D-014: `component-tree`, `module-marker`, `tree-consistency`,
-`unmarked-module`, and the `malformed` "no Component" manifestations.)*
+`unmarked-module`, and the `malformed` "no Component" manifestations. Gone with
+D-019: the `no-interface` warning.)*
 
 ---
 
@@ -231,11 +252,10 @@ Advisory (warn, do not fail):
 Computed, never stored:
 
 - **Dotted path** per requirement.
-- **Outline** — the requirement tree with dotted paths, statements, a rolled-up
-  coverage mark, and a marker on each interior node showing whether it carries
-  an `Interface:` yet.
-- **Verification level** per requirement, from its tree position: root → system,
-  interior → integration, leaf → unit (concept §5.1).
+- **Outline** — the requirement tree with dotted paths, statements and a
+  rolled-up coverage mark.
+- **Coverage** per AC, method-aware: a tag counts only under the paths of one of
+  the AC's methods.
 - **Reverse links** — a requirement's children; an actor's requirements.
 
 In the PoC these are surfaced by the read-only commands `hamilton tree` (the
@@ -249,9 +269,8 @@ and writes nothing. There is no `hamilton graph`: a tree needs no tool to read.
 
 | Omitted | Why |
 |---|---|
-| Separate component model and module model | The interior of the requirement tree is the architecture; the code is the physical model (D-014). A parallel model is deferred until a system large enough to need one. |
+| Separate component model and module model | The code is the architecture and the physical model (D-014, D-019). A parallel model is deferred until a system large enough to need one. |
 | `Status` field | Its only structural job was never-reuse; the counter covers that (§3) |
-| Explicit verification level | Derivable from tree position (§6) |
 | Cross-cutting secondary links (`Also satisfies`) | Needed eventually; not needed to prove the method |
 | Rationale / priority / owner fields | Additive later without migration |
 | Rich test↔AC linkage; test-quality / falsification checking | Verification side. The PoC keeps only the minimum: `@covers` tags resolved against the requirements, and `.hamilton/verified` for staleness |

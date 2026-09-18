@@ -3,7 +3,7 @@
 
 `tree` fixture: a 3-level requirement Parent chain (R-0001 -> R-0007 -> R-0042),
 one covered-but-stale AC, one uncovered AC. `model` fixture: a fuller tree with
-an interior node that carries an `Interface:` and an actor on the root.
+`http` and `unit` criteria and an actor on the root.
 Fixtures are copied to a temp dir first (conftest) since a stray `check` may
 write verified.
 """
@@ -51,10 +51,27 @@ def test_never_prints_a_bare_requirement_id(tmp_path):
         assert out[m.end():m.end() + 2] == ' "', f"bare id near {out[m.start():m.start()+40]!r}"
 
 
-def test_interior_node_shows_its_interface(tmp_path):
-    out = show("model", tmp_path, "R-0001").stdout
-    assert "interface:" in out
-    assert "POST /customers taking a JSON payload" in out
+def test_each_criterion_shows_its_method(tmp_path):
+    out = show("model", tmp_path, "R-0004").stdout
+    assert "empty name -> 422 [unit]" in out
+    assert "name over 200 characters -> 422 [unit]" in out
+
+
+def test_criterion_without_a_marker_says_so(tmp_path):
+    d = copy_fixture("model", tmp_path)
+    path = os.path.join(d, "spec", "requirements.md")
+    body = open(path).read().replace("-> 404 [http]", "-> 404")
+    open(path, "w").write(body)
+    out = run_show(d, "R-0007").stdout
+    assert "[no method]" in out
+
+
+def test_tag_outside_the_method_paths_is_uncovered(tmp_path):
+    d = copy_fixture("model", tmp_path)
+    open(os.path.join(d, ".hamilton", "config"), "w").write(
+        "test_command=true\npaths.http=tests/http\npaths.unit=tests\n")
+    out = run_show(d, "R-0001").stdout
+    assert "[uncovered]  tests/covers.js:" in out
 
 
 def test_root_shows_its_actor(tmp_path):
@@ -137,11 +154,11 @@ def test_json_requirement_has_criteria_with_status_and_tags(tmp_path):
     assert ac1["tags"] and ac1["tags"][0]["file"] == "tests/covers.js"
 
 
-def test_json_requirement_carries_interface_and_boundary(tmp_path):
+def test_json_requirement_carries_methods_and_children(tmp_path):
     import json
     data = json.loads(show("model", tmp_path, "R-0001", "--json").stdout)
-    assert data["boundary"] is True
-    assert data["interface"].startswith("POST /customers")
+    assert "interface" not in data and "boundary" not in data
+    assert data["criteria"][0]["methods"] == ["http"]
     assert data["children"][0]["id"] == "R-0004"
 
 
