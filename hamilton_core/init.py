@@ -29,12 +29,12 @@ LAYOUT = {
 }
 
 # Framework-owned files `hamilton upgrade` brings up to date: everything init
-# writes except the project's own files (spec/, the phase file, the config) and
-# the verified ledger, which the project owns outright.
+# writes except the project's own files (spec/, the phase file, the config),
+# which the project owns outright.
 MANAGED = tuple(
     dst for dst in LAYOUT.values()
     if not dst.startswith("spec/")
-    and dst not in (".hamilton/phase", ".hamilton/config", ".hamilton/verified")
+    and dst not in (".hamilton/phase", ".hamilton/config")
 )
 SRC_FOR = {dst: src for src, dst in LAYOUT.items()}
 

@@ -2,10 +2,9 @@
 `R-nnnn` requirement, `A-nnnn` actor.
 
 `tree` fixture: a 3-level requirement Parent chain (R-0001 -> R-0007 -> R-0042),
-one covered-but-stale AC, one uncovered AC. `model` fixture: a fuller tree with
-`http` and `unit` criteria and an actor on the root.
-Fixtures are copied to a temp dir first (conftest) since a stray `check` may
-write verified.
+one tagged-but-unreviewed AC, one uncovered AC. `model` fixture: a fuller tree
+with `http` and `unit` criteria and an actor on the root.
+Fixtures are copied to a temp dir first (conftest), so a test can edit them.
 """
 
 import os
@@ -87,10 +86,19 @@ def test_leaf_shows_no_actor_or_interface_line(tmp_path):
 
 def test_criterion_coverage_status_and_tag_location(tmp_path):
     out = show("model", tmp_path, "R-0007").stdout
-    # R-0007/AC1 is tagged in tests/covers.js and its verified hash is stale
+    # R-0007/AC1 is tagged in tests/covers.js, but its suffix predates the AC
     block = out.split("AC1", 1)[1]
-    assert "[stale]" in block
-    assert "tests/covers.js:" in block
+    assert "[unreviewed]" in block
+    assert "tests/covers.js:2 (AC changed)" in block
+
+
+def test_each_tag_shows_its_review_state(tmp_path):
+    d = copy_fixture("model", tmp_path)
+    open(os.path.join(d, ".hamilton", "config"), "w").write(
+        "test_command=true\npaths.http=tests/http\npaths.unit=tests\n")
+    assert "tests/covers.js:1 (wrong method, does not count)" in run_show(d, "R-0001").stdout
+    out = show("model", tmp_path, "R-0001").stdout
+    assert "[covered]  tests/covers.js:1 (reviewed)" in out
 
 
 def test_uncovered_criterion_says_no_tag(tmp_path):
@@ -150,8 +158,9 @@ def test_json_requirement_has_criteria_with_status_and_tags(tmp_path):
     data = json.loads(p.stdout)
     assert data["type"] == "requirement" and data["id"] == "R-0007"
     ac1 = next(c for c in data["criteria"] if c["id"] == "AC1")
-    assert ac1["status"] == "stale"
-    assert ac1["tags"] and ac1["tags"][0]["file"] == "tests/covers.js"
+    assert ac1["status"] == "unreviewed"
+    assert ac1["tags"] == [{"file": "tests/covers.js", "line": 2,
+                            "review": "AC changed"}]
 
 
 def test_json_requirement_carries_methods_and_children(tmp_path):

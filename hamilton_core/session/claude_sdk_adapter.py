@@ -1,15 +1,16 @@
 """The only module in Hamilton that imports `claude_agent_sdk`.
 
 It implements `protocol.AgentAdapter` by translating the SDK's message stream
-into Hamilton's events, and nothing else. Two vendor-specific things are
-contained here on purpose:
+into Hamilton's events, and `protocol.Judge` as a one-shot session with no
+tools. Two vendor-specific things are contained here on purpose:
 
   * **Questions.** The engineer-facing question flow is an in-process MCP tool
     (`ask_engineer`) rather than the CLI's own interactive prompt, because
     Hamilton has to own the rendering to offer "re-pick before this is sent".
     The skill is told to call it.
-  * **Writes.** The phase gate runs as a `can_use_tool` callback over
-    `hamilton_core.guard.decide`. The project's `.claude/settings.json`
+  * **Writes.** The phase gate and the review-suffix rule run as a
+    `can_use_tool` callback over `hamilton_core.guard.decide` and
+    `guard.suffix_denial`. The project's `.claude/settings.json`
     PreToolUse hook also fires (project settings are loaded so the `hamilton`
     skill is available), so a write is checked twice by the same policy --
     harmless, and it keeps the hook meaningful for anything else that reads it.
@@ -20,6 +21,7 @@ Anything a future non-SDK harness would do differently belongs in this file.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 from typing import AsyncIterator
 
 from claude_agent_sdk import (
@@ -31,6 +33,7 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
     create_sdk_mcp_server,
+    query,
     tool,
 )
 
@@ -110,7 +113,8 @@ class ClaudeSdkAdapter:
         if tool_name in WRITE_TOOLS:
             target = guard.target_of(tool_input)
             if target:
-                denial = self._write_policy(target)
+                denial = (self._write_policy(target)
+                          or guard.suffix_denial(tool_name, tool_input, self._root))
                 if denial is not None:
                     self._denials.append(P.ToolDenied(target, denial))
                     return PermissionResultDeny(message=denial)
@@ -161,6 +165,35 @@ class ClaudeSdkAdapter:
         if self._client is not None:
             await self._client.disconnect()
             self._client = None
+
+
+class ClaudeSdkJudge:
+    """`protocol.Judge` over `claude_agent_sdk`: every `ask` is a fresh
+    one-turn session with no tools, no filesystem settings (so no project
+    skill, hook or MCP server) and an empty temp dir as its cwd. The prompt is
+    all it has to go on."""
+
+    def _options(self, cwd: str) -> ClaudeAgentOptions:
+        return ClaudeAgentOptions(
+            cwd=cwd,
+            tools=[],
+            allowed_tools=[],
+            setting_sources=[],
+            strict_mcp_config=True,
+            max_turns=1,
+        )
+
+    async def ask(self, prompt: str) -> str:
+        texts, error = [], None
+        with tempfile.TemporaryDirectory(prefix="hamilton-review-") as cwd:
+            async for msg in query(prompt=prompt, options=self._options(cwd)):
+                if isinstance(msg, AssistantMessage):
+                    texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
+                elif isinstance(msg, ResultMessage) and msg.is_error:
+                    error = msg.result or msg.subtype or "the reviewer session failed"
+        if error:
+            raise RuntimeError(error)
+        return "\n".join(texts)
 
 
 def _strip_sentinel(text: str) -> tuple[str, bool]:

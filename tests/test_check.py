@@ -1,6 +1,6 @@
 """`hamilton check` against every fixture: the exact rule set, exit code and
 counts. Assertions run against `--json`. Fixtures are copied to a temp dir
-first (see conftest) because a passing run writes `.hamilton/verified`.
+first (see conftest), so a test can edit them freely.
 
 The model is one requirement tree (D-014): `spec/requirements.md` plus a flat
 `spec/actors.md`. Every AC names its verification method (D-019).
@@ -10,7 +10,9 @@ import re
 
 import pytest
 
-from conftest import copy_fixture, run_check, run_fixture, run_json
+from conftest import copy_fixture, run_check, run_fixture, run_json, stamp
+
+from hamilton_core import check as C
 
 # fixture -> (exit code, {rule names}, finding count)
 EXPECT = {
@@ -18,7 +20,7 @@ EXPECT = {
     "tests-failed":       (1, {"tests-failed"},            1),
     "uncovered":          (1, {"uncovered"},               1),
     "orphan-tag":         (1, {"orphan-tag"},              1),
-    "stale":              (1, {"stale"},                   1),
+    "unreviewed":         (1, {"unreviewed"},              1),
     "malformed":          (1, {"malformed"},               4),
     "multi-violation":    (1, {"uncovered", "orphan-tag"}, 2),
     "orphan-requirement": (1, {"orphan-requirement"},      1),
@@ -34,7 +36,7 @@ ONE_RULE = [n for n in EXPECT if n not in ("clean", "multi-violation")]
 FAILING = [n for n in EXPECT if n != "clean"]
 
 RULES = {"no-test-command", "tests-failed", "uncovered", "orphan-tag",
-         "orphan-requirement", "dangling-ref", "cyclic-parent", "stale",
+         "orphan-requirement", "dangling-ref", "cyclic-parent", "unreviewed",
          "malformed", "retired-config", "no-method", "unknown-method",
          "no-method-paths", "wrong-method"}
 
@@ -158,19 +160,6 @@ def test_orphan_tag_points_at_the_source_tag_not_the_spec(tmp_path):
     assert "R-0404" in f["message"]
 
 
-def test_stale_message_shows_both_hashes(tmp_path):
-    _, payload = run_json("stale", tmp_path)
-    msg = payload["findings"][0]["message"]
-    assert payload["findings"][0]["rule"] == "stale"
-    assert msg.count("sha256:") == 2
-
-
-def test_stale_clears_after_a_rerun(tmp_path):
-    d = copy_fixture("stale", tmp_path)
-    assert run_check(d).returncode == 1                 # stale on the first run
-    assert run_check(d).returncode == 0                 # re-recorded, now clean
-
-
 def test_malformed_covers_all_four_manifestations(tmp_path):
     _, payload = run_json("malformed", tmp_path)
     joined = " ".join(f["message"] for f in payload["findings"])
@@ -199,6 +188,7 @@ def test_dangling_ref_covers_parent_and_actor(tmp_path):
         "\n## R-0003 Bad actor\nActor: A-0404\n"
         "Statement: names an actor that is not declared.\n- AC1: x -> y\n")
     open(f"{d}/tests/covers.js", "a").write("// @covers R-0003/AC1\n")
+    stamp(d)
     import json
     payload = json.loads(run_check(d, "--json").stdout)
     msgs = " ".join(f["message"] for f in payload["findings"]
@@ -346,6 +336,12 @@ def _json(d):
     return proc.returncode, json.loads(proc.stdout)
 
 
+def _replace(path, old, new):
+    body = open(path).read()
+    assert old in body, old
+    open(path, "w").write(body.replace(old, new))
+
+
 def test_wrong_method_names_where_the_tag_is_and_where_it_must_be(tmp_path):
     _, payload = run_json("wrong-method", tmp_path)
     f = payload["findings"][0]
@@ -359,6 +355,7 @@ def test_a_tag_under_the_method_paths_satisfies_it(tmp_path):
     import os
     os.makedirs(f"{d}/tests/browser")
     open(f"{d}/tests/browser/wizard.js", "w").write("// @covers R-0001/AC2\n")
+    stamp(d)
     code, payload = _json(d)
     assert code == 0 and payload["findings"] == []
 
@@ -383,12 +380,14 @@ def test_multi_method_ac_needs_a_tag_under_each_method(tmp_path):
     os.remove(f"{d}/tests/covers.js")
     os.makedirs(f"{d}/tests/unit")
     open(f"{d}/tests/unit/a.js", "w").write("// @covers R-0001/AC1\n")
+    stamp(d)
     _, payload = _json(d)
     f = payload["findings"]
     assert [x["rule"] for x in f] == ["uncovered"]
     assert f[0]["methods"] == ["unit", "http"] and "has no test for http" in f[0]["message"]
     os.makedirs(f"{d}/tests/http")
     open(f"{d}/tests/http/a.js", "w").write("// @covers R-0001/AC1\n")
+    stamp(d)
     code, payload = _json(d)
     assert code == 0 and payload["findings"] == []
 
@@ -396,6 +395,7 @@ def test_multi_method_ac_needs_a_tag_under_each_method(tmp_path):
 def test_manual_needs_no_tag_and_is_listed(tmp_path):
     d = copy_fixture("clean", tmp_path)
     _spec(d, "- AC1: a -> b [http]\n- AC2: looks calm -> approved [manual]\n")
+    stamp(d)
     code, payload = _json(d)
     assert code == 0 and payload["findings"] == []
     assert payload["manual"] == ["R-0001/AC2"]
@@ -407,6 +407,7 @@ def test_manual_is_reserved_and_needs_no_definition(tmp_path):
     d = copy_fixture("clean", tmp_path)
     _spec(d, "- AC1: a -> b [http]\n- AC2: c -> d [manual]\n",
           methods="- **http** — requests to the running service.\n")
+    stamp(d)
     code, payload = _json(d)
     assert code == 0 and payload["findings"] == []
 
@@ -416,14 +417,11 @@ def test_no_manual_criteria_gives_an_empty_list(tmp_path):
     assert payload["manual"] == []
 
 
-def test_changing_the_method_makes_the_ac_stale(tmp_path):
+def test_changing_the_method_leaves_the_test_unreviewed(tmp_path):
     d = copy_fixture("clean", tmp_path)
-    assert run_check(d).returncode == 0                 # records the hashes
-    body = open(f"{d}/spec/requirements.md").read().replace(
-        "-> accepted [http]", "-> accepted [unit]")
-    open(f"{d}/spec/requirements.md", "w").write(body)
+    _replace(f"{d}/spec/requirements.md", "-> accepted [http]", "-> accepted [unit]")
     _, payload = _json(d)
-    assert [(f["rule"], f["ac"]) for f in payload["findings"]] == [("stale", "AC2")]
+    assert [(f["rule"], f["ac"]) for f in payload["findings"]] == [("unreviewed", "AC2")]
 
 
 def test_methods_section_after_a_requirement_is_malformed(tmp_path):
@@ -438,3 +436,153 @@ def test_methods_section_after_a_requirement_is_malformed(tmp_path):
 def test_findings_on_a_criterion_carry_its_methods(tmp_path):
     _, payload = run_json("uncovered", tmp_path)
     assert payload["findings"][0]["methods"] == ["http"]
+
+
+# -- review suffixes (D-020) ------------------------------------------- #
+
+WEB_TEST = """import { get } from './support.js';
+function bearer(token) { return { Authorization: `Bearer ${token}` }; }
+
+// @covers R-0001/AC1
+it('rejects an expired token', async () => {
+  const res = await get('/me', bearer(EXPIRED));
+  expect(res.status).toBe(401);
+  expect(res.body).toEqual({});
+});
+// @covers R-0001/AC2
+it('accepts a token inside the skew window', async () => {
+  expect((await get('/me', bearer(SKEWED))).status).toBe(200);
+});
+"""
+
+
+def _web(tmp_path):
+    """The clean fixture with a real test file: a preamble, then one section
+    per AC -- every tag reviewed."""
+    d = copy_fixture("clean", tmp_path)
+    open(f"{d}/tests/covers.js", "w").write(WEB_TEST)
+    stamp(d)
+    return d
+
+
+def test_unreviewed_points_at_the_tag_and_says_why(tmp_path):
+    _, payload = run_json("unreviewed", tmp_path)
+    f = payload["findings"][0]
+    assert (f["rule"], f["file"], f["line"]) == ("unreviewed", "tests/covers.py", 1)
+    assert (f["req"], f["ac"], f["methods"]) == ("R-0001", "AC1", ["http"])
+    assert "(no review yet)" in f["message"] and "hamilton review R-0001/AC1" in f["message"]
+
+
+def test_a_stamped_file_is_clean(tmp_path):
+    code, payload = _json(_web(tmp_path))
+    assert code == 0 and payload["findings"] == []
+
+
+# a Statement or method change touches every AC; a test edit only its own
+# section, unless it is in the preamble, which is part of every region
+@pytest.mark.parametrize("rel, old, new, want", [
+    ("spec/requirements.md", "-> accepted [http]", "-> accepted and logged [http]",
+     {"AC2": "AC changed"}),
+    ("spec/requirements.md", "Statement: The token validator rejects",
+     "Statement: The validator rejects",
+     {"AC1": "AC changed", "AC2": "AC changed"}),
+    ("spec/requirements.md", "- **http** — requests to the running service",
+     "- **http** — requests to a deployed service",
+     {"AC1": "AC changed", "AC2": "AC changed"}),
+    ("tests/covers.js", "toBe(200)", "toBeLessThan(500)",
+     {"AC2": "test changed"}),
+    ("tests/covers.js", "Bearer ${token}", "Token ${token}",
+     {"AC1": "test changed", "AC2": "test changed"}),
+])
+def test_the_message_names_the_half_that_changed(tmp_path, rel, old, new, want):
+    d = _web(tmp_path)
+    _replace(f"{d}/{rel}", old, new)
+    _, payload = _json(d)
+    states = {f["ac"]: re.search(r"unreviewed \(([^)]+)\)", f["message"]).group(1)
+              for f in payload["findings"]}
+    assert states == want
+
+
+def test_ac_and_test_both_changed(tmp_path):
+    d = _web(tmp_path)
+    _replace(f"{d}/spec/requirements.md", "-> accepted [http]", "-> accepted and logged [http]")
+    _replace(f"{d}/tests/covers.js", "toBe(200)", "toBeLessThan(500)")
+    _, payload = _json(d)
+    [f] = payload["findings"]
+    assert f["ac"] == "AC2" and "(AC and test changed)" in f["message"]
+
+
+def test_whitespace_only_edits_keep_the_review(tmp_path):
+    d = _web(tmp_path)
+    _replace(f"{d}/tests/covers.js", "  expect(res.status).toBe(401);",
+             "\n      expect(res.status).toBe(401);\n")
+    _replace(f"{d}/spec/requirements.md", "-> accepted [http]", "->   accepted  [http]")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+
+
+def test_every_counting_tag_needs_its_own_review(tmp_path):
+    d = _web(tmp_path)
+    open(f"{d}/tests/more.js", "w").write("// @covers R-0001/AC1\nit('again', ...)\n")
+    _, payload = _json(d)
+    assert [(f["rule"], f["file"], f["ac"]) for f in payload["findings"]] == \
+        [("unreviewed", "tests/more.js", "AC1")]
+
+
+def test_check_never_writes(tmp_path):
+    import os
+    for name in ("clean", "unreviewed"):
+        d = copy_fixture(name, tmp_path)
+
+        def snapshot():
+            return {os.path.join(p, f): open(os.path.join(p, f), "rb").read()
+                    for p, _, fs in os.walk(d) for f in fs}
+        before = snapshot()
+        run_check(d)
+        assert snapshot() == before, name
+
+
+def test_a_leftover_verified_file_gets_a_notice(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    open(f"{d}/.hamilton/verified", "w").write("R-0001/AC1 sha256:00\n")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+    assert any(".hamilton/verified is no longer used" in n for n in payload["notices"])
+
+
+def test_regions_are_preamble_plus_section():
+    lines = ["import x", "", "// @covers R-0001/AC1", "// @covers R-0001/AC2",
+             "test a", "// @covers R-0001/AC3 #abc.def", "test b"]
+    r = C.regions(lines)
+    assert set(r) == {3, 4, 6}
+    assert r[3] == r[4]                                  # a stacked block shares one
+    assert r[3] == "\n".join(lines[:5])                  # preamble + its section
+    assert r[6] == "\n".join(lines[:2] + ["// @covers R-0001/AC3", "test b"])
+
+
+def test_regions_without_preamble_or_tags():
+    assert C.regions(["test only"]) == {}
+    assert C.regions(["// @covers R-0001/AC1", "x"]) == {1: "// @covers R-0001/AC1\nx"}
+
+
+def test_suffixes_are_stripped_before_hashing():
+    bare = C.regions(["// @covers R-0001/AC1", "x"])
+    suffixed = C.regions(["// @covers R-0001/AC1 #123456.abcdef", "x"])
+    assert bare == suffixed
+
+
+def test_renumbering_an_ac_changes_the_obligation():
+    req = {"statement": "s.", "acs": {"AC2": {"text": "a -> b [unit]"},
+                                      "AC3": {"text": "a -> b [unit]"}}}
+    defined = {"unit": {"description": "one module."}}
+    assert C.obligation("R-0001", "AC2", req, ["unit"], defined) != \
+        C.obligation("R-0001", "AC3", req, ["unit"], defined)
+
+
+def test_review_state_names_the_changed_half():
+    assert C.review_state("aaaaaa.bbbbbb", "aaaaaa.bbbbbb") == C.REVIEWED
+    assert C.review_state(None, "aaaaaa.bbbbbb") == C.NEVER_REVIEWED
+    assert C.review_state("garbage", "aaaaaa.bbbbbb") == C.NEVER_REVIEWED
+    assert C.review_state("000000.bbbbbb", "aaaaaa.bbbbbb") == C.AC_CHANGED
+    assert C.review_state("aaaaaa.000000", "aaaaaa.bbbbbb") == C.TEST_CHANGED
+    assert C.review_state("000000.000000", "aaaaaa.bbbbbb") == C.BOTH_CHANGED

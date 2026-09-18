@@ -133,7 +133,7 @@ def test_warnings_are_not_findings(tmp_path):
                                  "root-unit-only")
 
 
-@pytest.mark.parametrize("name", ["clean", "tree", "model", "stale", "uncovered"])
+@pytest.mark.parametrize("name", ["clean", "tree", "model", "unreviewed", "uncovered"])
 def test_conforming_fixtures_emit_no_warnings(name, tmp_path):
     _, payload = run_json(name, tmp_path)
     assert payload["warnings"] == [], name

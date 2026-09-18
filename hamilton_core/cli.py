@@ -8,6 +8,7 @@ import sys
 from hamilton_core import check as _check
 from hamilton_core import guard as _guard
 from hamilton_core import init as _init
+from hamilton_core import review as _review
 from hamilton_core import show as _show
 from hamilton_core import status as _status
 from hamilton_core import tree as _tree
@@ -33,6 +34,11 @@ def main(argv=None) -> int:
     p_init.add_argument("path", nargs="?", default=None,
                         help="target directory (default: current directory)")
     sub.add_parser("guard", help="phase-gate PreToolUse hook backend")
+    p_review = sub.add_parser("review", help="have each unreviewed test judged "
+                              "against its criterion; a pass writes its suffix")
+    p_review.add_argument("ac", nargs="?", default=None,
+                          help="only this criterion: R-nnnn/ACn")
+    p_review.add_argument("--json", action="store_true", help="machine-readable output")
     for mode in MODES.values():
         sub.add_parser(mode.name, help=mode.help)
 
@@ -58,6 +64,8 @@ def main(argv=None) -> int:
         return _init.main(args.path)
     if args.cmd == "guard":
         return _guard.main()
+    if args.cmd == "review":
+        return _review.main(args.ac, as_json=args.json)
     if args.cmd in MODES:
         return _session().main(MODES[args.cmd])
     if args.cmd == "status":

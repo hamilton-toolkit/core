@@ -3,7 +3,7 @@
 import re
 import unicodedata
 
-from hamilton_core.check import normalize, sha
+from hamilton_core.check import digest, normalize
 
 
 def test_collapses_internal_whitespace_runs():
@@ -45,11 +45,10 @@ def test_empty_and_whitespace_only_normalise_to_empty():
     assert normalize("   \t\n  ") == ""
 
 
-def test_sha_format_is_prefixed_hex():
-    digest = sha("anything")
-    assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+def test_digest_is_six_hex_digits_of_sha256():
+    assert re.fullmatch(r"[0-9a-f]{6}", digest("anything"))
 
 
-def test_sha_is_taken_over_normalised_text():
-    assert sha("  expired   token ") == sha("expired token")
-    assert sha("expired token") != sha("expired token.")
+def test_digest_is_taken_over_normalised_text():
+    assert digest("  expired   token ") == digest("expired token")
+    assert digest("expired token") != digest("expired token.")

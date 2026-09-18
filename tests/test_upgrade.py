@@ -2,8 +2,7 @@
 
 The managed files belong to the framework, so `upgrade` overwrites them with
 the current templates without asking (and recreates any that were deleted). It
-never touches the project's own files: spec/, .hamilton/phase, .hamilton/config,
-.hamilton/verified.
+never touches the project's own files: spec/, .hamilton/phase, .hamilton/config.
 """
 
 import os
@@ -84,7 +83,6 @@ def test_upgrade_never_touches_spec_or_hamilton_state(tmp_path):
         "spec/actors.md": "SENTINEL actors\n",
         ".hamilton/config": "test_command=SENTINEL\npaths.unit=tests\n",
         ".hamilton/phase": "build",
-        ".hamilton/verified": "R-0001/AC1 sha256:deadbeef\n",
     }
     for rel, body in protected.items():
         (tmp_path / rel).write_text(body)

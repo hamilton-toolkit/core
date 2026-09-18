@@ -98,9 +98,10 @@ BUILD = Mode(
     kickoff=(
         "Start the Hamilton build session now: follow the `hamilton` skill's "
         "\"Propagate a change\" / \"Verify\" workflow immediately -- run "
-        "`git diff spec/` and `hamilton check`, bring the code and tests to "
-        "green, then give the closing summary. If this is the first build after "
-        "`hamilton reverse` (no `.hamilton/verified`, most ACs uncovered, the "
+        "`git diff spec/` and `hamilton check`, then run the skill's build "
+        "loop -- write tests, `hamilton review`, implement -- until `hamilton "
+        "check` is green, then give the closing summary. If this is the first "
+        "build after `hamilton reverse` (most ACs uncovered or unreviewed, the "
         "spec only just landed in `git log -- spec`), follow \"Adopt an "
         "existing test suite\" instead. Do not wait for further instruction."
     ),

@@ -2,8 +2,16 @@
 
 Reads `spec/requirements.md`, `spec/actors.md` and `.hamilton/config`, runs the
 project's test command, scans the configured method paths for `@covers
-R-nnnn/ACn` tags, and compares every acceptance criterion against
-`.hamilton/verified` (the hashes recorded the last time `check` passed).
+R-nnnn/ACn` tags, and checks that every tag that counts carries a current
+review suffix (D-020). `check` is read-only: it never writes a file.
+
+A review suffix -- `@covers R-0005/AC2 #3f9a2c.81d0e4` -- is written only by
+`hamilton review` when its reviewer passes the test. It is two 6-hex-digit
+SHA-256 prefixes: the *obligation* (the AC id, its requirement's Statement,
+the AC text with marker, and the definitions of the methods under whose paths
+the test lies) and the *test* (the tag's region: the file's preamble plus the
+tag's section, see `regions`). A change to either side leaves the suffix out of
+date, and the tag unreviewed.
 
 The model is one tree (D-014): `spec/requirements.md`, headed by a
 `## Verification methods` section. Every AC ends in a marker naming how it is
@@ -27,20 +35,21 @@ verified (`[browser]`, `[unit, http]`); a test for it counts only under the
                      name the actor whose goal it is)
   dangling-ref       a Parent or Actor value names no such entity
   cyclic-parent      a requirement's Parent chain loops
-  stale              an AC's text or method changed since check last passed
+  unreviewed         a counting tag has no review suffix, or its AC or its
+                     test changed since the review (one finding per tag)
   malformed          a requirement has no ACs, no Statement, a repeated id,
                      or an unparseable line
 
-Every problem in a run is reported, not just the first. On a fully clean run
-with at least one requirement, `check` rewrites `.hamilton/verified` and exits
-0. Exit 1 on any finding; exit 2 when it cannot run at all (`spec/requirements.md`
-or `.hamilton/config` missing). `--json` emits
+Every problem in a run is reported, not just the first. Exit 0 on a clean run
+with at least one requirement, 1 on any finding; exit 2 when it cannot run at
+all (`spec/requirements.md` or `.hamilton/config` missing). `--json` emits
 {"ok": bool, "findings": [...], "warnings": [...], "notices": [...],
 "manual": ["R-nnnn/ACn", ...], "requirements": int,
 "acceptance_criteria": int} or {"error": "..."}. `manual` lists the criteria a
 person verifies, which the gate does not. `notices` flag config that is set
 but does nothing (e.g. `mutation_command`, which is reserved and
-unimplemented); they never change the exit code.
+unimplemented) and files nothing reads any more (`.hamilton/verified`); they
+never change the exit code.
 
 Advisory **warnings** never change the exit code and never fail an existing
 project:
@@ -65,15 +74,25 @@ import re
 import subprocess
 import sys
 import unicodedata
+from typing import NamedTuple
 
 REQ_REL = "spec/requirements.md"
 CONFIG_REL = ".hamilton/config"
-VERIFIED_REL = ".hamilton/verified"
+# retired by D-020; a leftover file only earns a notice
+RETIRED_VERIFIED_REL = ".hamilton/verified"
 KNOWN_FIELDS = {"Parent", "Actor", "Statement", "Criteria"}
 # Fields a past model used; recognised and ignored so an older `requirements.md`
 # still parses (D-014, D-019). Not stored, not flagged.
 RETIRED_FIELDS = {"Component", "Interface"}
-TAG_RE = re.compile(r"@covers\s+(R-\d{4})/(AC\d+)\b")
+# `@covers R-0005/AC2`, optionally followed by its review suffix `#3f9a2c.81d0e4`
+TAG_RE = re.compile(r"@covers\s+(R-\d{4})/(AC\d+)\b(?:\s+#(\S+))?")
+
+# the review state of a counting tag (D-020)
+REVIEWED = "reviewed"
+NEVER_REVIEWED = "no review yet"
+AC_CHANGED = "AC changed"
+TEST_CHANGED = "test changed"
+BOTH_CHANGED = "AC and test changed"
 
 METHODS_HEADING = "Verification methods"
 # a method needs no tag: a person verifies it, the gate only lists it
@@ -96,10 +115,20 @@ class UsageError(Exception):
     """Missing spec or config file -> exit 2."""
 
 
+class Tag(NamedTuple):
+    """One `@covers` tag: where it is, and its review suffix without the `#`
+    (None when it has none)."""
+    rid: str
+    acid: str
+    file: str
+    line: int
+    suffix: str | None
+
+
 def normalize(text: str) -> str:
-    """Canonical form of an AC string, used for hashing. It defines when an AC
-    counts as changed: an edit that survives normalisation changes the hash;
-    one that does not is cosmetic.
+    """Canonical form of hashed text -- an obligation or a test region. It
+    defines when either counts as changed: an edit that survives normalisation
+    changes the hash; one that does not is cosmetic.
 
       1. Unicode NFC, so canonically-equivalent forms hash identically.
       2. Every run of whitespace -- ASCII or any Unicode whitespace --
@@ -111,9 +140,71 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFC", text)).strip()
 
 
-def sha(text: str) -> str:
-    """"sha256:" + the SHA-256 of ``normalize(text)``, UTF-8 encoded."""
-    return "sha256:" + hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()
+def digest(text: str) -> str:
+    """The first 6 hex digits of the SHA-256 of ``normalize(text)``, UTF-8
+    encoded: one half of a review suffix."""
+    return hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()[:6]
+
+
+def obligation(rid: str, acid: str, req: dict, methods, defined: dict) -> str:
+    """The obligation half of a review suffix: what a test for ``rid/acid``
+    owes. It covers the AC id, the requirement's Statement, the AC text with
+    its marker, and the definition of each of ``methods`` -- the AC's methods
+    under whose paths the test lies -- sorted by name. Renumbering an AC,
+    rewording it or its Statement, or redefining its method all change it."""
+    parts = [f"{rid}/{acid}", req["statement"] or "", req["acs"][acid]["text"]]
+    parts += [f"{m}: {defined[m]['description']}" for m in sorted(methods)]
+    return digest("\n".join(normalize(p) for p in parts))
+
+
+def strip_suffixes(line: str) -> str:
+    """``line`` with the review suffix dropped from every tag on it."""
+    return TAG_RE.sub(lambda m: f"@covers {m.group(1)}/{m.group(2)}", line)
+
+
+def regions(lines) -> dict:
+    """{tag line number: region text} for the lines of one file.
+
+    Hamilton does not parse tests, so "the test" is a layout rule. A *tag
+    block* is a run of consecutive lines that each hold a `@covers` tag. A
+    tag's *region* is the file's preamble (every line before the first tag
+    block) plus its own section: its tag block down to the line before the
+    next tag block, or the end of the file. Review suffixes are stripped, so
+    writing one never changes a region."""
+    tagged = [bool(TAG_RE.search(line)) for line in lines]
+    starts = [i for i, t in enumerate(tagged) if t and (i == 0 or not tagged[i - 1])]
+    if not starts:
+        return {}
+    preamble = list(lines[:starts[0]])
+    out = {}
+    for k, start in enumerate(starts):
+        stop = starts[k + 1] if k + 1 < len(starts) else len(lines)
+        text = "\n".join(preamble + [strip_suffixes(ln) for ln in lines[start:stop]])
+        end = start
+        while end < stop and tagged[end]:
+            out[end + 1] = text
+            end += 1
+    return out
+
+
+def suffix(obligation_half: str, region: str) -> str:
+    """The review suffix, without its `#`, for an obligation half and a region
+    text."""
+    return f"{obligation_half}.{digest(region)}"
+
+
+def review_state(found: str | None, want: str) -> str:
+    """How a tag's suffix ``found`` compares to the current one ``want``:
+    REVIEWED, or which half no longer matches."""
+    if found == want:
+        return REVIEWED
+    halves = (found or "").split(".")
+    if len(halves) != 2:
+        return NEVER_REVIEWED
+    ob_ok, test_ok = (h == w for h, w in zip(halves, want.split(".")))
+    if ob_ok:
+        return TEST_CHANGED
+    return AC_CHANGED if test_ok else BOTH_CHANGED
 
 
 def read_config(root: str) -> dict:
@@ -328,11 +419,17 @@ def _iter_files(root: str):
             yield os.path.relpath(os.path.join(dpath, fn), root)
 
 
+def read_lines(root: str, rel: str) -> list:
+    """The lines of a text file, numbered as `scan` numbers them."""
+    with open(os.path.join(root, rel), "r", encoding="utf-8") as fh:
+        return fh.read().split("\n")
+
+
 def scan(root: str, dirs):
-    """Return [(R-id, AC-id, relpath, line)] for `@covers R-nnnn/ACn` tags found
-    in files under one of ``dirs`` (relative to root, as `method_paths` gives
-    them). A tag anywhere else -- README, the implementation, a notes file --
-    does not count. Also skips .git/, spec/, .hamilton/, files over 2 MB, and
+    """Return [Tag] for the `@covers R-nnnn/ACn` tags found in files under one
+    of ``dirs`` (relative to root, as `method_paths` gives them). A tag
+    anywhere else -- README, the implementation, a notes file -- does not
+    count. Also skips .git/, spec/, .hamilton/, files over 2 MB, and
     git-ignored paths. The tag is matched as raw text, so any comment syntax in
     any language works.
     """
@@ -350,39 +447,49 @@ def scan(root: str, dirs):
         try:
             if os.path.getsize(full) > 2_000_000:
                 continue
-            with open(full, "r", encoding="utf-8") as fh:
-                for i, line in enumerate(fh, 1):
-                    for m in TAG_RE.finditer(line):
-                        hits.append((m.group(1), m.group(2), rel, i))
+            for i, line in enumerate(read_lines(root, rel), 1):
+                for m in TAG_RE.finditer(line):
+                    hits.append(Tag(m.group(1), m.group(2), rel, i, m.group(3)))
         except (OSError, UnicodeDecodeError):
             continue
     return hits
 
 
-def read_verified(root: str) -> dict:
-    """{"R-nnnn/ACn": "sha256:..."} from `.hamilton/verified`, one `id hash`
-    per line. This is the state left by the last passing `check`; a missing or
-    empty file means no run has passed yet, so nothing is stale."""
-    path = os.path.join(root, VERIFIED_REL)
-    out = {}
-    if not os.path.isfile(path):
-        return out
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            parts = line.split()
-            if len(parts) == 2:
-                out[parts[0]] = parts[1]
+def counting_methods(ac: dict, file: str, defined: dict, paths: dict) -> list:
+    """The methods of ``ac`` whose paths hold ``file``. A tag there counts
+    toward those methods; with none it does not count at all."""
+    return [m for m in ac["methods"]
+            if m != MANUAL and m in defined and under(file, paths.get(m, ()))]
+
+
+class Counted(NamedTuple):
+    """A tag that counts toward coverage, with what its review covers."""
+    tag: Tag
+    methods: list      # the AC's methods the tag counts toward
+    region: str        # the test text the review covers
+    want: str          # the current review suffix, without its `#`
+
+    @property
+    def state(self) -> str:
+        return review_state(self.tag.suffix, self.want)
+
+
+def counted(root: str, reqs: dict, defined: dict, paths: dict, tags) -> list:
+    """[Counted] for the ``tags`` that count: they name an existing AC and lie
+    under the paths of one of its defined methods. Only these need a review;
+    a `wrong-method` or `orphan-tag` tag is not a review candidate."""
+    out, files = [], {}
+    for t in tags:
+        ac = reqs.get(t.rid, {}).get("acs", {}).get(t.acid)
+        methods = counting_methods(ac, t.file, defined, paths) if ac else []
+        if not methods:
+            continue
+        if t.file not in files:
+            files[t.file] = regions(read_lines(root, t.file))
+        region = files[t.file][t.line]
+        want = suffix(obligation(t.rid, t.acid, reqs[t.rid], methods, defined), region)
+        out.append(Counted(t, methods, region, want))
     return out
-
-
-def write_verified(root: str, reqs: dict) -> None:
-    """Record the current hash of every AC, sorted by id for a stable diff.
-    Called only on a fully clean run. Commit this file so staleness is
-    meaningful on other machines and in CI."""
-    lines = sorted(f"{rid}/{acid} {sha(ac['text'])}"
-                   for rid, r in reqs.items() for acid, ac in r["acs"].items())
-    with open(os.path.join(root, VERIFIED_REL), "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + ("\n" if lines else ""))
 
 
 def _sample(ids, limit=8):
@@ -413,11 +520,16 @@ def _one_sentence(text: str) -> bool:
     return not _SECOND_SENTENCE_RE.search(collapsed)
 
 
-def _config_notices(cfg: dict) -> list:
-    """Config that is set but does nothing yet. A line that looks active and is
-    silently ignored is the failure the falsification ledger had, so say so
-    every run."""
+def _notices(root: str, cfg: dict) -> list:
+    """Config that is set but does nothing yet, and state files nothing reads
+    any more. A line that looks active and is silently ignored is the failure
+    the falsification ledger had, so say so every run."""
     out = []
+    if os.path.exists(os.path.join(root, RETIRED_VERIFIED_REL)):
+        out.append(
+            f"{RETIRED_VERIFIED_REL} is no longer used -- reviews are recorded "
+            f"in the '@covers' tags' suffixes now (D-020), and hamilton check "
+            f"neither reads nor writes it. Delete it.")
     mc = cfg.get("mutation_command")
     if mc is not None and mc[0].strip():
         out.append(
@@ -482,7 +594,7 @@ def run(root: str):
         raise UsageError(f"{REQ_REL}: not found (run hamilton check from the "
                          f"project root, the directory that holds spec/)")
     cfg = read_config(root)
-    notices = _config_notices(cfg)
+    notices = _notices(root, cfg)
 
     reqs, duplicates, malformed = extract(os.path.join(root, REQ_REL))
     defined = extract_methods(os.path.join(root, REQ_REL))
@@ -612,8 +724,9 @@ def run(root: str):
             CONFIG_REL, retired[1]))
 
     paths = method_paths(cfg)
+    scanned = scan(root, [d for ds in paths.values() for d in ds])
     tags = {}
-    for req, ac, file, line in scan(root, [d for ds in paths.values() for d in ds]):
+    for req, ac, file, line, _suffix in scanned:
         if req not in reqs:
             out.append(_finding("orphan-tag",
                 f"the tag '@covers {req}/{ac}' names requirement {req}, which "
@@ -634,7 +747,6 @@ def run(root: str):
         else:
             tags.setdefault((req, ac), []).append((file, line))
 
-    verified = read_verified(root)
     manual, unpathed = [], {}
     for rid, r in reqs.items():
         for acid, ac in sorted(r["acs"].items()):
@@ -689,18 +801,12 @@ def run(root: str):
                     f"Found: {found}. Fix: add a test that exercises this "
                     f"criterion by that method and tag it '@covers {qual}'.",
                     REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
-            want, seen = sha(ac["text"]), verified.get(qual)
-            if seen is not None and seen != want:
-                out.append(_finding("stale",
-                    f"{qual} was reworded, or its method changed, since "
-                    f"hamilton check last passed. Expected: the AC text to "
-                    f"still hash to {seen} (recorded in {VERIFIED_REL} at the "
-                    f"last green run). Found: it now hashes to {want}. Its test "
-                    f"and implementation may no longer match what it says. Fix: "
-                    f"re-check the implementation and the '@covers {qual}' test "
-                    f"against the new wording and method; a clean hamilton "
-                    f"check records the new hash.",
-                    REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
+
+    # every counting tag needs its own review: another reviewed tag for the
+    # same AC does not excuse it
+    for c in counted(root, reqs, defined, paths, scanned):
+        if c.state != REVIEWED:
+            out.append(_unreviewed(c, reqs[c.tag.rid]["acs"][c.tag.acid]))
 
     for m, first in sorted(unpathed.items()):
         out.append(_finding("no-method-paths",
@@ -712,13 +818,44 @@ def run(root: str):
             REQ_REL, defined[m]["line"]))
 
     out.sort(key=lambda f: (f["file"] or "", f["line"] or 0, f["rule"]))
-    # Re-record the AC hashes whenever nothing but `stale` is outstanding: the
-    # tests pass, every AC is covered, the spec parses. `stale` is then a
-    # single red run after an AC edit -- it forces one more `hamilton check`
-    # (which re-runs the suite against the new wording) and then clears.
-    if not [f for f in out if f["rule"] != "stale"]:
-        write_verified(root, reqs)
     return out, warnings, notices, manual, n_reqs, n_acs
+
+
+# what an out-of-date suffix means, and what the agent does about it
+_UNREVIEWED = {
+    NEVER_REVIEWED: (
+        "the tag has no review suffix, so no reviewer has judged that this "
+        "test proves the criterion",
+        "run 'hamilton review {qual}'"),
+    AC_CHANGED: (
+        "the criterion, its requirement's Statement or its method's "
+        "definition changed since the review, so the test may no longer "
+        "prove what the criterion now says",
+        "rewrite the test against the current wording (a fresh subagent, "
+        "SKILL.md Test authoring), then run 'hamilton review {qual}'"),
+    TEST_CHANGED: (
+        "the test changed since the review -- its section, or the preamble "
+        "of its file",
+        "run 'hamilton review {qual}' to have the changed test judged again"),
+    BOTH_CHANGED: (
+        "both the criterion (or its Statement or method definition) and the "
+        "test changed since the review",
+        "check the test against the current wording, rewrite it if it no "
+        "longer fits, then run 'hamilton review {qual}'"),
+}
+
+
+def _unreviewed(c: Counted, ac: dict):
+    t, state = c.tag, c.state
+    qual = f"{t.rid}/{t.acid}"
+    found, fix = _UNREVIEWED[state]
+    return _finding("unreviewed",
+        f"the '@covers {qual}' test is unreviewed ({state}). Expected: a "
+        f"current review suffix, which 'hamilton review' writes when its "
+        f"reviewer passes the test. Found: "
+        f"{'#' + t.suffix if t.suffix else 'no suffix'} -- {found}. Fix: "
+        f"{fix.format(qual=qual)}. Never write or edit a suffix yourself.",
+        t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"])
 
 
 def main(as_json: bool = False) -> int:

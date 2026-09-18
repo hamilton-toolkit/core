@@ -112,7 +112,7 @@ def test_requirement_status_rollup(tmp_path):
     m = load("model", tmp_path)
     assert m.req_status("R-0001") == "covered"
     assert m.req_status("R-0004") == "uncovered"
-    assert m.req_status("R-0007") == "stale"
+    assert m.req_status("R-0007") == "unreviewed"
 
 
 def test_criterion_status_follows_its_method(tmp_path):

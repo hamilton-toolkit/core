@@ -2,7 +2,7 @@
 
 `model` fixture: root R-0100 with children R-0001 and R-0007; R-0004 a child of
 R-0001.
-Coverage rolls the requirements up to covered / uncovered / stale.
+Coverage rolls the requirements up to covered / uncovered / unreviewed.
 """
 
 import json
@@ -52,7 +52,7 @@ def test_coverage_status_marked_per_requirement(tmp_path):
             if "(R-" in l}
     assert "[covered]" in rows["R-0001"]
     assert "[uncovered]" in rows["R-0004"]
-    assert "[stale]" in rows["R-0007"]
+    assert "[unreviewed]" in rows["R-0007"]
 
 
 def test_dotted_paths_are_not_stored_anywhere(tmp_path):
@@ -70,7 +70,7 @@ def test_json_rows(tmp_path):
     assert by_id["R-0100"]["path"] == "1" and by_id["R-0100"]["parent"] is None
     assert by_id["R-0100"]["actor"] == "A-0001"
     assert "interface" not in by_id["R-0001"] and "boundary" not in by_id["R-0001"]
-    assert by_id["R-0007"]["status"] == "stale"
+    assert by_id["R-0007"]["status"] == "unreviewed"
     assert by_id["R-0001"]["criteria"] == {"AC1": "covered"}
     assert by_id["R-0004"]["label"].startswith('R-0004 "')
     assert "_text" not in by_id["R-0001"]

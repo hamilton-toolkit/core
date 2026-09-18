@@ -9,7 +9,7 @@ recreates any that were deleted. It also deletes scaffold files a past `init`
 wrote that the framework has since retired (`init.RETIRED`).
 
 The project's own files are never touched: spec/, .hamilton/phase,
-.hamilton/config, .hamilton/verified.
+.hamilton/config.
 
 Every change is shown as a unified diff. No migration logic and no
 version-compatibility checks: this copies files.

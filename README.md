@@ -7,9 +7,9 @@ without taking its word for when the work is done. You write down what the
 software must do — as specific, testable acceptance criteria — *before* it is
 built. The agent then implements it and writes the tests. One command,
 `hamilton check`, verifies that every criterion has a test that names it, that
-the suite passes, and that no criterion has been quietly reworded since it last
-passed. Specification, code and tests live in one repository and land in one
-review.
+the suite passes, and that a reviewer Hamilton runs itself has judged each test
+to prove its criterion — and judged it again after either one changed.
+Specification, code and tests live in one repository and land in one review.
 
 ## Why
 
@@ -36,13 +36,17 @@ point that it deserved to be taken as seriously as any other kind.
    requirements. Each requirement is one sentence and carries acceptance
    criteria — observable conditions, their expected outcomes, and how each is
    verified (in a real browser, over HTTP, as a unit, ...).
-2. **The agent implements.** It writes the code and the tests. Each test
-   carries a one-line comment naming the single criterion it covers —
+2. **The agent implements.** It writes the tests first, then the code. Each
+   test carries a one-line comment naming the single criterion it covers —
    `@covers R-0001/AC1`.
-3. **`hamilton check` verifies.** It runs your suite and stays red until every
-   criterion has a passing tagged test of the kind its verification method
-   names. Reword a criterion and it goes red
-   again until the test and code are reconciled with the new wording.
+3. **`hamilton review` judges the tests.** A separate agent session, with no
+   tools and no sight of the implementation, checks each test against its
+   criterion. A test it passes gets a review suffix on its tag —
+   `@covers R-0001/AC1 #3f9a2c.81d0e4`; a test it rejects is rewritten.
+4. **`hamilton check` verifies.** It runs your suite and stays red until every
+   criterion has a passing, reviewed, tagged test of the kind its verification
+   method names. Reword a criterion or edit its test and it goes red again
+   until the test is reviewed against the current wording.
 
 The acceptance criteria are yours. The rigorous tests that bind to them are the
 agent's. `hamilton check` is what keeps the two honest.
@@ -183,14 +187,14 @@ and stay as written.
 
 ```
 $ hamilton design      # spec phase: draft the vision and the requirements with the agent
-$ hamilton build       # build phase: the agent writes code + tagged tests, gets the gate green
+$ hamilton build       # build phase: the agent writes tagged tests, has them reviewed, writes the code, gets the gate green
 $ hamilton check       # the verification gate — run it yourself, and in CI
 ```
 
-`hamilton check` exits `0` when every criterion has a passing tagged test and
-nothing is stale; `1` on any finding; `2` if it cannot run at all. Wire the
-same command into your pipeline — that CI run, outside the agent, is the real
-gate.
+`hamilton check` exits `0` when every criterion has a passing, reviewed,
+tagged test; `1` on any finding; `2` if it cannot run at all. It never writes
+anything. Wire the same command into your pipeline — that CI run, outside the
+agent, is the real gate.
 
 ### Following along without an agent
 
@@ -201,7 +205,10 @@ see the mechanism:
 $ printf spec  > .hamilton/phase      # (what `hamilton design` does)
 #   ... edit spec/requirements.md and spec/actors.md ...
 $ printf build > .hamilton/phase      # (what `hamilton build` does)
-#   ... write the implementation and tests/ with @covers tags ...
+#   ... write tests/ with @covers tags, then the implementation ...
+$ hamilton review      # a reviewer session per test; needs Claude credentials
+tests/unit/test_initials.py:3: R-0001/AC1: pass (no review yet) -- suffix written
+tests/unit/test_initials.py:8: R-0001/AC2: pass (no review yet) -- suffix written
 $ hamilton check
 hamilton check: running test_command: python -m pytest -q
 2 passed in 0.01s
@@ -209,9 +216,9 @@ hamilton check: 1 requirement(s), 2 acceptance criteria
 hamilton check: ok
 ```
 
-A green run writes `.hamilton/verified` — the hash of each criterion's text at
-that passing run. Commit it; that is what a later `stale` finding compares
-against.
+The review suffixes `hamilton review` writes into the tags are the record that
+each test was judged against its criterion. Commit them with the tests; the
+merge-request diff shows every suffix next to the test change it certifies.
 
 ### Starting from an existing codebase
 
@@ -228,7 +235,8 @@ $ hamilton check       # red on `uncovered` — expected; the derived spec has
                        # no tests bound to it yet
 $ hamilton build       # the agent binds your existing tests to the derived
                        # criteria (and writes AC-level tests where the unit
-                       # tests are too fine-grained), then gets the gate green
+                       # tests are too fine-grained), has every tagged test
+                       # reviewed, then gets the gate green
 ```
 
 The derived spec is deliberately **thinner than the code** — it records intent
@@ -245,15 +253,16 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton design` | sets **spec** | Write the phase, print the status banner, run a spec-phase session with a kickoff to draft the vision / requirements through the review protocol. Offers to resume an unfinished spec session. |
 | `hamilton build` | sets **build** | Write the phase, print the banner, run a build-phase session with a kickoff to propagate the latest spec change and get `hamilton check` green. Offers to resume an unfinished build session. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
-| `hamilton check [--json]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method, flag reworded criteria and changed methods as `stale`, validate the requirement tree, list `manual` criteria. Writes `.hamilton/verified` on a clean run. This is the gate — run it in CI. |
+| `hamilton check [--json]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. Writes nothing. This is the gate — run it in CI. |
+| `hamilton review [R-nnnn/ACn] [--json]` | build only | Have every unreviewed tagged test — or only one criterion's — judged by a reviewer session that sees the spec and the test but no implementation and has no tools. A pass writes the tag's review suffix; a reject or `unclear` leaves the file alone and reports why. The only thing that writes a suffix. One model call per test. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. |
 | `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
-| `hamilton upgrade [path]` | — | Bring the framework-managed files up to date after installing a newer Hamilton — `AGENTS.md`, `CLAUDE.md`, the `.claude/` tree. Prints a diff, then overwrites. Never touches `spec/`, `.hamilton/phase`, `.hamilton/config`, `.hamilton/verified`. |
-| `hamilton guard` | — | Internal: the `PreToolUse` hook backend that blocks read-only-path edits during a session. Not run by hand. |
+| `hamilton upgrade [path]` | — | Bring the framework-managed files up to date after installing a newer Hamilton — `AGENTS.md`, `CLAUDE.md`, the `.claude/` tree. Prints a diff, then overwrites. Never touches `spec/`, `.hamilton/phase`, `.hamilton/config`. |
+| `hamilton guard` | — | Internal: the `PreToolUse` hook backend that blocks read-only-path edits, and edits that add or change a review suffix, during a session. Not run by hand. |
 
-`hamilton tree`, `hamilton show` and `hamilton status` write nothing and never
-touch the gate. All three, plus `hamilton check`, take `--json` for tooling.
+`hamilton check`, `hamilton tree`, `hamilton show` and `hamilton status` write
+nothing. `check`, `review`, `tree` and `show` take `--json` for tooling.
 
 ### When `hamilton check` fails
 
@@ -271,7 +280,7 @@ touch the gate. All three, plus `hamilton check`, take `--json` for tooling.
 | `orphan-requirement` | A requirement with no `Parent:` does not name an `Actor:`. Add the `Actor:`, or give it a `Parent:`. |
 | `dangling-ref` | A `Parent:` or `Actor:` value names an entity that isn't declared. Fix the reference, or add the entity. |
 | `cyclic-parent` | Following `Parent:` links from some requirement loops back on itself. Re-point one `Parent:`. |
-| `stale` | A criterion was reworded, or its method changed, since the last green check. Re-read it, confirm the tagged test still fits, and run `hamilton check` again — it clears once the run is otherwise clean. |
+| `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:` and method definition) or its test changed since the review — the message says which. If the criterion changed, rewrite the test against the new wording; then run `hamilton review`. Never write a suffix by hand. |
 | `malformed` | A requirement is missing its `Statement`, has no criteria, repeats an id, or has a line that doesn't parse — or the file has no real requirements at all. The message names the line. |
 
 It also prints **advisory warnings** — never fail the run, never change the
@@ -367,16 +376,21 @@ from the criteria that need it, never restated inside a `Statement:`.
 
 ## What this does not do
 
-It runs your tests and checks that each criterion has one — it does **not**
-check that your tests are any good. A test that asserts nothing, or the wrong
-thing, passes the gate as long as it runs. `hamilton check` proves your
-criteria are written down, tied to tests, and passing; it does not prove those
-tests would catch a regression.
+It has every test **reviewed** — it does not **prove** your tests are any
+good. The reviewer is a model judging each test against five checks (every
+clause asserted, the right starting point, can fail, expectations from the spec
+not the code, the whole set where the criterion says "every"); it can be wrong,
+and nothing yet shows mechanically that a test would catch a regression.
+Mutation testing is the planned complement.
 
 Related limits, stated plainly:
 
-- **`stale` clears by re-running.** It proves the suite was re-executed against
-  the reworded criterion, not that a person reconciled the test with it.
+- **Code in other files is outside a review.** A test's review covers its own
+  section and the top of its file. A shared helper in another file can change
+  without sending any test back to review.
+- **A review suffix can be forged from a shell.** The guard blocks the agent's
+  file-editing tools from adding or changing one, not a shell write. Every
+  suffix change shows in the merge-request diff.
 - **The phase hook is defeatable from a shell.** It covers file-editing tools
   only, so it stops drift inside a cooperating session, not deliberate
   circumvention. CI — `hamilton check` run outside the agent — is the real gate.
@@ -397,7 +411,7 @@ After installing a newer Hamilton, `hamilton upgrade` brings the
 framework-managed files up to date — `AGENTS.md`, `CLAUDE.md` (a pointer at
 it), and the `.claude/` tree (the phase-guard hook settings and the `hamilton`
 skill). It never touches your own work: `spec/` (including `spec/vision.md`),
-`.hamilton/phase`, `.hamilton/config`, `.hamilton/verified`.
+`.hamilton/phase`, `.hamilton/config`.
 
 ```
 $ hamilton upgrade
@@ -415,6 +429,13 @@ the `## Verification methods` section and a marker to each criterion; then, in
 `hamilton build`, the agent replaces `test_paths` with `paths.<method>` keys
 and moves or writes tests to match. Any `Interface:` lines are now ignored —
 delete them at your leisure.
+
+**A project created before test review** goes red after upgrading, on
+purpose: every tagged test is `unreviewed`. There is no automatic migration.
+The first `hamilton build` runs a full review — one model call per test — and
+rewrites the tests the reviewer rejects; that review is the quality audit of
+your existing suite. `.hamilton/verified` is no longer used: `hamilton check`
+prints a notice until you delete it.
 
 **A project created before sessions moved in-process** still has an
 `agent_command` line in `.hamilton/config` (that file is yours, so `upgrade`

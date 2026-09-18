@@ -43,7 +43,9 @@ def _view_requirement(m: M.Model, rid: str):
     crit = []
     for acid, ac in sorted(r["acs"].items()):
         st = m.ac_status(rid, acid)
-        tags = [{"file": f, "line": ln} for f, ln in m.tags.get((rid, acid), [])]
+        # `review` is None for a tag that does not count (wrong method)
+        tags = [{"file": f, "line": ln, "review": m.reviews.get((f, ln))}
+                for f, ln in m.tags.get((rid, acid), [])]
         crit.append({"id": acid, "text": ac["text"], "methods": ac["methods"],
                      "status": st, "tags": tags})
     children = [{"id": c, "title": M.req_title(c, m.reqs)}
@@ -72,7 +74,9 @@ def _view_requirement(m: M.Model, rid: str):
         if c["status"] == "unknown":
             tail = "[coverage unknown — no .hamilton/config]"
         else:
-            where = ("; ".join(f"{t['file']}:{t['line']}" for t in c["tags"])
+            where = ("; ".join(f"{t['file']}:{t['line']} "
+                               f"({t['review'] or 'wrong method, does not count'})"
+                               for t in c["tags"])
                      or "no @covers tag in any method's paths")
             tail = f"[{c['status']}]  {where}"
         lines.append(f"    {c['id']}  {c['text']}")

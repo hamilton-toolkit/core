@@ -40,6 +40,7 @@ packages = ["hamilton_core", "hamilton_core.session"]
 
 [tool.setuptools.package-data]
 hamilton_core = [
+    "prompts/*",
     "templates/*",
     "templates/*/*",
     "templates/*/*/*",

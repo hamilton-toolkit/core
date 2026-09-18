@@ -1,8 +1,9 @@
 """Shared helpers for the hamilton check test-suite.
 
-`hamilton check` writes `.hamilton/verified` on a passing run, so fixtures are
-copied into a fresh temp directory before `check` runs against them -- the
-committed fixture trees are never mutated.
+Fixtures are copied into a fresh temp directory before a test touches them, so
+the committed fixture trees are never mutated. Their tags carry review
+suffixes as committed; a test that edits a fixture and wants it reviewed again
+calls `stamp`.
 """
 
 import json
@@ -30,6 +31,20 @@ def copy_fixture(name, tmp_path):
     dst = tempfile.mkdtemp(dir=str(tmp_path))
     shutil.copytree(os.path.join(FIXTURES, name), dst, dirs_exist_ok=True)
     return dst
+
+
+def stamp(root):
+    """Give every counting tag under `root` its current review suffix, as a
+    passed review would. Test code only: the product writes a suffix only
+    when its reviewer passes the test."""
+    from hamilton_core import check, review
+    spec = os.path.join(str(root), check.REQ_REL)
+    reqs, _dupes, _malformed = check.extract(spec)
+    defined = check.extract_methods(spec)
+    paths = check.method_paths(check.read_config(str(root)))
+    tags = check.scan(str(root), [d for ds in paths.values() for d in ds])
+    for c in check.counted(str(root), reqs, defined, paths, tags):
+        review.write_suffix(str(root), c.tag, c.want)
 
 
 def run_fixture(name, tmp_path, *args):

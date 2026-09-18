@@ -1,15 +1,17 @@
 # Data Model — Definition Side (PoC)
 
 Deliberately minimal; see §7 for what is intentionally absent. Reflects D-014
-— the model is one requirement tree — and D-019 — every acceptance criterion
-names its verification method, and `Interface:` is retired.
+(the model is one requirement tree), D-019 (every acceptance criterion names
+its verification method; `Interface:` is retired) and D-020 (every test is
+reviewed, and the review is recorded in its tag).
 
 Companion to `concept.md`. Covers the **definition** side only (the left leg of
 the V). Verification-side artifacts are out of scope here. In the PoC the
-verification side is deliberately thin: `@covers R-nnnn/ACn` tags in
-the tests under each method's paths, and `.hamilton/verified` (one hash per AC, written by `hamilton check` on a
-passing run). The falsification ledger described in earlier drafts was removed
-— see `concept.md` §5.3.
+verification side is deliberately thin: `@covers R-nnnn/ACn` tags in the
+tests under each method's paths, each carrying the review suffix `hamilton
+review` wrote when its reviewer passed the test (§2.4). The falsification
+ledger described in earlier drafts was removed, and `.hamilton/verified` is
+retired — see `concept.md` §5.3.
 
 ---
 
@@ -20,6 +22,8 @@ passing run). The falsification ledger described in earlier drafts was removed
 | **Actor** | External entity interacting with the system. Defines the system boundary. A flat supporting list — referenced, never referencing. |
 | **Requirement** | What shall be true, plus its acceptance criteria. The requirements form one `Parent` tree, which is the whole model. |
 | **Verification method** | How an acceptance criterion is proven: what a test observes, what is real and what is stubbed. Defined once per project; named by every AC. Not an entity with an id. |
+| **Region** | What counts as "the test" for a `@covers` tag: the file's preamble (every line above its first tag block) plus the tag's own section (its tag block down to the next tag block, or the end of the file). A layout rule, not a parser. |
+| **Review suffix** | `#<obligation>.<test>` after a `@covers` tag: the record that a reviewer passed this test for this AC, as both stood then. Written only by `hamilton review`. |
 
 There is no **Component** and no **Module** entity (D-014), and no
 **Interface** (D-019). The tree holds requirements and criteria; the
@@ -84,8 +88,9 @@ Not an entity, not an id. A `## Verification methods` section at the top of
 
 - **Every AC names ≥1 method** in a trailing marker, `[browser]` or
   `[unit, http]`. More than one is rare; it usually means two ACs.
-- **The marker is part of the AC.** It is hashed with the AC text, so changing
-  a method makes the AC `stale`.
+- **The marker is part of the AC.** It, and the method's definition, are part
+  of the obligation a test's review covers (§2.4), so changing an AC's method —
+  or redefining the method — leaves its tests `unreviewed`.
 - **`manual` is reserved.** It needs no definition and no test; `hamilton check`
   lists it as not machine-verified.
 - **The method is spec, the tool is not.** Which framework runs a method's tests
@@ -103,6 +108,42 @@ from tree position. The level was never enforced, so a gate could be green over
 a broken product, and `Interface:` lines in practice restated the Statement or
 the ACs. The tree is now requirements and ACs only; each AC records the method
 that proves it (concept §4.4, §5.1).
+
+### 2.4 Review suffix — on the `@covers` tag
+
+Not an entity, not an id: a suffix on a tag in a test file,
+
+```
+// @covers R-0005/AC2 #3f9a2c.81d0e4
+```
+
+two 6-hex-digit prefixes of SHA-256, each taken over whitespace-normalised
+text:
+
+| Half | Covers | A change means |
+|---|---|---|
+| obligation | the AC id, its requirement's `Statement`, the AC text with its marker, and the definition of each of the AC's methods whose paths hold the test file (sorted by name) | the test probably needs rewriting |
+| test | the tag's region (§1), with every suffix stripped from its tag lines | the test only needs another review |
+
+- **Each tag has its own.** In a stacked tag block the test half is the same
+  for every tag; the obligation half differs per AC.
+- **Every counting tag needs one.** A tag counts when it names an existing AC
+  and lies under the paths of one of the AC's methods. Another reviewed tag for
+  the same AC does not excuse an unreviewed one. `wrong-method` and
+  `orphan-tag` tags are not reviewed.
+- **Only `hamilton review` writes it**, when its reviewer passes the test; the
+  write gate refuses a file edit that introduces or changes one. A green
+  `hamilton check` writes nothing.
+- **Cross-file code is in no region.** A shared helper in another file can
+  change without invalidating any review (concept §5.3).
+
+**D-020 — reviewed tests.** Supersedes `.hamilton/verified` and the `stale`
+rule. The hash covered the AC line only, so redefining a method or rewording a
+Statement re-flagged nothing, and `stale` cleared itself on the next green run
+without anyone looking at a test. The judgement "this test proves this AC" is
+now made per test, by a reviewer Hamilton runs with enforced inputs, recorded
+in the tag, and invalidated when either the AC side or the test side changes
+(concept §5.3).
 
 ### Phase note
 
@@ -148,6 +189,10 @@ spec/
   requirements.md   # the one Parent tree -- the whole model
   vision.md         # purpose, users, non-goals -- prose, not entities (D-009)
 ```
+
+Review suffixes live in the test files, on the tags. `.hamilton/verified`, the
+per-AC hash file of earlier versions, is retired (D-020): nothing reads or
+writes it, and `hamilton check` prints a notice while it still exists.
 
 `vision.md` holds prose rather than entities and is not read by `hamilton check`.
 It is phase-gated like the rest of `spec/`. A pre-D-014 project may still have
@@ -232,18 +277,22 @@ Verification methods (D-019):
 14. `.hamilton/config` sets no retired `test_paths` — failure `retired-config`.
     **[check]**
 
+Reviews (D-020):
+15. Every counting tag carries a current review suffix — failure `unreviewed`,
+    one per tag, naming which half changed. **[check]**
+
 Advisory (warn, do not fail):
-15. A `Statement` over 20 words — warning `long-statement`. **[check]**
-16. An `Actor` `Description` that is more than one sentence — warning
+16. A `Statement` over 20 words — warning `long-statement`. **[check]**
+17. An `Actor` `Description` that is more than one sentence — warning
     `long-description`. **[check]**
-17. A root requirement whose ACs are all `unit` — warning `root-unit-only`.
+18. A root requirement whose ACs are all `unit` — warning `root-unit-only`.
     **[check]**
-18. A parent's children do not add up to it — **not checkable**; absence is
+19. A parent's children do not add up to it — **not checkable**; absence is
     invisible (concept §5.5). Mitigated by reading `hamilton tree` upward.
 
 *(Gone with D-014: `component-tree`, `module-marker`, `tree-consistency`,
 `unmarked-module`, and the `malformed` "no Component" manifestations. Gone with
-D-019: the `no-interface` warning.)*
+D-019: the `no-interface` warning. Gone with D-020: `stale`.)*
 
 ---
 
@@ -255,7 +304,10 @@ Computed, never stored:
 - **Outline** — the requirement tree with dotted paths, statements and a
   rolled-up coverage mark.
 - **Coverage** per AC, method-aware: a tag counts only under the paths of one of
-  the AC's methods.
+  the AC's methods. An AC is `uncovered` while a method lacks a counting tag,
+  `unreviewed` while any counting tag lacks a current review, else `covered`.
+- **Review state** per tag: reviewed, or which half of its suffix no longer
+  matches.
 - **Reverse links** — a requirement's children; an actor's requirements.
 
 In the PoC these are surfaced by the read-only commands `hamilton tree` (the
@@ -273,4 +325,5 @@ and writes nothing. There is no `hamilton graph`: a tree needs no tool to read.
 | `Status` field | Its only structural job was never-reuse; the counter covers that (§3) |
 | Cross-cutting secondary links (`Also satisfies`) | Needed eventually; not needed to prove the method |
 | Rationale / priority / owner fields | Additive later without migration |
-| Rich test↔AC linkage; test-quality / falsification checking | Verification side. The PoC keeps only the minimum: `@covers` tags resolved against the requirements, and `.hamilton/verified` for staleness |
+| Rich test↔AC linkage | Verification side. The PoC keeps only the minimum: `@covers` tags resolved against the requirements, each with its review suffix (§2.4) |
+| Proof of test quality (mutation testing) | Per-test review is in (D-020); it is a judgement, not a proof. Mutation testing (`mutation_command`) is its planned mechanical complement |

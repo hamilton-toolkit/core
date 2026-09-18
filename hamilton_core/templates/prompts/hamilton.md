@@ -1,6 +1,6 @@
 ---
 name: hamilton
-description: Use in a repository scaffolded by `hamilton init`. Covers the spec-phase review protocol for drafting requirement changes, implementing code against a ratified requirement, propagating a spec change into the code, getting `hamilton check` back to green, deriving a first spec from an existing codebase (`hamilton reverse`), and adopting an existing test suite against that derived spec. The model is one requirement tree; every acceptance criterion names how it is verified.
+description: Use in a repository scaffolded by `hamilton init`. Covers the spec-phase review protocol for drafting requirement changes, implementing code against a ratified requirement, propagating a spec change into the code, getting `hamilton check` back to green (writing tests, having them reviewed by `hamilton review`, implementing), deriving a first spec from an existing codebase (`hamilton reverse`), and adopting an existing test suite against that derived spec. The model is one requirement tree; every acceptance criterion names how it is verified.
 ---
 
 # Hamilton workflows
@@ -12,11 +12,13 @@ methods, e.g. `[browser]`. `spec/actors.md` is a flat supporting list.
 `spec/` is writable only in `spec` phase; code and tests only in `build` phase.
 `hamilton check` runs the test suite (`test_command` in `.hamilton/config`),
 checks that every acceptance criterion has a `@covers`-tagged test under the
-paths of its method (`paths.<method>` in `.hamilton/config`), and flags any
-criterion whose **AC text** — marker included — changed since the last green
-run. It hashes AC text only, so a changed title or statement produces no
-finding. Its findings carry `file:line` and a rule — treat them as the work
-list. It also prints advisory **warnings** (`long-statement`,
+paths of its method (`paths.<method>` in `.hamilton/config`), and that every
+such tag carries a current **review suffix** — `@covers R-nnnn/ACn
+#xxxxxx.yyyyyy`. Only `hamilton review` writes a suffix, when its reviewer
+passes the test; a change to the AC, its requirement's Statement, its method's
+definition, or the test itself leaves the tag `unreviewed`. `hamilton check`
+never writes anything. Its findings carry `file:line` and a rule — treat them
+as the work list. It also prints advisory **warnings** (`long-statement`,
 `long-description`, `root-unit-only`) that never fail a run but flag spec prose
 that needs attention — see **How to write a requirement**.
 
@@ -30,9 +32,9 @@ that needs attention — see **How to write a requirement**.
 - The repo has code, `spec/requirements.md` is empty, and you are in a
   `hamilton reverse` session -> **Reverse-engineer the spec from existing
   code**.
-- First `build` after `hamilton reverse` — `.hamilton/verified` does not exist,
-  most or all ACs are `uncovered`, and `git log -- spec` shows the spec only
-  just landed -> **Adopt an existing test suite**.
+- First `build` after `hamilton reverse` — most or all ACs are `uncovered` or
+  `unreviewed`, and `git log -- spec` shows the spec only just landed ->
+  **Adopt an existing test suite**.
 
 `hamilton design`, `hamilton build` and `hamilton reverse` scope the session to
 a phase and hand you a kickoff line so you start straight away — do not wait to
@@ -323,8 +325,9 @@ This lets the engineer see the shape and the size before spending attention.
 - **acceptance criteria** — all of them, each with its method; for an edit,
   *before* and *after*
 - **CONSEQUENCE** — what this makes true elsewhere: which ACs become
-  `uncovered`, which passing tests go `stale` — changing an AC's method is a
-  consequence just like rewording it, and its old test no longer counts. Name
+  `uncovered`, which tagged tests go `unreviewed` and need rewriting —
+  rewording an AC or its Statement does that, and changing an AC's method is a
+  consequence just like rewording it: its old test no longer counts. Name
   them specifically. State a
   shared dependency once, on the first item that has it — do not repeat it on
   every dependent item.
@@ -366,16 +369,15 @@ rejected during review, and the consolidated red list: which rules
 `hamilton check` will now report and why, e.g. *"R-0016 (2 ACs) and R-0017
 (4 ACs) become `uncovered`; work them in build phase."* Name requirements and
 count their ACs — do not list every AC. Do not re-explain the per-item
-CONSEQUENCE lines. If `.hamilton/verified` does not exist yet (no run has
-passed), a reworded AC does **not** go `stale` — it stays `uncovered`; say
-that, do not announce `stale`.
+CONSEQUENCE lines. A reworded AC whose test is tagged goes `unreviewed`; one
+with no test yet stays `uncovered`.
 
 That closes the iteration. Do not tell the engineer to exit -- Hamilton asks
 them what comes next, and may hand you another change to run the protocol on
 from Phase 1.
 
-Once the engineer starts a build session (`hamilton build`), that `stale` /
-`uncovered` list is the **Propagate a change** work list.
+Once the engineer starts a build session (`hamilton build`), that
+`unreviewed` / `uncovered` list is the **Propagate a change** work list.
 
 ---
 
@@ -496,31 +498,59 @@ State what was written: the vision, the actor count, and the tree shape (root
 count and depth). Then, plainly:
 
 > Almost every AC is now `uncovered` and `hamilton check` will be red. That is
-> the expected state after `hamilton reverse`, not a failure. `.hamilton/verified`
-> does not exist yet, so nothing is `stale`.
+> the expected state after `hamilton reverse`, not a failure.
 
 Next step for the engineer: `hamilton build`, which opens **Adopt an existing
 test suite**.
 
 ---
 
+## The build loop
+
+Every build workflow — Implement, Propagate a change, Adopt — gets tests and
+code to green the same way. Tests come first, and each is judged by a
+reviewer before any code is written against it:
+
+1. `hamilton check` — what is `uncovered`, `unreviewed` or `wrong-method`.
+2. **Write** the missing tests, and **rewrite** each test whose finding says
+   *AC changed*, with a fresh subagent (see **Test authoring**). A test whose
+   finding says only *test changed* needs no rewrite — go to 3.
+3. **`hamilton review --json`.** It sends every unreviewed test to a reviewer
+   that sees only the spec and the test, and writes the review suffix of each
+   test it passes. Give it `R-nnnn/ACn` to review one criterion's tests only.
+4. **Rejects** -> hand the reviewer's `reasons` to a fresh writer subagent,
+   which rewrites the test -> back to 3. **At most 3 review rounds per test**;
+   a test still rejected after the third is a **hard stop**, with the
+   reviewer's last reasons.
+5. **Any `unclear`** -> **hard stop**, with the reviewer's question. The AC's
+   own text cannot settle what the test must prove: a spec defect, fixed in
+   `hamilton design`.
+6. **Run the newly reviewed tests before implementing.** A test for a new or
+   changed obligation that is already green: name it in the summary (not a
+   stop) — either the behaviour already exists, or the test cannot fail.
+7. **Implement** until `hamilton check` is green. Editing a test drops it back
+   to `unreviewed`, so an edited test goes through 3 again — a test edited to
+   pass shows up in `hamilton check`, not only in your conscience.
+
+Never write, edit or copy a `#…` review suffix yourself; the guard refuses it.
+Removing one is allowed — it only makes the test unreviewed.
+
 ## Implement
 
 1. Read the ratified requirement in `spec/requirements.md`, its ancestors, and
    the definitions of its ACs' methods in `## Verification methods`. Implement
    against exactly those. Code that no AC asks for is deleted, not kept.
-2. Author tests — see **Test authoring**. Each test carries a comment
-   `@covers R-nnnn/ACn` naming the one AC it exercises, and exercises it by that
-   AC's method, in a file under that method's `paths.<method>`.
-3. Run `hamilton check`. Resolve every finding. If it reports
-   `no-test-command` or `no-method-paths`, the framework and test layout are
-   yours to choose: set `test_command` and the `paths.<method>` keys in
-   `.hamilton/config` (the only file under `.hamilton/` you may edit in build
-   phase, and only those keys) and re-run.
+2. Run **the build loop**. Each test carries a comment `@covers R-nnnn/ACn`
+   naming the one AC it exercises, and exercises it by that AC's method, in a
+   file under that method's `paths.<method>`.
+3. If `hamilton check` reports `no-test-command` or `no-method-paths`, the
+   framework and test layout are yours to choose: set `test_command` and the
+   `paths.<method>` keys in `.hamilton/config` (the only file under
+   `.hamilton/` you may edit in build phase, and only those keys) and re-run.
 4. **Run the product.** For every AC with an actor-facing method, start the
    system and see the outcome the way the actor would. A green `hamilton check`
-   alone is not done: it proves a tagged test passed, not that the product
-   works.
+   alone is not done: it proves a reviewed, tagged test passed, not that the
+   product works.
 5. If the ratified requirement or a method proves wrong -> **Hard stops**.
 
 ## Propagate a change
@@ -530,11 +560,13 @@ back in line — and only that.
 
 1. `git diff spec/` — read what changed and why.
 2. `hamilton check`.
-3. Rework exactly what it names, nothing else:
-   - `stale` — an AC was reworded or its method changed: re-check the
-     implementation and the `@covers` test against the new wording. A new
-     method needs a test by that method. A clean `hamilton check` records the
-     new hash.
+3. Rework exactly what it names, nothing else, through **the build loop**:
+   - `unreviewed` (AC changed) — the AC, its Statement or its method's
+     definition changed: rewrite the test against the new wording (loop step
+     2), then review it. A new method needs a test by that method.
+   - `unreviewed` (test changed) — the test or its file's preamble changed:
+     review only.
+   - `unreviewed` (no review yet) — review it.
    - `uncovered` — an AC's method has no tagged test under its paths: add one
      that exercises the AC by that method.
    - `wrong-method` — the AC is tagged, but under another method's paths:
@@ -547,8 +579,9 @@ back in line — and only that.
      it needed; retarget the tag only if the behaviour moved to another
      requirement.
 4. Re-run `hamilton check` until it exits 0. Do not touch what it does not name.
-5. **Summary.** List the files and requirements you touched and which ACs moved
-   out of `stale` / `uncovered`. That closes the iteration; Hamilton asks the
+5. **Summary.** List the files and requirements you touched, which ACs moved
+   out of `unreviewed` / `uncovered`, and any newly reviewed test that was
+   green before you implemented. That closes the iteration; Hamilton asks the
    engineer what comes next.
 
 ## Verify
@@ -558,7 +591,8 @@ back in line — and only that.
    - **Implementation** — freely mutable; the repair surface.
    - **A test** — changed only when it misreads its AC, and justified against
      the AC text. A correct failing test is a bug in the implementation; never
-     edit it to pass.
+     edit it to pass. An edited test is `unreviewed` again and goes back
+     through `hamilton review`.
    - **An acceptance criterion** — immutable. Needing to change one is a hard
      stop (see below).
 3. Re-run `hamilton check`. Exit 0.
@@ -574,11 +608,11 @@ to change behaviour.
 
 ### Recognise it, and rule out the other two
 
-`hamilton check` is red with `uncovered` on most or all ACs, `.hamilton/verified`
-does not exist, and `git log -- spec` shows the spec only just landed. That is
-**not Propagate a change** (there is no incremental `git diff spec/`) and **not
-Verify** (the suite is unbound, not logically failing). If the suite is actually
-failing on logic, that is a **Verify** problem and comes first.
+`hamilton check` is red with `uncovered` or `unreviewed` on most or all ACs,
+and `git log -- spec` shows the spec only just landed. That is **not Propagate
+a change** (there is no incremental `git diff spec/`) and **not Verify** (the
+suite is unbound, not logically failing). If the suite is actually failing on
+logic, that is a **Verify** problem and comes first.
 
 ### Steps
 
@@ -600,17 +634,21 @@ failing on logic, that is a **Verify** problem and comes first.
      delete or rewrite them: they still run and still guard against regressions,
      they are simply not the AC binding.
    - Keep the count bounded — a few tests per requirement.
-3. **Triage what will not bind:**
+3. **Review everything:** `hamilton review --json`, then **the build loop**
+   from its step 4. When the reviewer rejects an existing test you tagged, do
+   not rewrite it — remove its tag and write a new AC-level test alongside it.
+4. **Triage what will not bind:**
    - An AC you cannot write a feasible test for is a signal the AC is wrong or
      pitched too deep. **Hard stop** (see below): report it; the engineer
      re-enters `hamilton design`. Never weaken the AC to make it bind.
    - Code paths that no requirement covers: list them for the engineer — a
      missing requirement, or dead code. Do not act on it in build phase.
-4. **Iterate `hamilton check` to green.** A clean run writes `.hamilton/verified`
-   — the adoption is complete and from here it is the normal loop.
-5. **Summary.** ACs bound to an existing test, ACs given a new test, ACs that
-   hard-stopped back to spec, and any code with no covering requirement. Then
-   that closes the iteration; Hamilton asks the engineer what comes next.
+5. **Iterate `hamilton check` to green.** The adoption is complete and from
+   here it is the normal loop.
+6. **Summary.** ACs bound to an existing test, ACs given a new test, existing
+   tests the reviewer rejected, ACs that hard-stopped back to spec, and any
+   code with no covering requirement. Then that closes the iteration; Hamilton
+   asks the engineer what comes next.
 
 ## Test authoring
 
@@ -621,14 +659,37 @@ failing on logic, that is a **Verify** problem and comes first.
     it — **not** the source.
 
   Never the implementation body. An agent that just wrote the code writes tests
-  that encode its own bugs.
-- This is an instruction, not an enforced boundary: the subagent shares the
-  repo. `hamilton check` confirms only that a tagged test exists and passes —
-  it does not judge whether the test is any good. That judgement is the whole
-  reason for the fresh-subagent rule.
+  that encode its own bugs. On a rewrite after a reject, it also gets the
+  reviewer's reasons.
+- This writer rule is an instruction, not an enforced boundary: the subagent
+  shares the repo. The **reviewer** is enforced: `hamilton review` builds its
+  prompt itself — the requirement's Statement, the AC, the method definition
+  and the test's text, nothing else — and gives it no tools. It cannot see
+  helpers in other files and judges them by their names, so name helpers for
+  what they do.
+- The reviewer passes a test only when all five checks hold. Write to them:
+  1. **Clause coverage** — every clause of the expected outcome has an
+     assertion.
+  2. **Starting point** — the test starts from the AC's condition, not from a
+     lower layer's already-prepared inputs.
+  3. **Can fail** — the assertion would fail if the behaviour were missing. No
+     tautologies (asserting the platform's own behaviour), no assertions so
+     loose that anything passes.
+  4. **Independent expectation** — expected values come from the spec or the
+     AC, not from the implementation's own constants or files.
+  5. **Scope** — "any" / "every" in the AC means the test covers the set, not
+     a sample.
+
+  It also checks that the test verifies by the declared method: a `browser`
+  test drives a browser.
+- "The test" is its **region**: the file's preamble (every line above the
+  first `@covers` tag) plus the test's own section (from its tags down to the
+  next tagged test, or the end of the file). Put each test directly under its
+  tags, and keep shared setup in the preamble or a well-named helper. Editing
+  the preamble sends every test in the file back to review.
 - Every test carries its `@covers R-nnnn/ACn` tag, exercises the AC by its
   method, and sits under that method's `paths.<method>`. A `manual` AC gets no
-  test.
+  test. **Never write or edit a `#…` suffix** — only `hamilton review` does.
 - Keep the count bounded — a few tests per requirement, prioritised, not
   assertion padding.
 
@@ -648,3 +709,12 @@ feasible test can bind by its method:
 
 Needing to change an acceptance criterion — its method included — is the same
 hard stop: ACs are immutable during `build`.
+
+Two more hard stops come from the reviewer, in **the build loop**:
+
+- **`unclear`** — the reviewer cannot tell from the AC's text whether a test
+  proves it. Report the AC and the reviewer's question; the engineer answers
+  it by sharpening the AC in `hamilton design`.
+- **Three rejected review rounds** on one test. Report the AC and the
+  reviewer's last reasons; either the test cannot be written as the AC stands,
+  or the reviewer and the AC disagree — both are the engineer's call.

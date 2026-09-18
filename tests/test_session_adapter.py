@@ -9,7 +9,7 @@ import asyncio
 
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import (
-    ClaudeSdkAdapter, _as_question, _strip_sentinel,
+    ClaudeSdkAdapter, ClaudeSdkJudge, _as_question, _strip_sentinel,
 )
 
 
@@ -92,6 +92,27 @@ def test_a_notebook_write_is_gated_on_its_own_path_field():
     a = adapter(write_policy=lambda p: f"no: {p}")
     r = asyncio.run(a._can_use_tool("NotebookEdit", {"notebook_path": "n.ipynb"}, None))
     assert r.behavior == "deny" and "n.ipynb" in r.message
+
+
+def test_a_forged_review_suffix_is_denied(tmp_path):
+    (tmp_path / ".hamilton").mkdir()
+    (tmp_path / ".hamilton" / "phase").write_text("build")
+    a = ClaudeSdkAdapter(root=str(tmp_path), answerer=lambda q: "ok",
+                         write_policy=lambda p: None)
+    forged = {"file_path": "tests/a.js",
+              "content": "// @covers R-0001/AC1 #aaaaaa.bbbbbb\n"}
+    r = asyncio.run(a._can_use_tool("Write", forged, None))
+    assert r.behavior == "deny" and "hamilton review" in r.message
+
+
+# --- the reviewer ------------------------------------------------------------
+
+def test_the_judge_session_has_no_tools_settings_or_history():
+    o = ClaudeSdkJudge()._options("/tmp/empty")
+    assert o.tools == [] and o.allowed_tools == []
+    assert o.setting_sources == [] and o.strict_mcp_config is True
+    assert o.mcp_servers == {} and o.resume is None
+    assert o.max_turns == 1 and o.cwd == "/tmp/empty"
 
 
 # --- the completion sentinel -------------------------------------------------
