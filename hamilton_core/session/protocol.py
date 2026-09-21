@@ -64,7 +64,8 @@ class ToolDenied:
 
 @dataclass(frozen=True)
 class PhaseDone:
-    """The agent emitted SENTINEL: this phase's workflow is finished."""
+    """The agent emitted SENTINEL: this phase's workflow is finished. Raised
+    by `agent.Agent` at the end of that turn, not by an adapter."""
     summary: str = ""
 
 
@@ -73,13 +74,71 @@ class SessionError:
     message: str
 
 
-Event = AgentText | ToolDenied | PhaseDone | SessionError
+@dataclass(frozen=True)
+class SubagentDone:
+    """A subagent the agent ran has finished."""
+    label: str
+    ok: bool
+    elapsed: float
+
+
+Event = AgentText | ToolDenied | PhaseDone | SessionError | SubagentDone
+
+
+# --- what an adapter reports besides that -------------------------------------
+
+@dataclass(frozen=True)
+class TurnEnded:
+    """The turn the engineer's message started is finished. Not every turn
+    the agent runs is one: it may start its own, e.g. when a background task
+    completes."""
+
+
+@dataclass(frozen=True)
+class TaskStarted:
+    """The agent started a subagent. `id` is the adapter's own handle."""
+    id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class TaskProgress:
+    id: str
+    tool_uses: int
+    last_tool: str
+
+
+@dataclass(frozen=True)
+class TaskEnded:
+    """A tool call of the agent's finished. Ids that were never started as a
+    task are ignored, so an adapter need not remember which ids were tasks."""
+    id: str
+    ok: bool
+
+
+StreamEvent = Event | TurnEnded | TaskStarted | TaskProgress | TaskEnded
+
+
+@dataclass(frozen=True)
+class Activity:
+    """A running subagent, as the engineer sees it. `started` is a
+    `time.monotonic()` reading."""
+    id: str
+    label: str
+    started: float
+    tool_uses: int = 0
+    last_tool: str = ""
 
 
 # --- the adapter seam ---------------------------------------------------------
 
 class AgentAdapter(Protocol):
-    """One turn in, a stream of events out.
+    """A live agent session: messages in, one stream of events out.
+
+    The stream runs for the whole session, not per turn -- the agent can act
+    between the engineer's messages, and must be heard when it does. Turns,
+    subagent tracking and the completion sentinel are built on top of it in
+    `agent.Agent`, once for every vendor.
 
     Construction carries the rest (project root, answerer, write policy, and
     the session reference to resume from), so this interface stays small
@@ -89,7 +148,13 @@ class AgentAdapter(Protocol):
 
     session_ref: str | None
 
-    def run_turn(self, text: str) -> AsyncIterator[Event]:
+    async def connect(self) -> None:
+        ...
+
+    async def send(self, text: str) -> None:
+        ...
+
+    def events(self) -> AsyncIterator[StreamEvent]:
         ...
 
     async def close(self) -> None:

@@ -78,7 +78,9 @@ def test_a_pass_writes_exactly_that_tags_suffix(tmp_path, monkeypatch, capsys):
     assert old == "// @covers R-0001/AC2"
     assert new.startswith("// @covers R-0001/AC2 #") and len(new) == len(old) + 15
     assert run_check(d).returncode == 0
-    assert "R-0001/AC2: pass (no review yet) -- suffix written" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "  ✓ R-0001/AC2  tests/covers.js:7\n" in out
+    assert "1 reviewed · 1 passed. Suffixes written for the 1 that passed." in out
 
 
 def test_a_reject_leaves_the_file_and_reports_the_reasons(tmp_path, monkeypatch, capsys):
@@ -88,7 +90,11 @@ def test_a_reject_leaves_the_file_and_reports_the_reasons(tmp_path, monkeypatch,
     assert R.main(judge=judge) == 1
     assert read(d) == before
     out = capsys.readouterr().out
-    assert "R-0001/AC2: reject" in out and "  - asserts the status but not the body" in out
+    assert "  ✗ R-0001/AC2  tests/covers.js:7  rejected\n" in out
+    assert "1 reviewed · 1 rejected." in out and "1 need attention:" in out
+    assert "    Criterion  token inside the 30s clock-skew window -> accepted" in out
+    assert "    Review     (no review yet)" in out
+    assert "      • asserts the status but not the body" in out
 
 
 def test_unclear_leaves_the_file_and_reports_the_question(tmp_path, monkeypatch, capsys):
@@ -97,7 +103,9 @@ def test_unclear_leaves_the_file_and_reports_the_question(tmp_path, monkeypatch,
     judge = FakeJudge(verdicts("unclear", question="Is a 30s skew inclusive?"))
     assert R.main(judge=judge) == 1
     assert read(d) == before
-    assert "question: Is a 30s skew inclusive?" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "  ? R-0001/AC2  tests/covers.js:7  unclear\n" in out
+    assert "    Question   Is a 30s skew inclusive?" in out
 
 
 @pytest.mark.parametrize("reply", [
@@ -111,7 +119,7 @@ def test_an_answer_that_does_not_parse_is_an_error(tmp_path, monkeypatch, capsys
     before = read(d)
     assert R.main(judge=FakeJudge(lambda p: reply)) == 1
     assert read(d) == before
-    assert "R-0001/AC2: error" in capsys.readouterr().out
+    assert "  ! R-0001/AC2  tests/covers.js:7  error\n" in capsys.readouterr().out
 
 
 def test_a_failing_judge_is_an_error(tmp_path, monkeypatch, capsys):
@@ -150,7 +158,7 @@ def test_nothing_to_review_exits_zero_without_asking(tmp_path, monkeypatch, caps
     judge = FakeJudge(verdicts("pass"))
     assert R.main(judge=judge) == 0
     assert judge.prompts == []
-    assert "nothing needed review" in capsys.readouterr().err
+    assert "nothing needed review" in capsys.readouterr().out
 
 
 def test_spec_phase_exits_2(tmp_path, monkeypatch, capsys):
@@ -165,7 +173,9 @@ def test_json_output(tmp_path, monkeypatch, capsys):
     assert R.main(as_json=True, judge=FakeJudge(verdicts("reject", ["weak"]))) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"ok": False, "results": [
-        {"ac": "R-0001/AC2", "file": "tests/covers.js", "line": 7,
+        {"ac": "R-0001/AC2",
+         "criterion": "token inside the 30s clock-skew window -> accepted [http]",
+         "file": "tests/covers.js", "line": 7,
          "state": "no review yet", "verdict": "reject", "reasons": ["weak"],
          "question": ""}]}
 
@@ -220,3 +230,67 @@ def test_the_cli_routes_review(tmp_path, monkeypatch):
     project(tmp_path, monkeypatch, phase="spec")
     from hamilton_core import cli
     assert cli.main(["review", "--json"]) == 2
+
+
+def test_reviewers_run_side_by_side_up_to_the_cap_and_results_keep_file_order(
+        tmp_path, monkeypatch, capsys):
+    d = project(tmp_path, monkeypatch)
+    for i in range(6):
+        open(f"{d}/tests/t{i}.js", "w").write(f"// @covers R-0001/AC2\nit('t{i}', ...)\n")
+    running, peak = [0], [0]
+
+    class SlowJudge(FakeJudge):
+        async def ask(self, prompt):
+            import asyncio
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+            await asyncio.sleep(0.01)
+            running[0] -= 1
+            return await super().ask(prompt)
+
+    assert R.main(as_json=True, judge=SlowJudge(verdicts("pass"))) == 0
+    assert peak[0] == R.PARALLEL
+    files = [r["file"] for r in json.loads(capsys.readouterr().out)["results"]]
+    assert files == ["tests/covers.js"] + [f"tests/t{i}.js" for i in range(6)]
+    assert run_check(d).returncode == 0
+
+
+def test_the_watcher_hears_each_region_start_and_finish(tmp_path, monkeypatch):
+    import asyncio
+    d = project(tmp_path, monkeypatch)
+    open(f"{d}/tests/other.js", "w").write("// @covers R-0001/AC1\nit('x', ...)\n")
+    heard = []
+
+    class Watch(R.Watch):
+        def started(self, key, label):
+            heard.append(("started", label))
+
+        def finished(self, key, results):
+            heard.append(("finished", [r["ac"] for r in results]))
+
+    asyncio.run(R.review(d, FakeJudge(verdicts("pass")), watch=Watch()))
+    assert sorted(heard) == [("finished", ["R-0001/AC1"]), ("finished", ["R-0001/AC2"]),
+                             ("started", "R-0001/AC1 · other.js:1"),
+                             ("started", "R-0001/AC2 · covers.js:7")]
+
+
+def test_json_keeps_stdout_to_the_json(tmp_path, monkeypatch, capsys):
+    project(tmp_path, monkeypatch)
+    assert R.main(as_json=True, judge=FakeJudge(verdicts("pass"))) == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out)["ok"] is True
+    assert "✓ R-0001/AC2" in err and "hamilton review: 1 reviewed" in err
+
+
+def test_a_long_reason_wraps_under_its_bullet():
+    from hamilton_core.session.console import Paint
+    r = {"ac": "R-0001/AC2", "criterion": "short", "file": "t.js", "line": 1,
+         "state": "test changed", "verdict": "reject", "question": "",
+         "reasons": ["one two three four five six seven eight nine ten"]}
+    assert R.details(r, 30, Paint(False)) == [
+        "    Criterion  short",
+        "    Review     (test changed)",
+        "      • one two three four",
+        "        five six seven eight",
+        "        nine ten",
+    ]

@@ -157,6 +157,52 @@ def test_the_indicator_is_suspended_around_anything_that_reads():
     assert seen == [True]
 
 
+def row(label, started=0.0, tool_uses=0, last_tool=""):
+    return P.Activity(label, label, started, tool_uses, last_tool)
+
+
+def test_a_running_subagent_reads_as_what_how_long_and_its_last_tool():
+    assert C.activity_lines([row("Write test R-0001/AC1", 0, 3, "Edit")], 134, "⠹") == [
+        "  ⠹ Write test R-0001/AC1  2m14s · 3 tools · Edit"]
+    assert C.activity_lines([row("Rewrite test", 0, 1)], 5, "⠹") == [
+        "  ⠹ Rewrite test  5s · 1 tool"]
+    assert C.activity_lines([row("Just started")], 0, "⠹") == ["  ⠹ Just started  0s"]
+
+
+def test_at_most_five_rows_are_drawn():
+    lines = C.activity_lines([row(f"r{i}") for i in range(8)], 1, "⠹")
+    assert len(lines) == 6 and lines[-1] == "  … and 3 more"
+
+
+def test_the_frame_is_erased_by_exactly_the_lines_it_drew():
+    c, out = console()
+    c._shown = 1
+    assert c._erase() == "\r\x1b[J"
+    c._shown = 3
+    assert c._erase() == "\r\x1b[2A\x1b[J"
+    c._clear_frame()
+    assert c._shown == 0 and c._erase() == ""
+
+
+def test_the_indicator_draws_the_rows_under_it():
+    c, out = console()
+    c.follow(lambda: (row("Write test R-0001/AC1", time.monotonic(), 2, "Bash"),))
+    stop = threading.Event()
+    threading.Timer(0.25, stop.set).start()
+    c._animate("Engineering", stop)
+    frames = out.getvalue()
+    assert "Engineering…" in frames and "Write test R-0001/AC1  0s · 2 tools · Bash" in frames
+    assert c._shown == 2
+
+
+def test_a_finished_subagent_leaves_a_line_even_without_a_terminal():
+    c, out = console()
+    c.subagent_done("Write test R-0001/AC1", True, 134)
+    c.subagent_done("Write test R-0001/AC2", False, 3)
+    assert out.getvalue() == ("  ✓ Write test R-0001/AC1 (2m14s)\n"
+                              "  ✗ Write test R-0001/AC2 failed (3s)\n")
+
+
 # --- finishing gracefully ----------------------------------------------------
 
 def test_a_question_offers_a_way_to_finish():
@@ -351,3 +397,26 @@ def test_an_empty_text_answer_goes_back_without_ending_the_session():
     c, _ = console("\n")
     assert c.ask_text("What should change?") is None
     assert c.aborted is False
+
+
+# --- the fold-out list ---------------------------------------------------------
+
+ITEMS = [("✗ R-0001/AC1", ["    why one"]),
+         ("✗ R-0001/AC2", ["    why two", "    and more"]),
+         ("? R-0001/AC3", ["    a question"])]
+
+
+def test_without_a_tty_the_list_prints_unfolded():
+    out = io.StringIO()
+    C.Console(out=out, inp=io.StringIO(), color=False).browse(ITEMS)
+    assert out.getvalue() == ("  ✗ R-0001/AC1\n    why one\n"
+                              "  ✗ R-0001/AC2\n    why two\n    and more\n"
+                              "  ? R-0001/AC3\n    a question\n")
+
+
+def test_what_was_unfolded_on_leaving_stays_behind(tty):
+    c, out = tty("\x1b[B\r\x1b[B \rq")         # open 2, open and close 3, leave
+    c.browse(ITEMS)
+    assert out.getvalue() == ("  ✗ R-0001/AC1\n"
+                              "  ✗ R-0001/AC2\n    why two\n    and more\n"
+                              "  ? R-0001/AC3\n")

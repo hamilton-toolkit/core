@@ -36,6 +36,7 @@ from hamilton_core import phase as _phase
 from hamilton_core import status as _status
 from hamilton_core import tree as _tree
 from hamilton_core.session import protocol as P
+from hamilton_core.session.agent import Agent
 from hamilton_core.session.claude_sdk_adapter import ClaudeSdkAdapter
 from hamilton_core.session.console import Console
 from hamilton_core.session.modes import Mode, Step
@@ -101,7 +102,9 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
     and everything the agent has already read and ratified -- still live.
     Checkpoints after every turn; that is the resume path.
     """
-    cp = P.Checkpoint(phase=mode.phase, session_ref=adapter.session_ref)
+    agent = Agent(adapter)
+    console.follow(agent.activity)
+    cp = P.Checkpoint(phase=mode.phase, session_ref=agent.session_ref)
     text: str | None = kickoff
     rc = 0
     try:
@@ -111,12 +114,14 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
             # that reads or draws, including the questions the agent asks from
             # its own thread.
             console.start_working()
-            async for ev in adapter.run_turn(text):
+            async for ev in agent.run_turn(text):
                 if isinstance(ev, P.AgentText):
                     console.agent_text(ev.text)
                     body = ev.text.strip()
                     if body:
                         cp.last_summary = body.splitlines()[-1][:200]
+                elif isinstance(ev, P.SubagentDone):
+                    console.subagent_done(ev.label, ev.ok, ev.elapsed)
                 elif isinstance(ev, P.ToolDenied):
                     console.denial(ev.path, ev.reason)
                 elif isinstance(ev, P.SessionError):
@@ -126,7 +131,7 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
                     done = True
 
             console.stop_working()
-            cp.session_ref = adapter.session_ref
+            cp.session_ref = agent.session_ref
             cp.turns_completed += 1
 
             if console.aborted or rc:
@@ -143,7 +148,7 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
             text = await asyncio.to_thread(console.next_message)
     finally:
         console.stop_working()
-        await adapter.close()
+        await agent.close()
     return rc
 
 

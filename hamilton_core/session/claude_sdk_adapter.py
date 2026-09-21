@@ -1,8 +1,10 @@
 """The only module in Hamilton that imports `claude_agent_sdk`.
 
 It implements `protocol.AgentAdapter` by translating the SDK's message stream
-into Hamilton's events, and `protocol.Judge` as a one-shot session with no
-tools. Two vendor-specific things are contained here on purpose:
+into Hamilton's events (`_translate`), and `protocol.Judge` as a one-shot
+session with no tools. Turns, subagent rows and the completion sentinel are
+not decided here but in `agent.Agent`, for every vendor alike. Three
+vendor-specific things are contained here on purpose:
 
   * **Questions.** The engineer-facing question flow is an in-process MCP tool
     (`ask_engineer`) rather than the CLI's own interactive prompt, because
@@ -14,6 +16,10 @@ tools. Two vendor-specific things are contained here on purpose:
     PreToolUse hook also fires (project settings are loaded so the `hamilton`
     skill is available), so a write is checked twice by the same policy --
     harmless, and it keeps the hook meaningful for anything else that reads it.
+  * **Foreground subagents.** An in-process PreToolUse hook refuses a
+    subagent launched in the background: the turn would end while it still
+    works, and the engineer would lose sight of it. (`can_use_tool` is not
+    asked about the `Agent` tool, so this cannot live there.)
 
 Anything a future non-SDK harness would do differently belongs in this file.
 """
@@ -28,10 +34,15 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    HookMatcher,
     PermissionResultAllow,
     PermissionResultDeny,
     ResultMessage,
+    TaskProgressMessage,
     TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
     query,
     tool,
@@ -41,6 +52,10 @@ from hamilton_core import guard
 from hamilton_core.session import protocol as P
 
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+SUBAGENT_TOOLS = ("Agent", "Task")      # "Task" is the tool's older name
+
+FOREGROUND = ("Run subagents in the foreground; issue several Agent calls in "
+              "one message to run them in parallel.")
 
 _ASK_DESCRIPTION = (
     "Ask the engineer a question and wait for their answer. Use this for every "
@@ -106,6 +121,8 @@ class ClaudeSdkAdapter:
             mcp_servers={"hamilton": create_sdk_mcp_server(
                 "hamilton", tools=[ask_engineer])},
             can_use_tool=self._can_use_tool,
+            hooks={"PreToolUse": [HookMatcher(matcher="|".join(SUBAGENT_TOOLS),
+                                              hooks=[_foreground_only])]},
             resume=resume_ref,
         )
 
@@ -126,45 +143,74 @@ class ClaudeSdkAdapter:
         out, self._denials = list(self._denials), []
         return out
 
-    async def _ensure_connected(self) -> None:
-        if self._client is None:
-            self._client = ClaudeSDKClient(options=self._options)
-            await self._client.connect()
+    async def connect(self) -> None:
+        self._client = ClaudeSDKClient(options=self._options)
+        await self._client.connect()
 
-    async def run_turn(self, text: str) -> AsyncIterator[P.Event]:
-        await self._ensure_connected()
+    async def send(self, text: str) -> None:
         assert self._client is not None
         await self._client.query(text)
 
-        saw_sentinel = False
-        tail = ""
-        async for msg in self._client.receive_response():
+    async def events(self) -> AsyncIterator[P.StreamEvent]:
+        assert self._client is not None
+        async for msg in self._client.receive_messages():
             for ev in self._drain():
                 yield ev
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        body, hit = _strip_sentinel(block.text)
-                        saw_sentinel = saw_sentinel or hit
-                        if body.strip():
-                            tail = body
-                            yield P.AgentText(body)
-            elif isinstance(msg, ResultMessage):
-                if msg.session_id:
-                    self.session_ref = msg.session_id
-                if msg.is_error:
-                    yield P.SessionError(msg.result or msg.subtype
-                                         or "the agent session failed")
-
-        for ev in self._drain():
-            yield ev
-        if saw_sentinel:
-            yield P.PhaseDone(tail.strip())
+            if isinstance(msg, ResultMessage) and msg.session_id:
+                self.session_ref = msg.session_id
+            for ev in _translate(msg):
+                yield ev
 
     async def close(self) -> None:
         if self._client is not None:
             await self._client.disconnect()
             self._client = None
+
+
+def _translate(msg) -> list[P.StreamEvent]:
+    """One SDK message as Hamilton events. Only the main agent speaks to the
+    engineer: a message with a `parent_tool_use_id` is a subagent's, and of
+    those only its progress shows."""
+    if isinstance(msg, AssistantMessage):
+        if msg.parent_tool_use_id:
+            return []
+        out: list[P.StreamEvent] = []
+        for block in msg.content:
+            if isinstance(block, TextBlock) and block.text.strip():
+                out.append(P.AgentText(block.text))
+            elif isinstance(block, ToolUseBlock) and block.name in SUBAGENT_TOOLS:
+                label = str(block.input.get("description") or "subagent")
+                out.append(P.TaskStarted(block.id, label))
+        return out
+    if isinstance(msg, UserMessage):
+        if msg.parent_tool_use_id or not isinstance(msg.content, list):
+            return []
+        return [P.TaskEnded(b.tool_use_id, not b.is_error)
+                for b in msg.content if isinstance(b, ToolResultBlock)]
+    if isinstance(msg, TaskProgressMessage):
+        if not msg.tool_use_id:
+            return []
+        return [P.TaskProgress(msg.tool_use_id, int(msg.usage.get("tool_uses", 0)),
+                               msg.last_tool_name or "")]
+    if isinstance(msg, ResultMessage):
+        out = []
+        if msg.is_error:
+            out.append(P.SessionError(msg.result or msg.subtype
+                                      or "the agent session failed"))
+        # Our own turn's result; not one the CLI started itself, e.g. to
+        # report a finished background task.
+        if msg.origin is None or msg.origin.get("kind") == "human":
+            out.append(P.TurnEnded())
+        return out
+    return []
+
+
+async def _foreground_only(hook_input, tool_use_id, context) -> dict:
+    if not (hook_input.get("tool_input") or {}).get("run_in_background"):
+        return {}
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                   "permissionDecision": "deny",
+                                   "permissionDecisionReason": FOREGROUND}}
 
 
 class ClaudeSdkJudge:
@@ -195,11 +241,3 @@ class ClaudeSdkJudge:
             raise RuntimeError(error)
         return "\n".join(texts)
 
-
-def _strip_sentinel(text: str) -> tuple[str, bool]:
-    """Text with the sentinel line removed, and whether it was there. The
-    engineer should see the closing summary, not the marker that ends it."""
-    if P.SENTINEL not in text:
-        return text, False
-    kept = [ln for ln in text.splitlines() if ln.strip() != P.SENTINEL]
-    return "\n".join(kept), True

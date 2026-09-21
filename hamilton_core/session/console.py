@@ -21,6 +21,14 @@ terminal) questions render as a numbered list, input is read a line at a time,
 the working indicator stays silent and colour switches itself off. `NO_COLOR`
 is honoured.
 
+**Subagents show while they run.** Under the working indicator, one row per
+running subagent: what it does, for how long, and its latest tool. When one
+finishes, a single line stays behind in the scrollback.
+
+**Long results fold.** A list of headings unfolds one item at a time; what
+was unfolded when the engineer leaves stays in the scrollback. Without a TTY
+everything prints unfolded.
+
 Imports no vendor SDK: this is Hamilton's own front end, and it renders
 `protocol` types.
 """
@@ -32,6 +40,7 @@ import enum
 import itertools
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -51,6 +60,7 @@ EDIT_HINT = "Alt+Enter (or Ctrl+J) for a new line · Enter to send"
 ENDED = "(the engineer ended the session)"
 WORKING = "Engineering"
 FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+MAX_ROWS = 5
 
 
 class Outcome(enum.Enum):
@@ -99,6 +109,7 @@ class Paint:
     def dim(self, s: str) -> str: return self._w("2", s)
     def cyan(self, s: str) -> str: return self._w("36", s)
     def green(self, s: str) -> str: return self._w("32", s)
+    def yellow(self, s: str) -> str: return self._w("33", s)
     def red(self, s: str) -> str: return self._w("31", s)
     def heading(self, s: str) -> str: return self._w("1;36", s)
 
@@ -127,6 +138,21 @@ def elapsed(seconds: float) -> str:
     return f"{s}s" if s < 60 else f"{s // 60}m{s % 60:02d}s"
 
 
+def activity_lines(rows, now: float, frame: str) -> list[str]:
+    """The running subagents as the indicator shows them, at most `MAX_ROWS`."""
+    lines = []
+    for row in rows[:MAX_ROWS]:
+        line = f"  {frame} {row.label}  {elapsed(now - row.started)}"
+        if row.tool_uses:
+            line += f" · {row.tool_uses} tool{'s' if row.tool_uses != 1 else ''}"
+        if row.last_tool:
+            line += f" · {row.last_tool}"
+        lines.append(line)
+    if len(rows) > MAX_ROWS:
+        lines.append(f"  … and {len(rows) - MAX_ROWS} more")
+    return lines
+
+
 def echo(text: str) -> str:
     """How a sent answer is reprinted: the prompt, then the text with lines
     after a newline indented under it. Long lines are left for the terminal
@@ -151,7 +177,8 @@ class Console:
         self._lock = threading.RLock()
         self._stop = None          # set while the indicator thread runs
         self._thread = None
-        self._shown = False        # a frame is currently on screen
+        self._shown = 0            # lines of the frame currently on screen
+        self._activity = lambda: ()
 
     # --- plumbing ------------------------------------------------------------
 
@@ -190,6 +217,10 @@ class Console:
                                   output=create_output(self._out))
 
     # --- the working indicator -----------------------------------------------
+
+    def follow(self, activity) -> None:
+        """Draw the rows `activity()` returns under the working indicator."""
+        self._activity = activity
 
     def start_working(self, label: str = WORKING) -> None:
         """Animate until `stop_working`. Silent when not on a terminal."""
@@ -235,18 +266,30 @@ class Console:
             with self._lock:
                 if stop.is_set():
                     return
-                since = time.monotonic() - started
-                tail = f" ({elapsed(since)})" if since >= 2 else ""
-                self._out.write(
-                    f"\r{ESC}[2K" + self.paint.dim(f"{frame} {label}…{tail}"))
+                now = time.monotonic()
+                tail = f" ({elapsed(now - started)})" if now - started >= 2 else ""
+                lines = ([f"{frame} {label}…{tail}"]
+                         + activity_lines(self._activity(), now, frame))
+                # A wrapped line would throw off the count `_erase` goes up by.
+                width = max(shutil.get_terminal_size().columns - 1, 10)
+                self._out.write(self._erase() + "\n".join(
+                    self.paint.dim(line[:width]) for line in lines))
                 self._out.flush()
-                self._shown = True
+                self._shown = len(lines)
+
+    def _erase(self) -> str:
+        """What takes the frame on screen off it again: back to its first
+        line, then clear to the end of the screen."""
+        if not self._shown:
+            return ""
+        up = f"{ESC}[{self._shown - 1}A" if self._shown > 1 else ""
+        return f"\r{up}{ESC}[J"
 
     def _clear_frame(self) -> None:
         if self._shown:
-            self._out.write(f"\r{ESC}[2K")
+            self._out.write(self._erase())
             self._out.flush()
-            self._shown = False
+            self._shown = 0
 
     # --- what the engineer sees ---------------------------------------------
 
@@ -265,6 +308,25 @@ class Console:
     def agent_text(self, text: str) -> None:
         self.say()
         self.say(markdown(text, self.paint))
+
+    def subagent_done(self, label: str, ok: bool, seconds: float) -> None:
+        if ok:
+            self.say(self.paint.dim(f"  ✓ {label} ({elapsed(seconds)})"))
+        else:
+            self.say(self.paint.red(f"  ✗ {label} failed ({elapsed(seconds)})"))
+
+    def browse(self, items: list[tuple[str, list[str]]]) -> None:
+        """(heading, lines) items, folded, for the engineer to unfold. Then the
+        list stays behind as it was left."""
+        opened = set(range(len(items)))
+        if self._interactive():
+            with self._paused(), self._session():
+                opened = widgets.folds(items).run()
+        for i, (head, body) in enumerate(items):
+            self.say(f"  {head}")
+            if i in opened:
+                for ln in body:
+                    self.say(ln)
 
     def denial(self, path: str, reason: str) -> None:
         self.say(self.paint.red(f"  ✗ write to {path} denied: {reason}"))

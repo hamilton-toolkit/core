@@ -518,6 +518,10 @@ reviewer before any code is written against it:
 3. **`hamilton review --json`.** It sends every unreviewed test to a reviewer
    that sees only the spec and the test, and writes the review suffix of each
    test it passes. Give it `R-nnnn/ACn` to review one criterion's tests only.
+   It reviews a few tests at once but can take minutes: run it **in the
+   foreground** with the longest Bash timeout (10 minutes), never in the
+   background, and never end your turn to wait for it. If it runs out of time,
+   review one criterion per call.
 4. **Rejects** -> hand the reviewer's `reasons` to a fresh writer subagent,
    which rewrites the test -> back to 3. **At most 3 review rounds per test**;
    a test still rejected after the third is a **hard stop**, with the
@@ -534,6 +538,18 @@ reviewer before any code is written against it:
 
 Never write, edit or copy a `#…` review suffix yourself; the guard refuses it.
 Removing one is allowed — it only makes the test unreviewed.
+
+**What the engineer sees.** Hamilton shows each running subagent as a live
+row, labelled with the subagent's `description`, so keep your own text short:
+one line per loop step, `▸ <step> — <what>` (e.g. `▸ review — 4 tests`), and
+one line per finding. Longer text only for the closing summary, a hard stop or
+a question.
+
+- Name writer subagents `Write test R-nnnn/ACn`, or `Rewrite test R-nnnn/ACn
+  (round k/3)` after a reject.
+- Run subagents **in the foreground**, never in the background — Hamilton
+  refuses a background launch. To run several at once, put several `Agent`
+  calls in one message.
 
 ## Implement
 

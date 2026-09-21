@@ -17,12 +17,21 @@ It answers one verdict per AC:
   unclear  the file is left alone; the AC's text cannot settle it, which is a
            spec defect -- the question is reported for the engineer
 
+Up to `PARALLEL` reviewers run at once; the suffixes are written after all
+of them have answered, in file and line order.
+
+On a terminal the running reviews show live, each finished one leaves a line,
+and what did not pass ends up in a list the engineer unfolds one test at a
+time: the criterion's text, then the review. Elsewhere the same text prints
+unfolded.
+
 An answer that does not parse is an error: no suffix is written. Runs only in
 build phase, because it writes test files. Exit 0 when every reviewed test
 passed (or nothing needed review), 1 on any reject, unclear or error, 2 on a
 usage error. `--json` emits {"ok": bool, "results": [...]} or {"error": "..."};
-each result is {"ac", "file", "line", "state", "verdict", "reasons",
-"question"}, where `state` says why the tag was up for review.
+each result is {"ac", "criterion", "file", "line", "state", "verdict",
+"reasons", "question"}, where `criterion` is the AC's text and `state` says why
+the tag was up for review.
 """
 
 from __future__ import annotations
@@ -31,7 +40,10 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
+import textwrap
+import time
 from importlib import resources
 from string import Template
 
@@ -39,8 +51,17 @@ from hamilton_core import phase as _phase
 from hamilton_core.check import (REQ_REL, REVIEWED, TAG_RE, UsageError,
                                  counted, extract, extract_methods,
                                  method_paths, read_config, scan)
+from hamilton_core.session import protocol as P
+from hamilton_core.session.console import Console
 
 VERDICTS = ("pass", "reject", "unclear")
+PARALLEL = 4            # reviewer sessions at once
+MARKS = {"pass": "✓", "reject": "✗", "unclear": "?", "error": "!"}
+DONE = {"pass": "passed", "reject": "rejected", "unclear": "unclear",
+        "error": "error"}
+INDENT = "    "
+LABEL = 11              # width of the label column in an unfolded result
+MAX_WIDTH = 100         # longer lines are hard to read, however wide the terminal
 _QUAL_RE = re.compile(r"(R-\d{4})/(AC\d+)")
 
 
@@ -154,40 +175,109 @@ def write_suffix(root: str, tag, value: str) -> None:
         fh.write("".join(parts))
 
 
+class Watch:
+    """What `review` reports while it runs. This one ignores it."""
+
+    def started(self, key, label: str) -> None:
+        pass
+
+    def finished(self, key, results: list) -> None:
+        pass
+
+
 async def review(root: str, judge, only: str | None = None,
-                 progress=lambda msg: None) -> list:
-    """Review every target, sequentially. Returns one result per tag."""
+                 watch: Watch | None = None) -> list:
+    """Review every target, `PARALLEL` at a time. Returns one result per
+    tag, in file and line order."""
     reqs, defined, groups = targets(root, only)
-    results = []
-    for group in groups:
+    watch = watch or Watch()
+    slots = asyncio.Semaphore(PARALLEL)
+
+    async def judged(key, group) -> list:
         quals = _quals(group)
-        progress(f"reviewing {group[0].tag.file}:{group[0].tag.line} "
-                 f"({', '.join(quals)})")
-        try:
-            verdicts = parse(await judge.ask(prompt(reqs, defined, group)), quals)
-        except Exception as exc:      # the judge failed, or answered badly
-            verdicts = {q: {"verdict": "error", "reasons": [str(exc)],
-                            "question": ""} for q in quals}
-        for c in group:
-            v = verdicts[_qual(c)]
-            if v["verdict"] == "pass":
+        async with slots:
+            watch.started(key, f"{', '.join(quals)} · "
+                               f"{os.path.basename(group[0].tag.file)}:{group[0].tag.line}")
+            try:
+                verdicts = parse(await judge.ask(prompt(reqs, defined, group)), quals)
+            except Exception as exc:      # the judge failed, or answered badly
+                verdicts = {q: {"verdict": "error", "reasons": [str(exc)],
+                                "question": ""} for q in quals}
+        results = [{"ac": _qual(c),
+                    "criterion": reqs[c.tag.rid]["acs"][c.tag.acid]["text"],
+                    "file": c.tag.file, "line": c.tag.line, "state": c.state,
+                    **verdicts[_qual(c)]} for c in group]
+        watch.finished(key, results)
+        return results
+
+    answers = await asyncio.gather(*(judged(i, g) for i, g in enumerate(groups)))
+    for group, results in zip(groups, answers):
+        for c, r in zip(group, results):
+            if r["verdict"] == "pass":
                 write_suffix(root, c.tag, c.want)
-            results.append({"ac": _qual(c), "file": c.tag.file,
-                            "line": c.tag.line, "state": c.state, **v})
-    return results
+    return [r for results in answers for r in results]
 
 
-def _render(results: list) -> list:
-    lines = []
-    for r in results:
-        head = f"{r['file']}:{r['line']}: {r['ac']}: {r['verdict']} ({r['state']})"
-        if r["verdict"] == "pass":
-            head += " -- suffix written"
-        lines.append(head)
-        lines += [f"  - {reason}" for reason in r["reasons"]]
-        if r["question"]:
-            lines.append(f"  question: {r['question']}")
-    return lines
+# --- what the engineer reads --------------------------------------------------
+
+def line(r: dict, paint) -> str:
+    """A result on one line: what finished, and the heading of its details."""
+    colour = {"pass": paint.green, "unclear": paint.yellow}.get(r["verdict"], paint.red)
+    text = f"{colour(MARKS[r['verdict']])} {paint.bold(r['ac'])}  {r['file']}:{r['line']}"
+    if r["verdict"] != "pass":
+        text += f"  {colour(DONE[r['verdict']])}"
+    return text
+
+
+def details(r: dict, width: int, paint) -> list:
+    """A result unfolded: the criterion, then the review."""
+    out = _field("Criterion", r["criterion"], width, paint)
+    label = "Error" if r["verdict"] == "error" else "Review"
+    out += _field(label, paint.dim(f"({r['state']})"), width, paint)
+    for reason in r["reasons"]:
+        out += textwrap.wrap(reason, width, initial_indent=INDENT + "  • ",
+                             subsequent_indent=INDENT + "    ")
+    if r["question"]:
+        out += _field("Question", r["question"], width, paint)
+    return out
+
+
+def _field(label: str, text: str, width: int, paint) -> list:
+    """``label`` in its column, ``text`` wrapped beside it."""
+    body = textwrap.wrap(text, max(width - len(INDENT) - LABEL, 20)) or [""]
+    return ([INDENT + paint.bold(label.ljust(LABEL)) + body[0]]
+            + [INDENT + " " * LABEL + more for more in body[1:]])
+
+
+def summary(results: list) -> str:
+    if not results:
+        return "nothing needed review"
+    counts = {v: sum(r["verdict"] == v for r in results) for v in (*VERDICTS, "error")}
+    text = f"{len(results)} reviewed · " + " · ".join(
+        f"{n} {DONE[v]}" for v, n in counts.items() if n)
+    if counts["pass"]:
+        text += f". Suffixes written for the {counts['pass']} that passed"
+    return text + "."
+
+
+class _Shown(Watch):
+    """The running reviews as rows under the console's indicator, and a line
+    for each one that finished."""
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+        self._rows: dict = {}
+        self.rows: tuple = ()           # read by the indicator's thread
+
+    def started(self, key, label: str) -> None:
+        self._rows[key] = P.Activity(str(key), label, time.monotonic())
+        self.rows = tuple(self._rows.values())
+
+    def finished(self, key, results: list) -> None:
+        self._rows.pop(key, None)
+        self.rows = tuple(self._rows.values())
+        for r in results:
+            self._console.say("  " + line(r, self._console.paint))
 
 
 def main(only: str | None = None, as_json: bool = False, judge=None) -> int:
@@ -208,22 +298,31 @@ def main(only: str | None = None, as_json: bool = False, judge=None) -> int:
     if judge is None:
         from hamilton_core.session.claude_sdk_adapter import ClaudeSdkJudge
         judge = ClaudeSdkJudge()
+    # Under --json, stdout is the JSON alone; what a person reads goes to stderr.
+    console = Console(out=sys.stderr if as_json else sys.stdout)
+    shown = _Shown(console)
+    console.follow(lambda: shown.rows)
+    if not as_json:
+        console.start_working("Reviewing")
     try:
-        results = asyncio.run(review(
-            root, judge, only,
-            progress=lambda msg: print(f"hamilton review: {msg}", file=sys.stderr)))
+        results = asyncio.run(review(root, judge, only, watch=shown))
     except UsageError as exc:
         return usage(str(exc))
+    finally:
+        console.stop_working()
 
     ok = all(r["verdict"] == "pass" for r in results)
     if as_json:
         print(json.dumps({"ok": ok, "results": results}))
-    else:
-        for line in _render(results):
-            print(line)
-        counts = {v: sum(r["verdict"] == v for r in results)
-                  for v in (*VERDICTS, "error")}
-        summary = (", ".join(f"{n} {v}" for v, n in counts.items() if n)
-                   or "nothing needed review")
-        print(f"hamilton review: {len(results)} tag(s): {summary}", file=sys.stderr)
+        console.say(f"hamilton review: {summary(results)}")
+        return 0 if ok else 1
+    console.say()
+    console.say(summary(results))
+    open_ = [r for r in results if r["verdict"] != "pass"]
+    if open_:
+        width = min(shutil.get_terminal_size().columns - 1, MAX_WIDTH)
+        console.say()
+        console.say(console.paint.bold(f"{len(open_)} need attention:"))
+        console.browse([(line(r, console.paint), details(r, width, console.paint))
+                        for r in open_])
     return 0 if ok else 1

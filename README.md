@@ -98,7 +98,10 @@ happening:
   plain text, so copying it from the terminal gives it back exactly as typed.
 - **You can see when it is thinking.** An `Engineering…` indicator runs while
   the agent works, with elapsed time once it passes a couple of seconds, and
-  gets out of the way whenever it needs to show you something or ask.
+  gets out of the way whenever it needs to show you something or ask. Under it,
+  each subagent the agent runs — a test writer, say — is a live row: what it
+  does, for how long, and its latest tool. When it finishes, one `✓` line stays
+  behind.
 - **Finishing a piece of work is not the end of the session.** When the agent
   gives its closing summary, Hamilton shows you the next step — another change,
   a change to requirements you pick from the tree, a decomposition or a
@@ -207,8 +210,10 @@ $ printf spec  > .hamilton/phase      # (what `hamilton design` does)
 $ printf build > .hamilton/phase      # (what `hamilton build` does)
 #   ... write tests/ with @covers tags, then the implementation ...
 $ hamilton review      # a reviewer session per test; needs Claude credentials
-tests/unit/test_initials.py:3: R-0001/AC1: pass (no review yet) -- suffix written
-tests/unit/test_initials.py:8: R-0001/AC2: pass (no review yet) -- suffix written
+  ✓ R-0001/AC1  tests/unit/test_initials.py:3
+  ✓ R-0001/AC2  tests/unit/test_initials.py:8
+
+2 reviewed · 2 passed. Suffixes written for the 2 that passed.
 $ hamilton check
 hamilton check: running test_command: python -m pytest -q
 2 passed in 0.01s
@@ -254,7 +259,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton build` | sets **build** | Write the phase, print the banner, run a build-phase session with a kickoff to propagate the latest spec change and get `hamilton check` green. Offers to resume an unfinished build session. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
 | `hamilton check [--json]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. Writes nothing. This is the gate — run it in CI. |
-| `hamilton review [R-nnnn/ACn] [--json]` | build only | Have every unreviewed tagged test — or only one criterion's — judged by a reviewer session that sees the spec and the test but no implementation and has no tools. A pass writes the tag's review suffix; a reject or `unclear` leaves the file alone and reports why. The only thing that writes a suffix. One model call per test. |
+| `hamilton review [R-nnnn/ACn] [--json]` | build only | Have every unreviewed tagged test — or only one criterion's — judged by a reviewer session that sees the spec and the test but no implementation and has no tools. A pass writes the tag's review suffix; a reject or `unclear` leaves the file alone and reports why. The only thing that writes a suffix. One model call per test, a few at once. On a terminal it shows the running reviews live and ends with the tests that did not pass as a list you unfold one at a time: the criterion, then the review. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. |
 | `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
