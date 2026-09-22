@@ -1,8 +1,8 @@
-"""Terminal rendering for a session: styling, the question picker, the input
-editor, and the working indicator.
+"""Terminal rendering: styling, the question picker, the input editor, and the
+working indicator.
 
-Every session mode talks to the engineer through this one class, so the
-interaction is identical whatever the mode.
+Every session mode and `hamilton build` talk to the engineer through this one
+class, so the interaction is identical whatever is running.
 
 **Nothing is sent until Enter.** On a real terminal a question is a cursor
 list: arrows or Tab move the highlight, and only Enter commits. Moving is free,
@@ -22,8 +22,13 @@ the working indicator stays silent and colour switches itself off. `NO_COLOR`
 is honoured.
 
 **Subagents show while they run.** Under the working indicator, one row per
-running subagent: what it does, for how long, and its latest tool. When one
+running subagent: what it is, for how long, and what it is doing now. When one
 finishes, a single line stays behind in the scrollback.
+
+**The step shows too.** Each step of the work leaves a `▸` line and relabels
+the indicator, so what is running now -- writing tests, reviewing them, coding
+-- is readable at a glance and afterwards in the scrollback. `hamilton build`
+draws its loop this way.
 
 **Long results fold.** A list of headings unfolds one item at a time; what
 was unfolded when the engineer leaves stays in the scrollback. Without a TTY
@@ -139,18 +144,53 @@ def elapsed(seconds: float) -> str:
 
 
 def activity_lines(rows, now: float, frame: str) -> list[str]:
-    """The running subagents as the indicator shows them, at most `MAX_ROWS`."""
+    """What is running, as the indicator shows it, at most `MAX_ROWS`: what
+    it is, for how long, and what it is doing now."""
     lines = []
     for row in rows[:MAX_ROWS]:
         line = f"  {frame} {row.label}  {elapsed(now - row.started)}"
-        if row.tool_uses:
-            line += f" · {row.tool_uses} tool{'s' if row.tool_uses != 1 else ''}"
-        if row.last_tool:
-            line += f" · {row.last_tool}"
+        if row.doing:
+            line += f" · {row.doing}"
         lines.append(line)
     if len(rows) > MAX_ROWS:
         lines.append(f"  … and {len(rows) - MAX_ROWS} more")
     return lines
+
+
+class Rows:
+    """The rows under the working indicator: whatever is running now.
+
+    `snapshot` is read by the indicator's thread, so it is replaced whole
+    after every change and never mutated in place. Pass the instance to
+    `Console.follow`.
+    """
+
+    def __init__(self) -> None:
+        self._rows: dict = {}
+        self.snapshot: tuple = ()
+
+    def __call__(self) -> tuple:
+        return self.snapshot
+
+    def start(self, key, label: str) -> None:
+        self._rows[key] = P.Activity(str(key), label, time.monotonic())
+        self._take()
+
+    def doing(self, key, action: str) -> None:
+        """What the row's work is doing now, in words."""
+        row = self._rows.get(key)
+        if row is not None:
+            self._rows[key] = P.Activity(row.id, row.label, row.started, action)
+            self._take()
+
+    def stop(self, key) -> float:
+        """Close the row; returns how long it ran, for the line left behind."""
+        row = self._rows.pop(key, None)
+        self._take()
+        return time.monotonic() - row.started if row else 0.0
+
+    def _take(self) -> None:
+        self.snapshot = tuple(self._rows.values())
 
 
 def echo(text: str) -> str:
@@ -178,6 +218,7 @@ class Console:
         self._stop = None          # set while the indicator thread runs
         self._thread = None
         self._shown = 0            # lines of the frame currently on screen
+        self._label = WORKING      # what the indicator says it is doing
         self._activity = lambda: ()
 
     # --- plumbing ------------------------------------------------------------
@@ -202,6 +243,12 @@ class Console:
             return None
         return line.strip()
 
+    @property
+    def interactive(self) -> bool:
+        """Whether there is somebody at a terminal to ask. A run that cannot
+        ask reports instead."""
+        return self._interactive()
+
     def _interactive(self) -> bool:
         if self._terminal is not None:
             return True
@@ -224,12 +271,18 @@ class Console:
 
     def start_working(self, label: str = WORKING) -> None:
         """Animate until `stop_working`. Silent when not on a terminal."""
+        self._label = label
         if not self._interactive() or self._thread is not None:
             return
         self._stop = threading.Event()
         self._thread = threading.Thread(
-            target=self._animate, args=(label, self._stop), daemon=True)
+            target=self._animate, args=(self._stop,), daemon=True)
         self._thread.start()
+
+    def working_on(self, label: str) -> None:
+        """Say what is being worked on now. The indicator picks it up on its
+        next frame, so a step change does not restart the animation."""
+        self._label = label
 
     def stop_working(self) -> None:
         if self._thread is None:
@@ -245,7 +298,7 @@ class Console:
         return self._thread is not None
 
     @contextlib.contextmanager
-    def _paused(self):
+    def paused(self):
         """Suspend the indicator around anything that reads or draws. The
         agent asks its questions from a worker thread, so without this the
         animation would scribble over the picker."""
@@ -256,9 +309,9 @@ class Console:
             yield
         finally:
             if was:
-                self.start_working()
+                self.start_working(self._label)
 
-    def _animate(self, label: str, stop: threading.Event) -> None:
+    def _animate(self, stop: threading.Event) -> None:
         started = time.monotonic()
         for frame in itertools.cycle(FRAMES):
             if stop.wait(0.1):
@@ -268,7 +321,7 @@ class Console:
                     return
                 now = time.monotonic()
                 tail = f" ({elapsed(now - started)})" if now - started >= 2 else ""
-                lines = ([f"{frame} {label}…{tail}"]
+                lines = ([f"{frame} {self._label}…{tail}"]
                          + activity_lines(self._activity(), now, frame))
                 # A wrapped line would throw off the count `_erase` goes up by.
                 width = max(shutil.get_terminal_size().columns - 1, 10)
@@ -309,6 +362,13 @@ class Console:
         self.say()
         self.say(markdown(text, self.paint))
 
+    def step(self, label: str, detail: str = "") -> None:
+        """A step of the agent's workflow starting. It stays in the scrollback,
+        so the session reads back as the sequence of steps it ran."""
+        self.say()
+        self.say(f"{self.paint.cyan('▸')} {self.paint.bold(label)}"
+                 + (f" {self.paint.dim('— ' + detail)}" if detail else ""))
+
     def subagent_done(self, label: str, ok: bool, seconds: float) -> None:
         if ok:
             self.say(self.paint.dim(f"  ✓ {label} ({elapsed(seconds)})"))
@@ -320,7 +380,7 @@ class Console:
         list stays behind as it was left."""
         opened = set(range(len(items)))
         if self._interactive():
-            with self._paused(), self._session():
+            with self.paused(), self._session():
                 opened = widgets.folds(items).run()
         for i, (head, body) in enumerate(items):
             self.say(f"  {head}")
@@ -336,12 +396,19 @@ class Console:
 
     def next_message(self) -> str | None:
         """The engineer's own next message, or None to end the session."""
-        with self._paused():
+        with self.paused():
             self.say()
             raw = self._input(hint=f"Enter on its own ends the session · {EDIT_HINT}")
         if raw is None or raw.strip() == "" or raw.strip() in ("/exit", "/quit"):
             return None
         return raw
+
+    def confirm(self, question: str) -> bool:
+        """A yes/no, where yes is the default. EOF reads as no. The indicator
+        is paused while it waits, or it would draw over the question."""
+        with self.paused():
+            answer = self._read(self.paint.bold(f"{question} [Y/n] "))
+        return answer is not None and answer.lower() in ("", "y", "yes")
 
     def offer_resume(self, cp: P.Checkpoint) -> bool:
         self.say()
@@ -350,8 +417,7 @@ class Console:
             f"({cp.turns_completed} turn(s) in)."))
         if cp.last_summary:
             self.note(f"  last: {cp.last_summary}")
-        answer = self._read(self.paint.bold("Resume it? [Y/n] "))
-        return answer is not None and answer.lower() in ("", "y", "yes")
+        return self.confirm("Resume it?")
 
     # --- questions -----------------------------------------------------------
 
@@ -371,11 +437,13 @@ class Console:
             return ENDED
         return value
 
-    def choose(self, q: P.Question) -> str | None:
-        """Hamilton's own menu: its steps and a finish, nothing typed.
-        `None` means the engineer is done."""
+    def choose(self, q: P.Question, finish: str = FINISH_ROW) -> str | None:
+        """Hamilton's own menu: its rows and a way out, nothing typed. `None`
+        means the engineer took the way out -- `finish` is what that row says,
+        because ending a session and ending a build run are not the same
+        thing."""
         with self._question(q):
-            outcome, value = self._resolve(q, own_answer=False)
+            outcome, value = self._resolve(q, own_answer=False, finish=finish)
         return None if outcome in (Outcome.ABORT, Outcome.FINISH) else value
 
     def choose_many(self, prompt: str, options: list[tuple[str, str]]) -> list[str] | None:
@@ -401,7 +469,7 @@ class Console:
     @contextlib.contextmanager
     def _question(self, q: P.Question):
         """Pause the indicator and show the question while it is answered."""
-        with self._paused():
+        with self.paused():
             self.say()
             if q.header:
                 self.say(self.paint.heading(f"── {q.header} ──"))
@@ -412,10 +480,11 @@ class Console:
     def _echo_chosen(self, labels: list[str]) -> None:
         self.say(self.paint.green("\n".join(f"  {label}" for label in labels)))
 
-    def _resolve(self, q: P.Question, own_answer: bool = True) -> tuple[Outcome, str]:
+    def _resolve(self, q: P.Question, own_answer: bool = True,
+                 finish: str = FINISH_ROW) -> tuple[Outcome, str]:
         if self._interactive():
-            return self._pick(q, own_answer)
-        return self._numbered(q, own_answer)
+            return self._pick(q, own_answer, finish)
+        return self._numbered(q, own_answer, finish)
 
     def _free_text(self) -> str | None:
         while True:
@@ -438,9 +507,10 @@ class Console:
         self.say(echo(text))
         return text
 
-    def _pick(self, q: P.Question, own_answer: bool) -> tuple[Outcome, str]:
+    def _pick(self, q: P.Question, own_answer: bool,
+              finish: str = FINISH_ROW) -> tuple[Outcome, str]:
         """The cursor list. Moving the highlight sends nothing; Enter does."""
-        fixed = ([OTHER] if own_answer else []) + [FINISH_ROW]
+        fixed = ([OTHER] if own_answer else []) + [finish]
         rows = ([(c.label, c.description) for c in q.choices]
                 + [(label, "") for label in fixed])
         with self._session():
@@ -451,19 +521,20 @@ class Console:
         if idx < len(q.choices):
             self._echo_chosen([label])
             return Outcome.CHOICE, label
-        if label == FINISH_ROW:
+        if label == finish:
             return Outcome.FINISH, ""
         answer = self._free_text()
         return (Outcome.TEXT, answer) if answer is not None else (Outcome.ABORT, "")
 
-    def _numbered(self, q: P.Question, own_answer: bool) -> tuple[Outcome, str]:
+    def _numbered(self, q: P.Question, own_answer: bool,
+                  finish: str = FINISH_ROW) -> tuple[Outcome, str]:
         """No-TTY fallback: the same question as a numbered list. Typing is
-        already how you answer here, so only the finish row is added."""
+        already how you answer here, so only the way out is added."""
         for i, c in enumerate(q.choices, 1):
             tail = f" — {c.description}" if c.description else ""
             self.say(f"  {i}) {c.label}{tail}")
         last = len(q.choices) + 1
-        self.say(f"  {last}) {FINISH_ROW}")
+        self.say(f"  {last}) {finish}")
         while True:
             raw = self._read(f"choose 1-{last}"
                              f"{', or type your own answer' if own_answer else ''}> ")

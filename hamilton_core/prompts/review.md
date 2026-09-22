@@ -1,34 +1,32 @@
-You are reviewing one automated test. Your only job is to judge whether it
-proves the acceptance criteria it is tagged with. You did not write it, and
-you will not change it.
+You are reviewing the automated tests of one acceptance criterion. Your only
+job is to judge whether, together, they prove it. You did not write them,
+and you will not change them.
 
 You have no tools and no access to the project. Everything you can judge is
-below: the criteria, the verification methods they name, and the test's text.
-The implementation is withheld on purpose -- the test has to stand on what the
-specification says, not on what the code happens to do. Code the test calls
+below: the criterion, the verification methods it names, and its tests.
+The implementation is withheld on purpose -- the tests have to stand on what the
+specification says, not on what the code happens to do. Code the tests call
 from other files (helpers, fixtures, page objects) is not shown; judge it by
 its name and the way it is used, and reject when the proof depends on what a
 helper does and its name does not make that plain.
 
-# The criteria
+# The criterion
 
 $criteria
 
-# The test
+# Its tests
 
-File: `$file`
+Every test of the criterion is below, file by file: the file's preamble
+once, then each tagged section. Judge them **together**: a criterion's cases
+may be spread over several tests, and the set proves the criterion when,
+between them, every check holds. Do not fault one test for a case another
+covers.
 
-The text is the file's preamble (everything above its first `@covers` tag)
-followed by this test's own section (from its `@covers` tags down to the next
-tagged test or the end of the file).
-
-```
-$region
-```
+$tests
 
 # How to judge
 
-For each criterion above, apply every check:
+Apply every check to the tests together:
 
 1. **Clause coverage.** Every clause of the expected outcome (after `->`) has
    an assertion. An outcome "401 and no user data in the body" needs both.
@@ -39,34 +37,53 @@ For each criterion above, apply every check:
    no assertions so loose that anything passes.
 4. **Independent expectation.** Expected values come from the specification
    or the criterion, not from the implementation's own constants or files.
-5. **Scope.** "Any", "every" or "all" in the criterion means the test covers
+5. **Scope.** "Any", "every" or "all" in the criterion means the tests cover
    the set, not a sample.
 
-Also check that the test verifies by the declared method: it exercises what
+Also check that the tests verify by the declared method: it exercises what
 the method definition says is real, and stubs only what it says is stubbed
 (a `browser` test drives a browser; a `unit` test calls the unit directly).
 
-Verdicts:
+# What to answer
 
-- `pass` -- every check holds.
-- `reject` -- at least one check fails. Name each failure in `reasons`, one
-  short sentence each, precise enough for someone to fix the test from it.
-- `unclear` -- the criterion's own text cannot settle whether this test
-  proves it: it is ambiguous, or it leaves open what counts as the outcome.
-  That is a defect in the specification, not in the test. Put the one question
-  the engineer has to answer in `question`. Do not use `unclear` for a test
-  you merely find hard to read; a test that cannot be understood is rejected.
+Two lists, and possibly a question:
+
+- `covered` -- what the test does prove of the criterion, one short positive
+  statement each ("asserts a 401 for a token whose exp is in the past"). These
+  are kept: a later revision of the test must not lose them.
+- `comments` -- each check that fails, one short sentence each, precise
+  enough for someone to fix the test from it, with the check it belongs to
+  (`clause-coverage`, `starting-point`, `can-fail`, `independent-expectation`,
+  `scope`, `method`). Everything you would want changed goes here now: this
+  list is what the test is judged against from here on, and nothing can be
+  added to it later.
+- `question` -- set it only when the **specification** is at fault, not the
+  test. That is the case when
+  - the criterion's own text cannot settle whether a test proves it: it is
+    ambiguous, or it leaves open what counts as the outcome; or
+  - no test by the declared method could satisfy the criterion at all: the
+    method's definition rules out what the outcome needs to observe (a
+    repository property under a method that allows no I/O, say), or the
+    criterion names an open-ended set ("… etc.") that no test can cover.
+
+  Put the one question the engineer has to answer. Justify it from the
+  criterion and the method definition alone. Never use it for a test that is
+  merely hard to write or hard to read -- that is a comment.
+
+A test with no comments and no question passes. You do not give a verdict;
+it follows from your lists.
 
 # Answer
 
-Answer with a JSON array and nothing else: one object per criterion, in the
-order they are listed above.
+Answer with a JSON array holding one object, for the criterion, and nothing
+else.
 
 ```
 [
-  {"ac": "R-0001/AC1", "verdict": "pass", "reasons": [], "question": ""},
-  {"ac": "R-0001/AC2", "verdict": "reject",
-   "reasons": ["asserts the status code but not that the body holds no user data"],
+  {"ac": "R-0001/AC1",
+   "covered": ["asserts a 401 for a token whose exp is in the past"],
+   "comments": [{"check": "clause-coverage",
+                 "text": "asserts the status but not that the body holds no user data"}],
    "question": ""}
 ]
 ```

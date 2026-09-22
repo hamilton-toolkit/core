@@ -40,9 +40,10 @@ point that it deserved to be taken as seriously as any other kind.
    test carries a one-line comment naming the single criterion it covers —
    `@covers R-0001/AC1`.
 3. **`hamilton review` judges the tests.** A separate agent session, with no
-   tools and no sight of the implementation, checks each test against its
-   criterion. A test it passes gets a review suffix on its tag —
-   `@covers R-0001/AC1 #3f9a2c.81d0e4`; a test it rejects is rewritten.
+   tools and no sight of the implementation, checks each criterion's tests
+   against it — all of them together, since between them they prove it. When
+   it passes them, each tag gets a review suffix —
+   `@covers R-0001/AC1 #3f9a2c.81d0e4`; tests it rejects are rewritten.
 4. **`hamilton check` verifies.** It runs your suite and stays red until every
    criterion has a passing, reviewed, tagged test of the kind its verification
    method names. Reword a criterion or edit its test and it goes red again
@@ -66,24 +67,24 @@ there only `test_command` / `paths.<method>`, because picking the test
 framework and layout is a build-time call. It cannot quietly change a requirement to
 match what it built, or rewrite its own rules.
 
-You start a session in a phase with **`hamilton design`** (spec) or
-**`hamilton build`** (build). Each writes the phase to `.hamilton/phase`,
-prints a status banner, then runs the session with a one-line kickoff so it
-starts working straight away. The phase is fixed for that whole session: it
-exports `HAMILTON_SESSION`, and `design` / `build` refuse to run when that is
-already set, so an agent can't relaunch itself into the other phase. Writes to
-read-only paths are refused during the session as fast feedback.
+**`hamilton design`** (spec) and **`hamilton build`** (build) each write the
+phase to `.hamilton/phase` and print a status banner. `design` then runs a
+session — a conversation about the spec. `build` does not: it runs a loop
+Hamilton drives itself (below). Either way the phase is fixed while it runs:
+it exports `HAMILTON_SESSION`, and both refuse to start when that is already
+set, so an agent can't relaunch itself into the other phase. Writes to
+read-only paths are refused as fast feedback.
 
 None of this is unbypassable — unset the variable, edit the phase file by hand,
 or run an agent directly and you are outside it. It stops drift, not a
 determined operator. `hamilton check` run in CI, which ignores the phase
 entirely, is the gate that enforces the outcome for real.
 
-### How a session runs
+### How a spec session runs
 
-Hamilton drives the session turn by turn rather than handing you an agent
-terminal. Three things follow from Hamilton being able to see what is
-happening:
+`hamilton design` and `hamilton reverse` drive the agent turn by turn rather
+than handing you an agent terminal. Three things follow from Hamilton being
+able to see what is happening:
 
 - **Questions are Hamilton's.** The agent asks through a tool; Hamilton renders
   the choices as a cursor list — arrows or Tab to move, Enter to commit, or
@@ -112,6 +113,57 @@ happening:
   `.hamilton/session`; the next launch in the same phase offers to pick up
   where you left off — which is what you want when a session dies mid-spec.
 
+### How a build run differs
+
+`hamilton build` is not a session. What comes next in build phase follows from
+`hamilton check`, not from an agent's judgement, so Hamilton runs the loop and
+calls an agent only for the parts that need one:
+
+- **Hamilton decides, the agents work.** The gate's findings are the work
+  list. A planner scaffolds each new surface as a contract — a route that
+  answers `501`, a function that raises — so the tests fail first. One agent
+  per criterion writes its tests against it, in a file of their own; it may
+  read the code. The reviewer may not: it sees only the spec and the
+  criterion's tests, judged together, and that is where the independence
+  lives. Then the implementation is written against the tests that passed,
+  and the loop starts again at the gate.
+- **No migration.** Tests already tagged in shared files stay valid and are
+  reviewed where they are. When a run revises a criterion whose tests share
+  a file with others, the writer moves them into a file of their own as part
+  of that revision.
+- **The review converges.** The first review lists what a test covers and
+  what is wrong with it. After a revision the reviewer only settles that
+  list — each comment resolved or not, each covered point still covered or
+  not — and raises nothing new. A lost point reopens; a resolved comment
+  becomes a covered point. The list only shrinks.
+- **You are asked one kind of question.** When a criterion cannot be settled
+  from its wording, or no test by its method could satisfy it, the run asks
+  you. You answer, and Hamilton drafts the change to the spec the way
+  `hamilton design` would — the criterion reworded, its method changed (to
+  `manual`, say), new criteria added beside it — and shows it before and
+  after. You write it, have it changed, or go back; only on your approval
+  does it go into the spec, and the tests follow it. A method the spec does
+  not define yet is left to `hamilton design`. Otherwise the run stops only
+  when a criterion's tests are still rejected after three rounds or a step
+  fails. Piped or in CI, it reports the stop and exits non-zero instead of
+  asking.
+- **The full suite runs once, at the end.** Each writer runs only its own
+  criterion's test file, and the coding step only the tests of the criteria it
+  implements — or the failing ones — with the project's own runner. `hamilton
+  check` runs the whole suite when nothing else is left, and sends a failure
+  back to coding with its output. The screen shows only a spinner and the
+  outcome; the suite's own output goes to a log named as it starts —
+  `tail -f` it in another terminal to watch.
+- **Every run ends with where its time went:**
+  `Time 31m12s · checking 9m40s (3×, 1 with the suite) · planning 1m05s ·
+  writing tests 8m30s · reviewing 6m10s · coding 5m47s · waiting for you 20s`.
+  Your own time at a question is booked apart, and each gate check shows how
+  long it took.
+- **Re-running is the resume.** `.hamilton/build` keeps only what re-running
+  could not work out for itself — what you chose to skip, how many rewrites
+  each criterion has had, and what the reviewer said about the criteria whose
+  tests have not passed yet. Everything else comes back out of `hamilton check`.
+
 Hamilton runs on Claude, through the Claude Agent SDK, which installs with it.
 The model is reached behind a single adapter: the session driver, the phase
 gate and the question flow know nothing about which model is answering, so
@@ -135,7 +187,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 263 passing
+$ python -m pytest -q          # expects 451 passing
 ```
 
 ### 2. Link it into a separate test project
@@ -190,7 +242,7 @@ and stay as written.
 
 ```
 $ hamilton design      # spec phase: draft the vision and the requirements with the agent
-$ hamilton build       # build phase: the agent writes tagged tests, has them reviewed, writes the code, gets the gate green
+$ hamilton build       # build phase: Hamilton drives — plan, write the tagged tests, review them, implement, until the gate is green
 $ hamilton check       # the verification gate — run it yourself, and in CI
 ```
 
@@ -238,10 +290,10 @@ $ hamilton reverse     # spec phase: the agent surveys the code and its git
                        # module by module — you ratify each piece
 $ hamilton check       # red on `uncovered` — expected; the derived spec has
                        # no tests bound to it yet
-$ hamilton build       # the agent binds your existing tests to the derived
-                       # criteria (and writes AC-level tests where the unit
-                       # tests are too fine-grained), has every tagged test
-                       # reviewed, then gets the gate green
+$ hamilton build       # binds your existing tests to the derived criteria
+                       # (and writes AC-level tests where the unit tests are
+                       # too fine-grained), has every tagged test reviewed,
+                       # then gets the gate green
 ```
 
 The derived spec is deliberately **thinner than the code** — it records intent
@@ -256,9 +308,9 @@ requirements; extend an existing spec with `hamilton design`.
 |---|---|---|
 | `hamilton init [path]` | — | Scaffold a project: `spec/`, `.hamilton/`, `AGENTS.md` / `CLAUDE.md`, `.claude/`. Refuses if `.hamilton/` already exists. |
 | `hamilton design` | sets **spec** | Write the phase, print the status banner, run a spec-phase session with a kickoff to draft the vision / requirements through the review protocol. Offers to resume an unfinished spec session. |
-| `hamilton build` | sets **build** | Write the phase, print the banner, run a build-phase session with a kickoff to propagate the latest spec change and get `hamilton check` green. Offers to resume an unfinished build session. |
+| `hamilton build` | sets **build** | Get the gate green, as a loop Hamilton drives rather than a session an agent drives: `hamilton check` is the work list; a planner scaffolds each new surface as a contract; a writer per criterion writes its tests against it, in a file of their own (and may read the code); a reviewer that sees only the spec and the criterion's tests, judged together, lists what they cover and what is wrong; revisions are re-reviewed against that list only, until it is settled; then the implementation is written against the tests. Each step names itself and shows what is running. The one question it asks is a clarification: a criterion the spec cannot settle, answered by you and written into the spec on your approval. Without a terminal it reports and exits non-zero. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
-| `hamilton check [--json]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. Writes nothing. This is the gate — run it in CI. |
+| `hamilton check [R-nnnn/ACn] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton check R-nnnn/ACn` shows one criterion's status in a second, without running the suite. Writes nothing to the project. This is the gate — run it in CI. |
 | `hamilton review [R-nnnn/ACn] [--json]` | build only | Have every unreviewed tagged test — or only one criterion's — judged by a reviewer session that sees the spec and the test but no implementation and has no tools. A pass writes the tag's review suffix; a reject or `unclear` leaves the file alone and reports why. The only thing that writes a suffix. One model call per test, a few at once. On a terminal it shows the running reviews live and ends with the tests that did not pass as a list you unfold one at a time: the criterion, then the review. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. |
@@ -382,7 +434,7 @@ from the criteria that need it, never restated inside a `Statement:`.
 ## What this does not do
 
 It has every test **reviewed** — it does not **prove** your tests are any
-good. The reviewer is a model judging each test against five checks (every
+good. The reviewer is a model judging each criterion's tests against five checks (every
 clause asserted, the right starting point, can fail, expectations from the spec
 not the code, the whole set where the criterion says "every"); it can be wrong,
 and nothing yet shows mechanically that a test would catch a regression.

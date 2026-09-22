@@ -1,5 +1,5 @@
-"""`hamilton design` / `hamilton build` / `hamilton reverse` -- the session
-driver. The rendering it drives lives in `console`.
+"""`hamilton design` / `hamilton reverse` -- the session driver. The rendering
+it drives lives in `console`.
 
 Hamilton sets `.hamilton/phase`, prints a status banner, then drives the agent
 session turn by turn, in process. It does not hand over the terminal, which is
@@ -12,9 +12,13 @@ what makes three things possible:
   * an interrupted session is not lost -> every turn boundary writes a
     `Checkpoint`, and the next launch offers to resume it.
 
-`HAMILTON_SESSION` is exported before the agent starts, so a `design` / `build`
-that an agent shells out to from inside a session is refused: the phase is
-fixed for the session. As ever this stops drift, not a determined operator --
+This drives the spec-phase modes. Build is not a session: `hamilton build` is
+a loop Hamilton runs itself (`hamilton_core.build`), because what comes next
+there follows from `hamilton check`, not from an agent's judgement.
+
+`HAMILTON_SESSION` is exported before the agent starts, so a `design` /
+`build` that an agent shells out to from inside a session is refused: the
+phase is fixed for the session. As ever this stops drift, not a determined operator --
 `hamilton check` in CI is the authoritative gate.
 
 What differs between the modes is defined once, in `modes`.

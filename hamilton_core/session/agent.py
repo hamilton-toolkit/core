@@ -9,13 +9,19 @@ answers:
     typing. A vendor session nobody reads can stall, and then its permission
     requests and questions go unanswered; so what the agent does between turns
     is taken in as it happens, and shown at the start of the next turn.
-  * **A turn ends on `TurnEnded`**, which an adapter sends only for the turn
-    the engineer's message started -- not for one the agent started itself.
+  * **A turn ends on a `TurnEnded` with no subagent still running.** A vendor
+    may hand the agent its subagent back the moment it is launched and end the
+    turn while the work goes on; the engineer would get their prompt back over
+    a session that is still writing files, and the agent's own report would
+    land in the middle of whatever they typed. So the turn is held open until
+    every row has closed and the agent has finished saying what came of it. A
+    lull after the last one ends the wait, in case nothing follows.
   * **Subagents are rows**: `TaskStarted` opens one, `TaskProgress` updates
     it, `TaskEnded` closes it into a `SubagentDone`. `activity()` is what the
     console draws while the turn runs.
   * **The completion sentinel** is taken out of the agent's text and becomes a
-    `PhaseDone` at the end of the turn.
+    `PhaseDone` at the end of the turn. The engineer reads the closing
+    summary, not the marker that ends it.
 """
 
 from __future__ import annotations
@@ -27,6 +33,15 @@ import time
 from typing import AsyncIterator
 
 from hamilton_core.session import protocol as P
+
+# How long to wait, after the last subagent has reported, for the agent to say
+# what came of it. It answers within a breath or not at all.
+QUIET = 30.0
+
+# ... and how long a silence while one is still running before we take it as
+# lost and hand the engineer back their prompt. A subagent that is alive
+# reports progress, so this is a stall guard, not a deadline on the work.
+STALLED = 300.0
 
 
 class Agent:
@@ -79,8 +94,28 @@ class Agent:
         if self._pump_task.done():
             return                                  # the stream is gone
         await self._adapter.send(text)
-        while not isinstance(ev := await self._queue.get(), P.TurnEnded):
+        ended = False
+        while (ev := await self._next(ended)) is not None:
+            if isinstance(ev, P.TurnEnded):
+                ended = True
+                if not self._rows:
+                    return
+                continue                            # subagents still running
             yield ev
+
+    async def _next(self, ended: bool):
+        """The next event, or None when the turn is over. Once the turn has
+        ended, silence is what ends it: a short one when the subagents have
+        all reported and nothing followed, a long one when a subagent has
+        stopped saying anything at all. Either way the engineer gets their
+        prompt back rather than a session that never speaks again."""
+        if not ended:
+            return await self._queue.get()
+        try:
+            return await asyncio.wait_for(
+                self._queue.get(), STALLED if self._rows else QUIET)
+        except asyncio.TimeoutError:
+            return None
 
     async def _pump(self) -> None:
         try:
@@ -98,7 +133,7 @@ class Agent:
         elif isinstance(ev, P.TaskProgress):
             if ev.id in self._rows:
                 self._rows[ev.id] = dataclasses.replace(
-                    self._rows[ev.id], tool_uses=ev.tool_uses, last_tool=ev.last_tool)
+                    self._rows[ev.id], doing=ev.doing)
         elif isinstance(ev, P.TaskEnded):
             row = self._rows.pop(ev.id, None)
             if row is not None:
@@ -111,8 +146,7 @@ class Agent:
 
 
 def strip_sentinel(text: str) -> tuple[str, bool]:
-    """Text with the sentinel line removed, and whether it was there. The
-    engineer should see the closing summary, not the marker that ends it."""
+    """Text with the sentinel line removed, and whether it was there."""
     if P.SENTINEL not in text:
         return text, False
     kept = [ln for ln in text.splitlines() if ln.strip() != P.SENTINEL]

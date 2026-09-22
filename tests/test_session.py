@@ -16,7 +16,7 @@ from conftest import copy_fixture
 from hamilton_core.session import loop as L
 from hamilton_core.session.console import Console
 from hamilton_core.session import protocol as P
-from hamilton_core.session.modes import BUILD, DESIGN, MODES
+from hamilton_core.session.modes import DESIGN, MODES
 
 
 class FakeAdapter:
@@ -146,14 +146,6 @@ def test_each_menu_choice_carries_its_own_instruction(tmp_path):
                         session_ref="s1")
         drive(tmp_path, a, keys=pick + "\n")
         assert expected in a.sent[1].lower(), (pick, a.sent[1])
-
-
-def test_a_build_session_is_offered_build_steps(tmp_path):
-    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
-    c, out = console("1\n" + "\n")
-    asyncio.run(L.drive(str(tmp_path), BUILD, "KICKOFF", a, c))
-    assert "hamilton check" in a.sent[1]
-    assert "Take another build task" in out.getvalue()
 
 
 def test_an_unfinished_session_checkpoints_as_resumable(tmp_path):

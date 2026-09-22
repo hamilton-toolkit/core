@@ -28,8 +28,13 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="cmd")
 
     p_check = sub.add_parser("check", help="run the verification gate")
+    p_check.add_argument("ac", nargs="?", default=None,
+                         help="only this criterion's status, R-nnnn/ACn "
+                              "(the suite is not run)")
     p_check.add_argument("--json", action="store_true",
                          help="machine-readable output for hooks")
+    p_check.add_argument("--suite-output", action="store_true",
+                         help="stream the test suite's own output as it runs")
     p_init = sub.add_parser("init", help="scaffold a project")
     p_init.add_argument("path", nargs="?", default=None,
                         help="target directory (default: current directory)")
@@ -39,6 +44,9 @@ def main(argv=None) -> int:
     p_review.add_argument("ac", nargs="?", default=None,
                           help="only this criterion: R-nnnn/ACn")
     p_review.add_argument("--json", action="store_true", help="machine-readable output")
+    sub.add_parser("build", help="get the gate green: check, plan, write the "
+                   "tests, have them reviewed, implement -- a loop Hamilton "
+                   "drives, asking only where it cannot proceed")
     for mode in MODES.values():
         sub.add_parser(mode.name, help=mode.help)
 
@@ -59,13 +67,17 @@ def main(argv=None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.cmd == "check":
-        return _check.main(as_json=args.json)
+        return _check.main(as_json=args.json, suite_output=args.suite_output,
+                           only=args.ac)
     if args.cmd == "init":
         return _init.main(args.path)
     if args.cmd == "guard":
         return _guard.main()
     if args.cmd == "review":
         return _review.main(args.ac, as_json=args.json)
+    if args.cmd == "build":
+        from hamilton_core import build as _build
+        return _build.main()
     if args.cmd in MODES:
         return _session().main(MODES[args.cmd])
     if args.cmd == "status":

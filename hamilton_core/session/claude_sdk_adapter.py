@@ -16,10 +16,17 @@ vendor-specific things are contained here on purpose:
     PreToolUse hook also fires (project settings are loaded so the `hamilton`
     skill is available), so a write is checked twice by the same policy --
     harmless, and it keeps the hook meaningful for anything else that reads it.
-  * **Foreground subagents.** An in-process PreToolUse hook refuses a
-    subagent launched in the background: the turn would end while it still
-    works, and the engineer would lose sight of it. (`can_use_tool` is not
-    asked about the `Agent` tool, so this cannot live there.)
+  * **Foreground subagents.** An in-process PreToolUse hook refuses a subagent
+    the agent asks to run in the background. (`can_use_tool` is not asked
+    about the `Agent` tool, so this cannot live there.) It only covers a CLI
+    that still offers that choice: this one runs every subagent as a task and
+    returns the tool call at once, so what actually keeps a subagent in sight
+    is `agent.Agent` holding the turn open until its task reports -- see
+    `Tasks` for the lifecycle that says when it has.
+  * **One-shot work.** `ClaudeSdkJudge` (a reviewer, no tools) and
+    `ClaudeSdkWorker` (one step of `hamilton build`, with tools and the phase
+    guard) are both `query()` calls with no session behind them. That is what
+    lets the build loop be driven by Hamilton instead of by an agent.
 
 Anything a future non-SDK harness would do differently belongs in this file.
 """
@@ -31,6 +38,7 @@ import tempfile
 from typing import AsyncIterator
 
 from claude_agent_sdk import (
+    TERMINAL_TASK_STATUSES,
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -38,11 +46,12 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     PermissionResultDeny,
     ResultMessage,
+    TaskNotificationMessage,
     TaskProgressMessage,
+    TaskStartedMessage,
+    TaskUpdatedMessage,
     TextBlock,
-    ToolResultBlock,
     ToolUseBlock,
-    UserMessage,
     create_sdk_mcp_server,
     query,
     tool,
@@ -72,6 +81,60 @@ _ASK_SCHEMA = {
     "header": str,
     "choices": list,
 }
+
+
+def refusal(root: str, write_policy: P.WritePolicy, tool_name: str,
+            tool_input: dict) -> str | None:
+    """Why this tool call may not go ahead, or None. One policy for everything
+    Hamilton runs -- the session's agent and the build loop's workers alike.
+
+    The gate governs what can be written, not what can be run or read: the
+    tool surface is otherwise the agent's usual one.
+    """
+    if tool_name not in WRITE_TOOLS:
+        return None
+    target = guard.target_of(tool_input)
+    if not target:
+        return None
+    return (write_policy(target)
+            or guard.suffix_denial(tool_name, tool_input, root))
+
+
+# What each of the CLI's tools does, in words: (with its target, without).
+_ACTIONS = {
+    "Read": ("reading {}", "reading a file"),
+    "Write": ("writing {}", "writing a file"),
+    "Edit": ("editing {}", "editing a file"),
+    "MultiEdit": ("editing {}", "editing a file"),
+    "NotebookEdit": ("editing {}", "editing a notebook"),
+    "Bash": ("running {}", "running a command"),
+    "Grep": ("searching for {}", "searching the code"),
+    "Glob": ("looking for {}", "looking for files"),
+    "WebFetch": ("fetching {}", "fetching a page"),
+    "WebSearch": ("searching the web for {}", "searching the web"),
+    "Agent": ("delegating: {}", "delegating to a subagent"),
+    "Task": ("delegating: {}", "delegating to a subagent"),
+    "TodoWrite": ("planning its steps", "planning its steps"),
+}
+_TARGETS = ("file_path", "notebook_path", "command", "pattern", "url", "query",
+            "description")
+_TARGET_WIDTH = 60
+
+
+def action(root: str, tool_name: str, tool_input: dict | None = None) -> str:
+    """What a tool call does, in words an engineer reads at a glance --
+    "editing src/Http/EnforceHttps.php", "running tools/run-tests.sh". Paths
+    inside the project are shown relative to it; a long target is cut."""
+    with_target, without = _ACTIONS.get(
+        tool_name, (f"using {tool_name} on {{}}", f"using {tool_name}"))
+    target = next((str(tool_input[k]) for k in _TARGETS
+                   if (tool_input or {}).get(k)), "")
+    target = " ".join(target.split())                   # one line
+    if target.startswith(root.rstrip("/") + "/"):
+        target = target[len(root.rstrip("/")) + 1:]
+    if len(target) > _TARGET_WIDTH:
+        target = target[:_TARGET_WIDTH - 1] + "…"
+    return with_target.format(target) if target else without
 
 
 def _as_question(args: dict) -> P.Question:
@@ -127,17 +190,12 @@ class ClaudeSdkAdapter:
         )
 
     async def _can_use_tool(self, tool_name: str, tool_input: dict, context):
-        if tool_name in WRITE_TOOLS:
-            target = guard.target_of(tool_input)
-            if target:
-                denial = (self._write_policy(target)
-                          or guard.suffix_denial(tool_name, tool_input, self._root))
-                if denial is not None:
-                    self._denials.append(P.ToolDenied(target, denial))
-                    return PermissionResultDeny(message=denial)
-        # The gate governs what can be written, not what can be run or read:
-        # the agent's tool surface is otherwise its usual one.
-        return PermissionResultAllow()
+        denial = refusal(self._root, self._write_policy, tool_name, tool_input)
+        if denial is None:
+            return PermissionResultAllow()
+        self._denials.append(P.ToolDenied(guard.target_of(tool_input) or "",
+                                          denial))
+        return PermissionResultDeny(message=denial)
 
     def _drain(self) -> list[P.Event]:
         out, self._denials = list(self._denials), []
@@ -153,12 +211,13 @@ class ClaudeSdkAdapter:
 
     async def events(self) -> AsyncIterator[P.StreamEvent]:
         assert self._client is not None
+        tasks = Tasks()
         async for msg in self._client.receive_messages():
             for ev in self._drain():
                 yield ev
             if isinstance(msg, ResultMessage) and msg.session_id:
                 self.session_ref = msg.session_id
-            for ev in _translate(msg):
+            for ev in _translate(msg, tasks):
                 yield ev
 
     async def close(self) -> None:
@@ -167,7 +226,46 @@ class ClaudeSdkAdapter:
             self._client = None
 
 
-def _translate(msg) -> list[P.StreamEvent]:
+class Tasks:
+    """Which of the CLI's tasks are subagents Hamilton shows, and under which
+    id.
+
+    The CLI runs a subagent as a *task*: the `Agent` tool call returns as soon
+    as one is launched, and the task's own lifecycle -- started, progress,
+    finished -- arrives as system messages afterwards. So the tool result says
+    nothing about whether the subagent is done, and the rows have to follow
+    the task. Tasks the CLI runs for itself (a background command, say) are
+    not the agent's subagents and are left alone.
+    """
+
+    def __init__(self) -> None:
+        self._launched: set[str] = set()    # subagent tool calls, by tool id
+        self._ours: set[str] = set()        # their tasks, by task id
+
+    def launched(self, tool_use_id: str) -> None:
+        self._launched.add(tool_use_id)
+
+    def started(self, msg) -> list[P.StreamEvent]:
+        if msg.tool_use_id not in self._launched:
+            return []
+        self._ours.add(msg.task_id)
+        return [P.TaskStarted(msg.task_id, msg.description or "subagent")]
+
+    def progress(self, msg) -> list[P.StreamEvent]:
+        if msg.task_id not in self._ours:
+            return []
+        # the CLI reports the tool's name only, not what it was used on
+        return [P.TaskProgress(msg.task_id,
+                               action("", msg.last_tool_name) if msg.last_tool_name else "")]
+
+    def ended(self, task_id: str, status: str | None) -> list[P.StreamEvent]:
+        if task_id not in self._ours or status not in TERMINAL_TASK_STATUSES:
+            return []
+        self._ours.discard(task_id)
+        return [P.TaskEnded(task_id, status == "completed")]
+
+
+def _translate(msg, tasks: Tasks) -> list[P.StreamEvent]:
     """One SDK message as Hamilton events. Only the main agent speaks to the
     engineer: a message with a `parent_tool_use_id` is a subagent's, and of
     those only its progress shows."""
@@ -179,28 +277,25 @@ def _translate(msg) -> list[P.StreamEvent]:
             if isinstance(block, TextBlock) and block.text.strip():
                 out.append(P.AgentText(block.text))
             elif isinstance(block, ToolUseBlock) and block.name in SUBAGENT_TOOLS:
-                label = str(block.input.get("description") or "subagent")
-                out.append(P.TaskStarted(block.id, label))
+                tasks.launched(block.id)
         return out
-    if isinstance(msg, UserMessage):
-        if msg.parent_tool_use_id or not isinstance(msg.content, list):
-            return []
-        return [P.TaskEnded(b.tool_use_id, not b.is_error)
-                for b in msg.content if isinstance(b, ToolResultBlock)]
+    if isinstance(msg, TaskStartedMessage):
+        return tasks.started(msg)
     if isinstance(msg, TaskProgressMessage):
-        if not msg.tool_use_id:
-            return []
-        return [P.TaskProgress(msg.tool_use_id, int(msg.usage.get("tool_uses", 0)),
-                               msg.last_tool_name or "")]
+        return tasks.progress(msg)
+    if isinstance(msg, TaskNotificationMessage):
+        return tasks.ended(msg.task_id, msg.status)
+    if isinstance(msg, TaskUpdatedMessage):
+        # A finished task sometimes reports only here.
+        return tasks.ended(msg.task_id, msg.status)
     if isinstance(msg, ResultMessage):
         out = []
         if msg.is_error:
             out.append(P.SessionError(msg.result or msg.subtype
                                       or "the agent session failed"))
-        # Our own turn's result; not one the CLI started itself, e.g. to
-        # report a finished background task.
-        if msg.origin is None or msg.origin.get("kind") == "human":
-            out.append(P.TurnEnded())
+        # Ours, or one the CLI started itself to report a finished task.
+        by_agent = not (msg.origin is None or msg.origin.get("kind") == "human")
+        out.append(P.TurnEnded(by_agent))
         return out
     return []
 
@@ -237,6 +332,52 @@ class ClaudeSdkJudge:
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
                 elif isinstance(msg, ResultMessage) and msg.is_error:
                     error = msg.result or msg.subtype or "the reviewer session failed"
+        if error:
+            raise RuntimeError(error)
+        return "\n".join(texts)
+
+
+class ClaudeSdkWorker:
+    """`protocol.Worker` over `claude_agent_sdk`: one step of `hamilton
+    build`, as a `query()` with tools, in the project, under the phase gate.
+
+    No session and no resume: the prompt Hamilton built is the brief, and
+    when the work is done the process is gone. That is what makes a step
+    repeatable. The project's own settings are loaded, so its conventions
+    and hooks apply to the work.
+    """
+
+    def __init__(self, root: str, write_policy: P.WritePolicy) -> None:
+        self._root = root
+        self._write_policy = write_policy
+        self.denials: list[P.ToolDenied] = []
+
+    async def _can_use_tool(self, tool_name: str, tool_input: dict, context):
+        denial = refusal(self._root, self._write_policy, tool_name, tool_input)
+        if denial is None:
+            return PermissionResultAllow()
+        self.denials.append(P.ToolDenied(guard.target_of(tool_input) or "",
+                                         denial))
+        return PermissionResultDeny(message=denial)
+
+    def _options(self) -> ClaudeAgentOptions:
+        return ClaudeAgentOptions(
+            cwd=self._root,
+            setting_sources=["project"],
+            can_use_tool=self._can_use_tool,
+        )
+
+    async def run(self, prompt: str, on_action: P.OnAction | None = None) -> str:
+        texts, error = [], None
+        async for msg in query(prompt=prompt, options=self._options()):
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock):
+                        texts.append(block.text)
+                    elif isinstance(block, ToolUseBlock) and on_action:
+                        on_action(action(self._root, block.name, block.input))
+            elif isinstance(msg, ResultMessage) and msg.is_error:
+                error = msg.result or msg.subtype or "the task failed"
         if error:
             raise RuntimeError(error)
         return "\n".join(texts)

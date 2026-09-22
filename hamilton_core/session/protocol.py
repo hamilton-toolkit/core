@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from typing import AsyncIterator, Callable, Protocol
+from typing import AsyncIterator, Awaitable, Callable, Protocol
 
 # The agent prints this literal line when its phase workflow is finished; the
 # skill (templates/prompts/hamilton.md) instructs it to. Hamilton watches for
@@ -47,6 +47,11 @@ Answerer = Callable[[Question], str]
 # Given a path a tool wants to write, return None to allow or the denial
 # message. `hamilton_core.guard.decide` is the implementation.
 WritePolicy = Callable[[str], "str | None"]
+
+# What a running task is doing now, in words -- "editing src/x.php" -- for the
+# row the engineer watches. The adapter words it; nothing else knows a
+# vendor's tool names.
+OnAction = Callable[[str], None]
 
 
 # --- what comes back out of a turn --------------------------------------------
@@ -89,23 +94,30 @@ Event = AgentText | ToolDenied | PhaseDone | SessionError | SubagentDone
 
 @dataclass(frozen=True)
 class TurnEnded:
-    """The turn the engineer's message started is finished. Not every turn
-    the agent runs is one: it may start its own, e.g. when a background task
-    completes."""
+    """A turn the agent ran is finished. `by_agent` marks one the agent
+    started itself -- a task reporting back, say -- rather than the turn the
+    engineer's message started. Which of them hands the engineer their prompt
+    back is `agent.Agent`'s decision, not an adapter's."""
+    by_agent: bool = False
 
 
 @dataclass(frozen=True)
 class TaskStarted:
-    """The agent started a subagent. `id` is the adapter's own handle."""
+    """A subagent of the agent's is running. `id` is the adapter's own handle.
+
+    It is the *task* that started, not the tool call that asked for one: a
+    vendor may hand the agent its task back the moment it is launched, and a
+    row that closed there would report a subagent as done while it works.
+    """
     id: str
     label: str
 
 
 @dataclass(frozen=True)
 class TaskProgress:
+    """What a running subagent is doing now, in words."""
     id: str
-    tool_uses: int
-    last_tool: str
+    doing: str
 
 
 @dataclass(frozen=True)
@@ -126,8 +138,7 @@ class Activity:
     id: str
     label: str
     started: float
-    tool_uses: int = 0
-    last_tool: str = ""
+    doing: str = ""                 # its latest action, in words
 
 
 # --- the adapter seam ---------------------------------------------------------
@@ -167,6 +178,26 @@ class Judge(Protocol):
     can judge is exactly what the prompt holds."""
 
     async def ask(self, prompt: str) -> str:
+        ...
+
+
+class Worker(Protocol):
+    """One piece of work, done by an agent with tools, in the project.
+
+    `hamilton build` drives the loop itself and calls a worker for the things
+    that need judgement -- planning a surface, writing a test, revising one,
+    writing the implementation, drafting a clarified criterion. Each call is
+    its own session: it starts from the prompt, does the work in the project
+    (with the project's own conventions), and returns what it has to say
+    about it. Nothing carries over, which is what makes the loop repeatable.
+    The independence that matters is the reviewer's (`Judge`), not the
+    worker's.
+
+    `on_action` is told each thing the worker does, in words, for the row
+    the engineer watches.
+    """
+
+    async def run(self, prompt: str, on_action: OnAction | None = None) -> str:
         ...
 
 

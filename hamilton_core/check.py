@@ -60,9 +60,17 @@ project:
   root-unit-only    a root requirement whose ACs are all `unit` -- nothing
                     verifies the actor's goal end to end
 
-The finding messages are the tool's real interface: the primary reader is an
-agent repairing a mistake it just made, so each one states where, which rule
-fired, what was expected, what was found, and the concrete next action.
+A person reads the gate as the spec: every requirement, each criterion
+under it with a mark (`view`), then the suite's result, then whatever is
+about no one criterion. The suite's own output is not shown -- it goes, as it
+runs, into a temp file named on failure (a green suite's is deleted), and its
+end travels with the `tests-failed` finding; `--suite-output` streams it
+instead.
+
+The finding messages -- in `--json`, and handed to the agents `hamilton
+build` runs -- are the tool's real interface to an agent: each states where,
+which rule fired, what was expected, what was found, and the concrete next
+action.
 """
 
 from __future__ import annotations
@@ -73,6 +81,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from typing import NamedTuple
 
@@ -254,21 +263,64 @@ def missing_methods(methods, paths: dict, files) -> list:
             if m != MANUAL and not any(under(f, paths.get(m, ())) for f in files)]
 
 
-def run_tests(root: str, cfg: dict):
-    """Run test_command in ``root``. Returns (ok, detail, lineno). The command's
-    own output is redirected to stderr so `--json` stdout stays clean."""
+SUITE_TAIL = 200         # lines of a failed suite's output a finding carries
+
+
+SUITE_TIMEOUT = 1800     # seconds before a suite that never ends is stopped
+
+
+def new_log() -> str:
+    """A file for a suite's output -- outside the project, so the gate still
+    never writes to it. Named before the suite starts, so it can be followed
+    while it runs."""
+    fd, path = tempfile.mkstemp(prefix="hamilton-suite-", suffix=".log")
+    os.close(fd)
+    return path
+
+
+def follow_hint(log: str) -> str:
+    """How to watch a suite that is running: its log, in the runner's own
+    words."""
+    return f"follow it: tail -f {log}"
+
+
+def run_tests(root: str, cfg: dict, echo: bool = False, log: str | None = None):
+    """Run test_command in ``root``. Returns (ok, detail, lineno, output).
+
+    The suite's output is not shown: a person reading the gate wants to know
+    *whether* it passed, and the details are for whoever fixes it. It goes,
+    as it comes, into `log` (a new temp file if none is given), which anyone
+    who wants to watch can follow. `echo` streams it to stderr instead, for
+    CI logs and debugging."""
     entry = cfg.get("test_command")
     if entry is None or not entry[0].strip():
-        return False, "test_command is not set in .hamilton/config", (entry[1] if entry else 1)
+        return (False, "test_command is not set in .hamilton/config",
+                (entry[1] if entry else 1), "")
     cmd, lineno = entry[0], entry[1]
-    print(f"hamilton check: running test_command: {cmd.strip()}", file=sys.stderr)
     try:
-        p = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr, timeout=1800)
+        if echo:
+            print(f"hamilton check: running test_command: {cmd.strip()}", file=sys.stderr)
+            p = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr,
+                               timeout=SUITE_TIMEOUT)
+            output = ""
+        else:
+            log = log or new_log()
+            with open(log, "w", encoding="utf-8") as fh:
+                p = subprocess.Popen(cmd, shell=True, cwd=root, stdout=fh,
+                                     stderr=subprocess.STDOUT)
+                try:
+                    p.wait(timeout=SUITE_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+                    raise
+            with open(log, encoding="utf-8", errors="replace") as fh:
+                output = fh.read()
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"test_command could not be run ({exc})", lineno
+        return False, f"test_command could not be run ({exc})", lineno, ""
     if p.returncode == 0:
-        return True, "", lineno
-    return False, f"test_command {cmd.strip()!r} exited {p.returncode}", lineno
+        return True, "", lineno, output
+    return False, f"test_command {cmd.strip()!r} exited {p.returncode}", lineno, output
 
 
 def spec_lines(path: str):
@@ -502,10 +554,15 @@ def _sample(ids, limit=8):
     return ", ".join(ids[:limit]) + f", ... ({len(ids)} total)"
 
 
-def _finding(rule, detail, file, line, req=None, ac=None, methods=None):
+def _finding(rule, detail, file, line, req=None, ac=None, methods=None,
+             state=None):
+    """`state` is set for `unreviewed`: which of the review states it is in,
+    so a reader does not have to parse it back out of the prose. `hamilton
+    build` routes on it -- a changed criterion needs the test written again,
+    anything else only needs reviewing."""
     message = f"{file}:{line}: {rule}: {detail}"
     return {"rule": rule, "file": file, "line": line, "req": req, "ac": ac,
-            "methods": methods, "message": message}
+            "methods": methods, "state": state, "message": message}
 
 
 def _warning(rule, detail, file, line):
@@ -585,11 +642,19 @@ def collect_warnings(root: str, reqs: dict, actors=None):
     return out
 
 
-def run(root: str):
+def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
     """Returns (findings, warnings, notices, manual, requirement_count,
     ac_count). `warnings` are advisory (module docstring); `notices` flag
     configuration that is set but does nothing. Neither changes the exit code.
-    `manual` lists the "R-nnnn/ACn" a person verifies instead of the gate."""
+    `manual` lists the "R-nnnn/ACn" a person verifies instead of the gate.
+
+    `on_log` is told the suite's log file just before the suite starts.
+
+    `suite=False` leaves the project's own test command unrun, and with it the
+    only finding it produces (`tests-failed`). The gate always runs it; the
+    build loop asks for the shape of the spec between its steps, and a suite
+    that takes ten minutes is not worth re-running to learn that a tag is
+    still unreviewed."""
     if not os.path.isfile(os.path.join(root, REQ_REL)):
         raise UsageError(f"{REQ_REL}: not found (run hamilton check from the "
                          f"project root, the directory that holds spec/)")
@@ -626,17 +691,29 @@ def run(root: str):
             f"Fix: set test_command in {CONFIG_REL}, e.g. "
             f"'test_command=python -m pytest -q'.",
             CONFIG_REL, tc[1] if tc else 1))
-    else:
-        ok, detail, cfg_line = run_tests(root, cfg)
+    elif suite:
+        log = None if echo else new_log()
+        if log and on_log is not None:
+            on_log(log)                     # before it starts: it can be followed
+        ok, detail, cfg_line, output = run_tests(root, cfg, echo, log)
+        if ok and log:
+            os.remove(log)                  # a green suite's output is not needed
         if not ok:
             cmd = tc[0].strip()
-            out.append(_finding("tests-failed",
+            log = log if output else ""
+            failed = _finding("tests-failed",
                 f"{detail}. Expected: the project's own test suite to pass "
-                f"before the gate certifies anything. Found: it did not. Fix: "
+                f"before the gate certifies anything. Found: it did not"
+                f"{' -- its full output is in ' + log if log else ''}. Fix: "
                 f"run '{cmd}' yourself from the project root to see why it "
                 f"fails and repair the implementation or the test; or "
                 f"set/correct test_command in {CONFIG_REL}.",
-                CONFIG_REL, cfg_line))
+                CONFIG_REL, cfg_line)
+            # the end of the output, for whoever fixes it (`hamilton build`
+            # hands it to its coding step), and where the whole of it is
+            failed["output"] = "\n".join(output.splitlines()[-SUITE_TAIL:])
+            failed["log"] = log
+            out.append(failed)
 
     for rid, line, first in duplicates:
         out.append(_finding("malformed",
@@ -855,12 +932,94 @@ def _unreviewed(c: Counted, ac: dict):
         f"reviewer passes the test. Found: "
         f"{'#' + t.suffix if t.suffix else 'no suffix'} -- {found}. Fix: "
         f"{fix.format(qual=qual)}. Never write or edit a suffix yourself.",
-        t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"])
+        t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"], state=state)
 
 
-def main(as_json: bool = False) -> int:
+def _one(root: str, only: str, as_json: bool) -> int:
+    m = _QUAL_RE.fullmatch(only)
+    if not m:
+        raise UsageError(f"{only!r} is not an acceptance criterion id; give it "
+                         f"as R-nnnn/ACn, e.g. R-0001/AC2")
+    rid, acid = m.groups()
+    findings, _w, _n, manual, _nr, _na = run(root, suite=False)
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    if acid not in reqs.get(rid, {}).get("acs", {}):
+        raise UsageError(f"{only} is not declared in {REQ_REL}")
+    mine = [f for f in findings if (f.get("req"), f.get("ac")) == (rid, acid)]
+    if as_json:
+        print(json.dumps({"ok": not mine, "findings": mine,
+                          "manual": [q for q in manual if q == only]}))
+        return 1 if mine else 0
+    from hamilton_core.session.console import Paint, supports_color
+    one = {rid: dict(reqs[rid], acs={acid: reqs[rid]["acs"][acid]})}
+    lines, _other = view(mine, one, manual, Paint(supports_color(sys.stdout)))
+    for text in lines:
+        print(text)
+    print(f"hamilton check: {only} only -- the suite was not run", file=sys.stderr)
+    return 1 if mine else 0
+
+
+# How a criterion reads in the human view, decided by the worst finding for
+# it: a missing or unusable test first, then a missing review.
+_AC_MARKS = {
+    "uncovered": ("✗", "no test by its method"),
+    "wrong-method": ("✗", "tested, but not by its method"),
+    "no-method": ("✗", "no [method] marker"),
+    "unknown-method": ("✗", "names a method the spec does not define"),
+    "unreviewed": ("?", "not reviewed"),
+}
+
+
+def view(findings: list, reqs: dict, manual: list, paint) -> tuple[list, list]:
+    """The gate as a person reads it: every requirement, then each of its
+    criteria with a mark -- `✓` fine, `✗` no usable test, `?` not reviewed,
+    `○` verified by a person. Returns (lines, the findings that are about no
+    one criterion); those are shown after, in full."""
+    by_ac: dict = {}
+    other = []
+    for f in findings:
+        rid, acid = f.get("req"), f.get("ac")
+        if f["rule"] in _AC_MARKS and acid in reqs.get(rid, {}).get("acs", {}):
+            by_ac.setdefault((rid, acid), []).append(f)
+        else:
+            other.append(f)
+    lines = []
+    for rid, r in reqs.items():
+        title = r.get("title") or " ".join((r.get("statement") or "").split())
+        lines.append(paint.bold(f"{rid} {title}".rstrip()))
+        for acid, ac in r["acs"].items():
+            found = by_ac.get((rid, acid))
+            if found:
+                worst = min(found, key=lambda f: "✗?".index(_AC_MARKS[f["rule"]][0]))
+                mark, why = _AC_MARKS[worst["rule"]]
+                if worst["rule"] == "unreviewed" and worst.get("state"):
+                    why = f"not reviewed ({worst['state']})"
+                colour = paint.red if mark == "✗" else paint.yellow
+                lines.append(f"- {colour(mark)} {acid} {ac['text']}  {paint.dim(why)}")
+            elif f"{rid}/{acid}" in manual:
+                lines.append(f"- {paint.dim('○')} {acid} {ac['text']}  "
+                             f"{paint.dim('verified by a person')}")
+            else:
+                lines.append(f"- {paint.green('✓')} {acid} {ac['text']}")
+    return lines, other
+
+
+_QUAL_RE = re.compile(r"(R-\d{4})/(AC\d+)")
+
+
+def main(as_json: bool = False, suite_output: bool = False,
+         only: str | None = None) -> int:
+    """`only` ("R-nnnn/ACn") narrows the gate to one criterion's status -- its
+    tags and reviews -- without running the suite: the question a step working
+    on that criterion asks, answered in a second. The full gate is the run
+    without it."""
+    root = os.getcwd()
     try:
-        findings, warnings, notices, manual, n_reqs, n_acs = run(os.getcwd())
+        if only is not None:
+            return _one(root, only, as_json)
+        findings, warnings, notices, manual, n_reqs, n_acs = run(
+            root, echo=suite_output,
+            on_log=lambda log: print(follow_hint(log), file=sys.stderr))
     except UsageError as exc:
         if as_json:
             print(json.dumps({"error": str(exc)}))
@@ -872,23 +1031,42 @@ def main(as_json: bool = False) -> int:
                           "warnings": warnings, "notices": notices,
                           "manual": manual, "requirements": n_reqs,
                           "acceptance_criteria": n_acs}))
-    else:
-        for f in findings:
-            print(f["message"])
-        for w in warnings:
-            print(w["message"], file=sys.stderr)
-        for n in notices:
-            print(f"hamilton check: notice: {n}", file=sys.stderr)
-        noun = "criterion" if n_acs == 1 else "criteria"
-        print(f"hamilton check: {n_reqs} requirement(s), {n_acs} acceptance {noun}",
-              file=sys.stderr)
-        if manual:
-            noun = "criterion" if len(manual) == 1 else "criteria"
-            print(f"hamilton check: {len(manual)} {noun} verified manually, "
-                  f"not by the gate", file=sys.stderr)
-        if warnings:
-            print(f"hamilton check: {len(warnings)} warning(s) — advisory, "
-                  f"not failures", file=sys.stderr)
-        print(f"hamilton check: {'ok' if not findings else str(len(findings)) + ' problem(s)'}",
-              file=sys.stderr)
+        return 1 if findings else 0
+
+    from hamilton_core.session.console import Paint, supports_color
+    paint = Paint(supports_color(sys.stdout))
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    lines, other = view(findings, reqs, manual, paint)
+    for text in lines:
+        print(text)
+
+    failed = next((f for f in other if f["rule"] == "tests-failed"), None)
+    ran = not any(f["rule"] == "no-test-command" for f in other)
+    if failed:
+        where = f" -- full output: {failed['log']}" if failed.get("log") else ""
+        print(f"\nSuite {paint.red('✗')} failed{where}")
+    elif ran:
+        print(f"\nSuite {paint.green('✓')} passed")
+    rest = [f for f in other if f is not failed]
+    if rest:
+        print(f"\n{paint.bold('Other findings')}")
+        for f in rest:
+            print(f"  {paint.red('✗')} {f['message']}")
+
+    for w in warnings:
+        print(w["message"], file=sys.stderr)
+    for n in notices:
+        print(f"hamilton check: notice: {n}", file=sys.stderr)
+    noun = "criterion" if n_acs == 1 else "criteria"
+    print(f"hamilton check: {n_reqs} requirement(s), {n_acs} acceptance {noun}",
+          file=sys.stderr)
+    if manual:
+        noun = "criterion" if len(manual) == 1 else "criteria"
+        print(f"hamilton check: {len(manual)} {noun} verified manually, "
+              f"not by the gate", file=sys.stderr)
+    if warnings:
+        print(f"hamilton check: {len(warnings)} warning(s) — advisory, "
+              f"not failures", file=sys.stderr)
+    print(f"hamilton check: {'ok' if not findings else str(len(findings)) + ' problem(s)'}",
+          file=sys.stderr)
     return 1 if findings else 0

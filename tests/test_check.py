@@ -6,6 +6,8 @@ The model is one requirement tree (D-014): `spec/requirements.md` plus a flat
 `spec/actors.md`. Every AC names its verification method (D-019).
 """
 
+import json
+import os
 import re
 
 import pytest
@@ -274,19 +276,29 @@ def test_covers_tag_matched_regardless_of_comment_syntax(tmp_path):
 
 
 def test_json_and_human_output_agree(tmp_path):
+    """Every finding shows in the human view: on its criterion's line, or --
+    when it is about no one criterion -- in full below the requirements."""
     human = run_fixture("multi-violation", tmp_path)
     _, payload = run_json("multi-violation", tmp_path)
-    lines = [ln for ln in human.stdout.splitlines() if ln.strip()]
-    assert len(lines) == len(payload["findings"])
     assert human.returncode == 1
     for f in payload["findings"]:
-        assert f["message"] in human.stdout
+        if f["rule"] in ("uncovered", "wrong-method", "unreviewed",
+                         "no-method", "unknown-method") and f["ac"]:
+            line = next(ln for ln in human.stdout.splitlines()
+                        if ln.startswith("- ") and f" {f['ac']} " in ln)
+            assert "✗" in line or "?" in line
+        else:
+            assert f["message"] in human.stdout
 
 
-def test_human_clean_run_is_silent_on_stdout_and_exits_zero(tmp_path):
+def test_the_human_view_is_the_spec_with_a_mark_per_criterion(tmp_path):
     human = run_fixture("clean", tmp_path)
     assert human.returncode == 0
-    assert human.stdout.strip() == ""
+    lines = human.stdout.splitlines()
+    assert lines[0].startswith("R-0001 ")
+    assert lines[1] == "- ✓ AC1 expired token -> 401 and no user data in the response body [http]"
+    assert lines[2].startswith("- ✓ AC2 ")
+    assert "Suite ✓ passed" in human.stdout
     assert "ok" in human.stderr
 
 
@@ -586,3 +598,90 @@ def test_review_state_names_the_changed_half():
     assert C.review_state("000000.bbbbbb", "aaaaaa.bbbbbb") == C.AC_CHANGED
     assert C.review_state("aaaaaa.000000", "aaaaaa.bbbbbb") == C.TEST_CHANGED
     assert C.review_state("000000.000000", "aaaaaa.bbbbbb") == C.BOTH_CHANGED
+
+
+
+# --- the suite's own output ----------------------------------------------------
+
+def test_the_suite_s_output_is_kept_out_of_the_way(tmp_path):
+    """A person wants to know whether it passed; the details are for whoever
+    fixes it -- in a log outside the project, and at the end of the finding."""
+    d = copy_fixture("clean", tmp_path)
+    with open(f"{d}/.hamilton/config") as fh:
+        cfg = fh.read().replace("test_command=true",
+                                "test_command=echo 'expected 3, got 4' && exit 1")
+    with open(f"{d}/.hamilton/config", "w") as fh:
+        fh.write(cfg)
+    human = run_check(d)
+    assert "expected 3, got 4" not in human.stdout + human.stderr
+    assert "Suite ✗ failed -- full output: " in human.stdout
+    log = human.stdout.split("full output: ")[1].split()[0]
+    assert "expected 3, got 4" in open(log).read()
+    assert not os.path.abspath(log).startswith(os.path.abspath(d))   # not in the project
+
+    [failed] = [f for f in json.loads(run_check(d, "--json").stdout)["findings"]
+                if f["rule"] == "tests-failed"]
+    assert failed["output"].strip() == "expected 3, got 4"
+
+
+def test_the_suite_s_output_can_still_be_streamed(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    with open(f"{d}/.hamilton/config") as fh:
+        cfg = fh.read().replace("test_command=true", "test_command=echo 'running 61 tests'")
+    with open(f"{d}/.hamilton/config", "w") as fh:
+        fh.write(cfg)
+    assert "running 61 tests" not in run_check(d).stderr
+    assert "running 61 tests" in run_check(d, "--suite-output").stderr
+
+
+# --- one criterion's status ------------------------------------------------------
+
+def test_one_criterion_s_status_needs_no_suite(tmp_path):
+    """A step working on a criterion asks whether it is covered and reviewed;
+    that must not cost a ten-minute suite."""
+    d = copy_fixture("multi-violation", tmp_path)
+    with open(f"{d}/.hamilton/config") as fh:
+        cfg = fh.read()
+    with open(f"{d}/.hamilton/config", "w") as fh:     # a suite that would fail
+        fh.write(re.sub(r"test_command=.*", "test_command=false", cfg))
+    ok = run_check(d, "R-0001/AC1")
+    assert ok.returncode == 0
+    assert "- ✓ AC1 " in ok.stdout and "AC2" not in ok.stdout and "Suite" not in ok.stdout
+    bad = run_check(d, "R-0001/AC2")
+    assert bad.returncode == 1 and "- ✗ AC2 " in bad.stdout
+    payload = json.loads(run_check(d, "R-0001/AC2", "--json").stdout)
+    assert [f["rule"] for f in payload["findings"]] == ["uncovered"]
+
+
+@pytest.mark.parametrize("only", ["R-0001", "R-0001/AC9"])
+def test_one_criterion_must_be_one_that_exists(tmp_path, only):
+    d = copy_fixture("clean", tmp_path)
+    assert run_check(d, only).returncode == 2
+
+
+
+def test_a_green_suite_leaves_no_log_behind(tmp_path):
+    from hamilton_core import check as C2
+    log = C2.new_log()
+    ok, _d, _l, output = C2.run_tests(str(tmp_path), {"test_command": ("echo fine", 1)},
+                                      log=log)
+    assert ok and output == "fine\n"
+    d = copy_fixture("clean", tmp_path)
+    before = set(os.listdir(os.path.dirname(log)))
+    assert run_check(d).returncode == 0
+    new = {f for f in set(os.listdir(os.path.dirname(log))) - before
+           if f.startswith("hamilton-suite-")}
+    assert new == set()
+
+
+def test_a_suite_that_never_ends_is_stopped(tmp_path, monkeypatch):
+    monkeypatch.setattr(C, "SUITE_TIMEOUT", 1)
+    ok, detail, _line, _out = C.run_tests(str(tmp_path), {"test_command": ("sleep 20", 1)})
+    assert ok is False and "could not be run" in detail
+
+
+def test_a_running_suite_can_be_followed_from_check_too(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    human = run_check(d)
+    assert "follow it: tail -f /" in human.stderr
+    assert "follow it" not in run_check(d, "--suite-output").stderr   # it streams

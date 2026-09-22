@@ -380,9 +380,9 @@ the next launch. Self-switching is closed by an inherited marker:
 `HAMILTON_SESSION` is exported before the agent starts, every child process
 inherits it, and `design` / `build` refuse to run when it is set — so an agent
 that shells out to `hamilton build` from inside a `design` session is blocked.
-This scopes *which phase a session is in*; it does **not**, by itself, stop the
-agent writing to `spec/` during a build session — it only fixes what phase that
-session is.
+This scopes *which phase the work is in*; it does **not**, by itself, stop an
+agent writing to `spec/` while a build runs — it only fixes what phase that
+run is in.
 
 **2. The write gate.** Hamilton refuses the file-editing tools (`Write` /
 `Edit` / `MultiEdit` / `NotebookEdit`) on the read-only paths for the current

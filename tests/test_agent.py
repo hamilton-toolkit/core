@@ -53,7 +53,7 @@ def test_a_turn_yields_its_events_up_to_its_end():
 def test_a_subagent_is_a_row_while_it_runs_and_a_done_line_after():
     async def go():
         a = Agent(ScriptedAdapter(
-            [P.TaskStarted("X", "Write test R-0001/AC1"), P.TaskProgress("X", 3, "Edit"),
+            [P.TaskStarted("X", "Write test R-0001/AC1"), P.TaskProgress("X", "editing a file"),
              P.AgentText("launched")],
             [P.TaskEnded("X", True), P.AgentText("written")]))
         first = await turn(a)
@@ -63,7 +63,7 @@ def test_a_subagent_is_a_row_while_it_runs_and_a_done_line_after():
     first, rows, second, after = run(go())
     assert first == [P.AgentText("launched")]
     [row] = rows
-    assert (row.label, row.tool_uses, row.last_tool) == ("Write test R-0001/AC1", 3, "Edit")
+    assert (row.label, row.doing) == ("Write test R-0001/AC1", "editing a file")
     done, written = second
     assert isinstance(done, P.SubagentDone) and done.label == "Write test R-0001/AC1"
     assert done.ok is True and written == P.AgentText("written")
@@ -72,7 +72,7 @@ def test_a_subagent_is_a_row_while_it_runs_and_a_done_line_after():
 
 def test_the_end_of_a_tool_that_was_never_a_task_is_ignored():
     async def go():
-        a = Agent(ScriptedAdapter([P.TaskProgress("b1", 1, "Bash"),
+        a = Agent(ScriptedAdapter([P.TaskProgress("b1", "running a command"),
                                    P.TaskEnded("b1", True), P.AgentText("ok")]))
         return await turn(a)
     assert run(go()) == [P.AgentText("ok")]
@@ -149,3 +149,49 @@ def test_strip_sentinel():
     body, hit = strip_sentinel(f"Spec is ratified.\n{P.SENTINEL}")
     assert hit is True and body.strip() == "Spec is ratified."
     assert strip_sentinel("plain text") == ("plain text", False)
+
+
+# --- a turn that waits for its subagents -------------------------------------
+
+def test_the_turn_waits_for_a_subagent_the_vendor_returned_early(monkeypatch):
+    """A vendor may end the turn as soon as a subagent is launched. If Hamilton
+    ended it there, the engineer would get their prompt back over a session
+    still writing files, and the agent's report would land on top of whatever
+    they were typing."""
+    monkeypatch.setattr("hamilton_core.session.agent.STALLED", 5.0)
+
+    async def go():
+        adapter = ScriptedAdapter([P.TaskStarted("t1", "Write test"),
+                                   P.AgentText("launched")])
+        a = Agent(adapter)
+        seen = []
+
+        async def collect():
+            async for ev in a.run_turn("go"):
+                seen.append(ev)
+
+        reading = asyncio.create_task(collect())
+        await asyncio.sleep(0.1)       # the turn has ended; the subagent has not
+        held = not reading.done()
+        for ev in (P.TaskEnded("t1", True), P.AgentText("the writer is done"),
+                   P.TurnEnded(by_agent=True)):
+            adapter.stream.put_nowait(ev)
+        await asyncio.wait_for(reading, 2)
+        return held, seen
+
+    held, seen = run(go())
+    assert held is True
+    assert seen[0] == P.AgentText("launched")
+    assert isinstance(seen[1], P.SubagentDone) and seen[1].label == "Write test"
+    assert seen[2] == P.AgentText("the writer is done")
+
+
+def test_a_subagent_that_stops_reporting_does_not_strand_the_engineer():
+    """Bounded, so a lost subagent costs a wait, not the session."""
+    async def go():
+        a = Agent(ScriptedAdapter([P.TaskStarted("t1", "Write test"),
+                                   P.AgentText("launched")]))
+        return await turn(a), a.activity()
+    seen, still_running = run(go())      # STALLED is a blink in the tests
+    assert seen == [P.AgentText("launched")]
+    assert [r.label for r in still_running] == ["Write test"]

@@ -9,14 +9,15 @@ events.
 import asyncio
 
 from claude_agent_sdk import (
-    AssistantMessage, ResultMessage, TaskProgressMessage, TaskStartedMessage,
-    TextBlock, ToolResultBlock, ToolUseBlock, UserMessage,
+    AssistantMessage, ResultMessage, TaskNotificationMessage,
+    TaskProgressMessage, TaskStartedMessage, TaskUpdatedMessage, TextBlock,
+    ToolResultBlock, ToolUseBlock, UserMessage,
 )
 
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import (
-    FOREGROUND, ClaudeSdkAdapter, ClaudeSdkJudge, _as_question, _foreground_only,
-    _translate,
+    FOREGROUND, ClaudeSdkAdapter, ClaudeSdkJudge, ClaudeSdkWorker, Tasks,
+    _as_question, _foreground_only, _translate,
 )
 
 
@@ -143,53 +144,103 @@ def result(origin=None, is_error=False, text="ok"):
                          origin=origin)
 
 
-def progress(tool_use_id, tool_uses, last_tool):
+def progress(task_id, tool_uses, last_tool, tool_use_id="X"):
     return TaskProgressMessage(
-        "task_progress", {}, task_id="t1", description="running tests",
+        "task_progress", {}, task_id=task_id, description="running tests",
         usage={"total_tokens": 1, "tool_uses": tool_uses, "duration_ms": 1},
         uuid="u", session_id="s", tool_use_id=tool_use_id, last_tool_name=last_tool)
 
 
+def task_started(task_id, tool_use_id, description="Write test R-0001/AC1"):
+    return TaskStartedMessage("task_started", {}, task_id=task_id,
+                              description=description, uuid="u", session_id="s",
+                              tool_use_id=tool_use_id)
+
+
+def notified(task_id, status):
+    return TaskNotificationMessage("task_notification", {}, task_id=task_id,
+                                   status=status, output_file="/tmp/o",
+                                   summary="done", uuid="u", session_id="s")
+
+
+def updated(task_id, status):
+    return TaskUpdatedMessage("task_updated", {}, task_id=task_id,
+                              patch={"status": status}, status=status)
+
+
+def translate(*messages):
+    """The events a fresh stream makes of `messages`, in order."""
+    tasks = Tasks()
+    return [ev for msg in messages for ev in _translate(msg, tasks)]
+
+
 def test_the_main_agents_text_is_shown():
-    assert _translate(said("Tests are green.")) == [P.AgentText("Tests are green.")]
+    assert translate(said("Tests are green.")) == [P.AgentText("Tests are green.")]
 
 
 def test_a_subagents_text_and_calls_are_not():
-    assert _translate(said("thinking aloud", parent="X")) == []
-    assert _translate(called("Bash", "b1", parent="X", command="ls")) == []
-    assert _translate(returned("b1", parent="X")) == []
-    assert _translate(UserMessage("the subagent's prompt", parent_tool_use_id="X")) == []
+    assert translate(said("thinking aloud", parent="X")) == []
+    assert translate(called("Bash", "b1", parent="X", command="ls")) == []
+    assert translate(UserMessage("the subagent's prompt", parent_tool_use_id="X")) == []
 
 
-def test_a_subagent_is_a_task_from_start_to_end():
-    assert _translate(called("Agent", "X", description="Write test R-0001/AC1",
-                             prompt="...")) == [P.TaskStarted("X", "Write test R-0001/AC1")]
-    assert _translate(progress("X", 3, "Edit")) == [P.TaskProgress("X", 3, "Edit")]
-    assert _translate(returned("X")) == [P.TaskEnded("X", True)]
-    assert _translate(returned("X", is_error=True)) == [P.TaskEnded("X", False)]
+def test_a_subagent_is_a_row_from_its_task_starting_to_its_task_finishing():
+    """The `Agent` call returns as soon as the subagent is launched, so its
+    tool result says nothing about whether the work is done -- only the task's
+    own lifecycle does."""
+    assert translate(
+        called("Agent", "X", description="Write test R-0001/AC1", prompt="..."),
+        task_started("t1", "X"),
+        progress("t1", 3, "Edit"),
+        notified("t1", "completed"),
+    ) == [P.TaskStarted("t1", "Write test R-0001/AC1"),
+          P.TaskProgress("t1", "editing a file"),
+          P.TaskEnded("t1", True)]
 
 
-def test_any_other_tool_is_no_task_and_its_end_is_left_to_the_agent_to_ignore():
-    assert _translate(called("Bash", "b2", command="hamilton check")) == []
-    assert _translate(returned("b2")) == [P.TaskEnded("b2", True)]
+def test_the_tool_call_returning_does_not_close_the_row():
+    assert translate(called("Agent", "X", description="Write test", prompt="..."),
+                     task_started("t1", "X", "Write test"),
+                     returned("X")) == [P.TaskStarted("t1", "Write test")]
 
 
-def test_task_frames_without_a_tool_call_are_ignored():
-    started = TaskStartedMessage("task_started", {}, task_id="t2",
-                                 description="npm test", uuid="u", session_id="s",
-                                 tool_use_id="b3")
-    assert _translate(started) == []
+def test_a_task_that_only_reports_its_end_as_an_update_still_closes():
+    assert translate(called("Agent", "X", description="Write test", prompt="..."),
+                     task_started("t1", "X", "Write test"),
+                     updated("t1", "killed")) == [P.TaskStarted("t1", "Write test"),
+                                                  P.TaskEnded("t1", False)]
+    # a patch that changes something else leaves the row open
+    assert translate(called("Agent", "Y", description="Write test", prompt="..."),
+                     task_started("t2", "Y", "Write test"),
+                     updated("t2", "running")) == [P.TaskStarted("t2", "Write test")]
 
 
-def test_only_our_own_turns_result_ends_the_turn():
-    assert _translate(result()) == [P.TurnEnded()]
-    assert _translate(result(origin={"kind": "human"})) == [P.TurnEnded()]
-    assert _translate(result(origin={"kind": "task-notification"})) == []
+def test_a_failed_subagent_is_reported_as_one():
+    for status in ("failed", "stopped"):
+        assert translate(called("Agent", "X", description="W", prompt="..."),
+                         task_started("t1", "X"),
+                         notified("t1", status))[-1] == P.TaskEnded("t1", False)
+
+
+def test_the_clis_own_tasks_are_not_the_agents_subagents():
+    """A background command the CLI runs is a task too; it is not a subagent
+    and does not hold the turn open."""
+    assert translate(called("Bash", "b2", command="npm test"),
+                     task_started("t9", "b2", description="npm test"),
+                     progress("t9", 1, "Bash"),
+                     notified("t9", "completed")) == []
+
+
+def test_every_turns_result_is_reported_and_whose_it_was():
+    assert translate(result()) == [P.TurnEnded(False)]
+    assert translate(result(origin={"kind": "human"})) == [P.TurnEnded(False)]
+    assert translate(result(origin={"kind": "task-notification"})) == [
+        P.TurnEnded(True)]
 
 
 def test_a_failed_result_is_a_session_error():
-    assert _translate(result(is_error=True, text="out of budget")) == [
-        P.SessionError("out of budget"), P.TurnEnded()]
+    assert translate(result(is_error=True, text="out of budget")) == [
+        P.SessionError("out of budget"), P.TurnEnded(False)]
 
 
 def test_the_foreground_hook_is_installed_for_the_subagent_tool():
@@ -225,3 +276,43 @@ def test_the_stream_carries_denials_and_records_the_session_ref():
     assert asyncio.run(collect(a)) == [P.ToolDenied("spec/r.md", "phase is 'build'"),
                                        P.AgentText("hi"), P.TurnEnded()]
     assert a.session_ref == "sess-9"
+
+
+# --- the worker: one step of `hamilton build` --------------------------------
+
+def test_a_worker_runs_in_the_project_under_the_phase_gate():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: f"no: {p}")
+    assert w._options().cwd == "/tmp/p"
+    # every task works under the project's own conventions and hooks
+    assert w._options().setting_sources == ["project"]
+    r = asyncio.run(w._can_use_tool("Write", {"file_path": "spec/r.md"}, None))
+    assert r.behavior == "deny" and "spec/r.md" in r.message
+    assert w.denials == [P.ToolDenied("spec/r.md", "no: spec/r.md")]
+    allowed = asyncio.run(w._can_use_tool("Bash", {"command": "ls"}, None))
+    assert allowed.behavior == "allow"
+
+
+def test_one_write_policy_serves_the_session_and_the_workers():
+    """The gate is the same whoever is writing; only the caller differs."""
+    from hamilton_core.session.claude_sdk_adapter import refusal
+    policy = lambda p: "phase is 'spec'" if p.startswith("src/") else None
+    assert refusal("/tmp", policy, "Edit", {"file_path": "src/x.py"}) == \
+        "phase is 'spec'"
+    assert refusal("/tmp", policy, "Edit", {"file_path": "tests/x.py"}) is None
+    assert refusal("/tmp", policy, "Bash", {"command": "rm -rf src"}) is None
+
+
+
+# --- what a running task is doing, in words ------------------------------------
+
+def test_a_tool_call_reads_as_what_it_does_to_what():
+    from hamilton_core.session.claude_sdk_adapter import action
+    root = "/home/x/proj"
+    assert action(root, "Edit", {"file_path": "/home/x/proj/src/Http/EnforceHttps.php"}) \
+        == "editing src/Http/EnforceHttps.php"
+    assert action(root, "Bash", {"command": "tools/run-tests.sh\n  --filter x"}) \
+        == "running tools/run-tests.sh --filter x"
+    assert action(root, "Read") == "reading a file"            # no target known
+    assert action(root, "SomethingNew", {}) == "using SomethingNew"
+    long = action(root, "Bash", {"command": "x" * 200})
+    assert long.endswith("…") and len(long) < 80

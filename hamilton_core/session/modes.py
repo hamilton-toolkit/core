@@ -1,8 +1,12 @@
-"""The session modes: `hamilton design`, `build`, `reverse`, and any added
+"""The session modes: `hamilton design`, `hamilton reverse`, and any added
 later. A mode is everything that differs between them -- which phase it sets,
 how the agent is told to start, what is offered after an iteration, and how
 the session is summed up. Everything else (the console, the adapter, the
 turn loop) is shared, so a new mode is one `Mode` here and nothing more.
+
+Both modes here are spec work, which is a conversation with the engineer.
+Build is not a mode: `hamilton build` is a loop Hamilton drives itself, in
+`hamilton_core.build`, and calls an agent per step.
 """
 
 from __future__ import annotations
@@ -91,34 +95,6 @@ DESIGN = Mode(
     next_steps=_SPEC_STEPS,
 )
 
-BUILD = Mode(
-    name="build",
-    phase="build",
-    help="set phase to build, then run the build session",
-    kickoff=(
-        "Start the Hamilton build session now: follow the `hamilton` skill's "
-        "\"Propagate a change\" / \"Verify\" workflow immediately -- run "
-        "`git diff spec/` and `hamilton check`, then run the skill's build "
-        "loop -- write tests, `hamilton review`, implement -- until `hamilton "
-        "check` is green, then give the closing summary. If this is the first "
-        "build after `hamilton reverse` (most ACs uncovered or unreviewed, the "
-        "spec only just landed in `git log -- spec`), follow \"Adopt an "
-        "existing test suite\" instead. Do not wait for further instruction."
-    ),
-    footer=("hamilton build: session ended (phase 'build'). Run `hamilton "
-            "check` to confirm the gate is green before opening a merge "
-            "request."),
-    next_steps=(
-        Step("Take another build task",
-             "The engineer has more for you to build. Ask what it is, then "
-             "follow the Implement / Propagate a change workflow and get "
-             "`hamilton check` green."),
-        Step("Re-run the gate",
-             "Run `hamilton check` again and report what it says. If it is "
-             "red, follow the Verify workflow until it is green."),
-    ),
-)
-
 REVERSE = Mode(
     name="reverse",
     phase="spec",
@@ -142,4 +118,4 @@ REVERSE = Mode(
     precheck=_spec_is_empty,
 )
 
-MODES: dict[str, Mode] = {m.name: m for m in (DESIGN, BUILD, REVERSE)}
+MODES: dict[str, Mode] = {m.name: m for m in (DESIGN, REVERSE)}

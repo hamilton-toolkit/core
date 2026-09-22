@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 
+import pytest
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(REPO, "tests", "fixtures")
 
@@ -54,3 +56,12 @@ def run_fixture(name, tmp_path, *args):
 def run_json(name, tmp_path):
     proc = run_fixture(name, tmp_path, "--json")
     return proc.returncode, json.loads(proc.stdout)
+
+
+@pytest.fixture(autouse=True)
+def _brief_quiet(monkeypatch):
+    """A session waits on a running or just-finished subagent before handing
+    the prompt back. Tests should not sit through those waits, so they are a
+    blink here; the test that pins the waiting says so itself."""
+    monkeypatch.setattr("hamilton_core.session.agent.QUIET", 0.05)
+    monkeypatch.setattr("hamilton_core.session.agent.STALLED", 0.05)

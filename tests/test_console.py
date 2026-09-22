@@ -142,7 +142,7 @@ def test_the_indicator_is_suspended_around_anything_that_reads():
     c, _ = console("1\n")
     seen = []
     c._interactive = lambda: False
-    original = c._paused
+    original = c.paused
 
     import contextlib
 
@@ -152,20 +152,19 @@ def test_the_indicator_is_suspended_around_anything_that_reads():
         with original():
             yield
 
-    c._paused = watched
+    c.paused = watched
     c.ask(QUESTION)
     assert seen == [True]
 
 
-def row(label, started=0.0, tool_uses=0, last_tool=""):
-    return P.Activity(label, label, started, tool_uses, last_tool)
+def row(label, started=0.0, doing=""):
+    return P.Activity(label, label, started, doing)
 
 
-def test_a_running_subagent_reads_as_what_how_long_and_its_last_tool():
-    assert C.activity_lines([row("Write test R-0001/AC1", 0, 3, "Edit")], 134, "⠹") == [
-        "  ⠹ Write test R-0001/AC1  2m14s · 3 tools · Edit"]
-    assert C.activity_lines([row("Rewrite test", 0, 1)], 5, "⠹") == [
-        "  ⠹ Rewrite test  5s · 1 tool"]
+def test_a_running_row_reads_as_what_how_long_and_what_it_is_doing():
+    assert C.activity_lines([row("R-0001/AC1", 0, "editing tests/r-0001-ac1.test.js")],
+                            134, "⠹") == [
+        "  ⠹ R-0001/AC1  2m14s · editing tests/r-0001-ac1.test.js"]
     assert C.activity_lines([row("Just started")], 0, "⠹") == ["  ⠹ Just started  0s"]
 
 
@@ -186,13 +185,31 @@ def test_the_frame_is_erased_by_exactly_the_lines_it_drew():
 
 def test_the_indicator_draws_the_rows_under_it():
     c, out = console()
-    c.follow(lambda: (row("Write test R-0001/AC1", time.monotonic(), 2, "Bash"),))
+    c.follow(lambda: (row("Write test R-0001/AC1", time.monotonic(), "running npm test"),))
     stop = threading.Event()
     threading.Timer(0.25, stop.set).start()
-    c._animate("Engineering", stop)
+    c._animate(stop)
     frames = out.getvalue()
-    assert "Engineering…" in frames and "Write test R-0001/AC1  0s · 2 tools · Bash" in frames
+    assert "Engineering…" in frames and "Write test R-0001/AC1  0s · running npm test" in frames
     assert c._shown == 2
+
+
+def test_the_indicator_says_what_is_being_worked_on_now():
+    """A step change relabels the running indicator; it does not restart it."""
+    c, out = console()
+    stop = threading.Event()
+    threading.Timer(0.15, lambda: c.working_on("Reviewing tests")).start()
+    threading.Timer(0.35, stop.set).start()
+    c._animate(stop)
+    frames = out.getvalue()
+    assert frames.index("Engineering…") < frames.index("Reviewing tests…")
+
+
+def test_a_step_stays_in_the_scrollback():
+    c, out = console()
+    c.step("Writing tests", "3 criteria")
+    c.step("Coding")
+    assert out.getvalue() == "\n▸ Writing tests — 3 criteria\n\n▸ Coding\n"
 
 
 def test_a_finished_subagent_leaves_a_line_even_without_a_terminal():
@@ -420,3 +437,22 @@ def test_what_was_unfolded_on_leaving_stays_behind(tty):
     assert out.getvalue() == ("  ✗ R-0001/AC1\n"
                               "  ✗ R-0001/AC2\n    why two\n    and more\n"
                               "  ? R-0001/AC3\n")
+
+
+def test_a_confirmation_pauses_the_indicator():
+    """Otherwise the animation draws over the question while it waits."""
+    c, _ = console("y\n")
+    seen = []
+    original = c.paused
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def watched():
+        seen.append(True)
+        with original():
+            yield
+
+    c.paused = watched
+    assert c.confirm("Write this to the spec?") is True
+    assert seen == [True]
