@@ -229,6 +229,27 @@ methods section there and ignores the rest as prose. Define a
 format, an enum, or a validation rule once, and reference it by name from the
 ACs that need it. Never restate a shared rule inside a Statement.
 
+**Supporting spec files hold what is too long or too literal for an AC** — a
+rule set with its constants, legal or marketing text, a visual reference. They
+live in `spec/` next to the model, one file per subject:
+
+- **Reference by path.** The Statement or AC that incorporates a file names it
+  as `spec/<file>` — `Statement: The configuration is priced per
+  spec/price_model.md.` A bare file name is not a reference. A referenced file
+  is part of the criterion: its content is in every referencing test's review,
+  so editing it sends those tests back to be rewritten, and `hamilton verify`
+  fails `missing-reference` on a path that names no file.
+- **Verification stays in the AC.** The AC says what must hold about the file
+  — `any valid configuration -> the total follows the calculation path in
+  spec/price_model.md [unit]`, `visitor opens the legal page -> the text of
+  spec/impressum.md is shown [browser]`. Never delegate it to the file ("the
+  examples in the file hold"): a file may be a plain set of rules with no
+  examples at all.
+- **Content only.** No notes about Hamilton, no requirement ids — they go
+  stale, and they are part of every referencing obligation. A placeholder
+  (`[TODO: ...]`) the outcome depends on is an open question: raise it, since a
+  build implements the file as it stands.
+
 #### Worked example — split a welded statement
 
 A real Statement, 43 words, five behaviours welded together:
@@ -288,7 +309,7 @@ Think first, then present. **Never propose changes as you generate them.**
 **Phase 1 — plan silently.** Work out the complete set of changes the request
 implies: new requirements, edited requirements, edited ACs, removed
 requirements, new or changed methods (on an AC or in `## Verification
-methods`), moved subtrees. Apply **How to write a
+methods`), moved subtrees, new or edited supporting spec files. Apply **How to write a
 requirement** as you go — a behaviour that needs an "and" is two requirements,
 count it as two. Write nothing yet.
 
@@ -309,6 +330,8 @@ Touches 4 requirements (2 new, 1 edited, 1 removed).
 3. Edit    Authentication › R-0007 "Sessions" — statement clarified
 4. Remove  Authentication › Sessions › R-0031 "Remember me"
 ```
+A supporting file is an item of its own: `Edit spec/price_model.md —
+ELECTRICAL_PACKAGE 700 -> 750`.
 This lets the engineer see the shape and the size before spending attention.
 
 **Phase 3 — one item at a time, in order.** For each item, show:
@@ -333,6 +356,12 @@ This lets the engineer see the shape and the size before spending attention.
   Ask about that specific case, never "is this ok?" — e.g. *"AC2 says
   whitespace runs count as one separator; what should `initials('  ada  ')`
   return?"* If the item settles what it needs to, ask nothing.
+
+**For a supporting file**, show the changed passage *before* and *after* (a
+new file in full), and a CONSEQUENCE naming every requirement that references
+it — search `spec/requirements.md` for its path — whose tagged tests go
+`unreviewed (AC changed)` and are rewritten in the next build. Write a new file
+before the AC that references it.
 
 **For a removal**, show where it sits, its full statement and acceptance
 criteria as they stand, and a CONSEQUENCE naming:

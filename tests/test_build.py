@@ -166,6 +166,20 @@ def test_every_rule_reaches_exactly_one_step():
     assert [f["ac"] for f in work.review] == ["AC2", "AC3"]
 
 
+def test_a_missing_reference_goes_back_to_the_spec():
+    work = B.route([finding("missing-reference", "R-0001", "AC1")], skipped=[])
+    assert [f["rule"] for f in work.spec] == ["missing-reference"]
+    assert not work.open
+
+
+def test_a_task_is_told_which_spec_files_the_criterion_references():
+    reqs = {"R-0001": {"title": "Price", "statement": "Priced per spec/price_model.md.",
+                       "acs": {"AC1": {"text": "a -> b, see spec/table.md [unit]",
+                                       "methods": ["unit"]}}}}
+    text = B.spec_of(reqs, {"unit": {"description": "one module."}}, "R-0001/AC1")
+    assert "References: spec/price_model.md, spec/table.md" in text
+
+
 def test_a_skipped_criterion_is_set_aside_before_any_step_sees_it():
     work = B.route([finding("uncovered", "R-0001", "AC1"),
                     finding("uncovered", "R-0001", "AC2")],

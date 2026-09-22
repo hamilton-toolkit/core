@@ -23,6 +23,7 @@ import re
 import sys
 
 from hamilton_core import model as M
+from hamilton_core.verify import refs_in
 
 _ID = re.compile(r"[RA]-\d{4}")
 
@@ -106,10 +107,12 @@ def _view_requirement(m: M.Model, rid: str):
                      "status": st, "tags": tags})
     children = [{"id": c, "title": M.req_title(c, m.reqs)}
                 for c in m.child_requirements(rid)]
+    refs = refs_in(" ".join([r["statement"] or ""]
+                            + [ac["text"] for ac in r["acs"].values()]))
     data = {
         "id": rid, "type": "requirement", "title": r["title"],
         "path": path, "statement": r["statement"],
-        "actor": r.get("actor"),
+        "actor": r.get("actor"), "references": refs,
         "criteria": crit, "children": children,
     }
 
@@ -123,6 +126,10 @@ def _view_requirement(m: M.Model, rid: str):
         else:
             lines.append("  actor:      (none — a root requirement must name one)")
     lines.append(f"  statement:  {r['statement'] or '(none — malformed)'}")
+    if refs:
+        lines.append("  references: " + ", ".join(
+            ref if os.path.isfile(os.path.join(m.root, ref)) else f"{ref} (missing)"
+            for ref in refs))
     lines.append("  criteria:")
     if not crit:
         lines.append("    (none — malformed)")

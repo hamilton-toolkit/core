@@ -522,3 +522,20 @@ def test_a_remembered_review_with_nothing_to_settle_is_reviewed_afresh(
         "R-0001/AC2": {"covered": [], "comments": []}})
     assert "Comments to settle" not in judge.prompts[0]
     assert r["verdict"] == "reject"
+
+
+def test_the_prompt_holds_the_spec_files_the_criterion_references(tmp_path):
+    """The reviewer has no tools: a referenced file it is not shown is one it
+    cannot hold the test to."""
+    d = project(tmp_path)
+    body = open(f"{d}/spec/requirements.md").read()
+    open(f"{d}/spec/requirements.md", "w").write(body.replace(
+        "-> accepted [http]", "-> accepted per spec/skew.md, drawn in spec/skew.png [http]"))
+    open(f"{d}/spec/skew.md", "w").write("Clock skew of up to 30 seconds is tolerated.\n")
+    open(f"{d}/spec/skew.png", "wb").write(b"\x89PNG\xff\x00")
+    judge = FakeJudge(verdicts("pass"))
+    reviewed(d, judge)
+    [prompt] = [p for p in judge.prompts if "## R-0001/AC2" in p]
+    assert "### `spec/skew.md`" in prompt
+    assert "Clock skew of up to 30 seconds is tolerated." in prompt
+    assert "### `spec/skew.png`\n\n(not text, not shown)" in prompt

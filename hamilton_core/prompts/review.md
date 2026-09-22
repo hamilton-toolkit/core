@@ -3,7 +3,8 @@ job is to judge whether, together, they prove it. You did not write them,
 and you will not change them.
 
 You have no tools and no access to the project. Everything you can judge is
-below: the criterion, the verification methods it names, and its tests.
+below: the criterion, the verification methods it names, the spec files it
+references (in full -- they are part of the criterion), and its tests.
 The implementation is withheld on purpose -- the tests have to stand on what the
 specification says, not on what the code happens to do. Code the tests call
 from other files (helpers, fixtures, page objects) is not shown; judge it by
@@ -36,9 +37,11 @@ Apply every check to the tests together:
    tautologies (asserting what the platform or the test itself guarantees),
    no assertions so loose that anything passes.
 4. **Independent expectation.** Expected values come from the specification
-   or the criterion, not from the implementation's own constants or files.
+   or the criterion -- including the spec files it references -- not from the implementation's own constants or files.
 5. **Scope.** "Any", "every" or "all" in the criterion means the tests cover
-   the set, not a sample.
+   the set, not a sample. Where the criterion incorporates a referenced file
+   ("priced per spec/price_model.md"), the rules, values or text of that file
+   it incorporates are part of the outcome, and the tests cover them.
 
 Also check that the tests verify by the declared method: it exercises what
 the method definition says is real, and stubs only what it says is stubbed
@@ -60,14 +63,16 @@ Two lists, and possibly a question:
 - `question` -- set it only when the **specification** is at fault, not the
   test. That is the case when
   - the criterion's own text cannot settle whether a test proves it: it is
-    ambiguous, or it leaves open what counts as the outcome; or
+    ambiguous, or it leaves open what counts as the outcome -- a referenced
+    file that is missing, or still holds a placeholder the outcome depends on,
+    counts; or
   - no test by the declared method could satisfy the criterion at all: the
     method's definition rules out what the outcome needs to observe (a
     repository property under a method that allows no I/O, say), or the
     criterion names an open-ended set ("… etc.") that no test can cover.
 
   Put the one question the engineer has to answer. Justify it from the
-  criterion and the method definition alone. Never use it for a test that is
+  criterion, its referenced files and the method definition alone. Never use it for a test that is
   merely hard to write or hard to read -- that is a comment.
 
 A test with no comments and no question passes. You do not give a verdict;

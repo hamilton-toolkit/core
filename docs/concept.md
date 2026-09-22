@@ -193,7 +193,8 @@ either side changes (D-020).
 **The reviewer.** `hamilton build`'s review step hands each unreviewed test to
 a fresh agent session with no tools. Hamilton builds the prompt: the
 requirement's id, title and Statement, the AC with its method marker, the
-definition of that method, and the test's text with its file path. No implementation, no file access.
+definition of that method, the supporting spec files it references, and the
+test's text with its file path. No implementation, no file access.
 Unlike the writer rule (§5.2), this boundary is enforced — the session has
 nothing to read with. It judges each AC against five checks:
 
@@ -215,7 +216,9 @@ an ambiguous AC — a spec defect, and a hard stop (§7.4).
 **The record.** A pass writes a review suffix into the tag, `@covers
 R-0005/AC2 #3f9a2c.81d0e4`: two 6-hex-digit SHA-256 prefixes. The first covers
 the **obligation** — the AC id, its requirement's Statement, the AC text with
-its marker, and the definitions of the methods the test counts toward. The
+its marker, the definitions of the methods the test counts toward, and the
+content of any supporting spec file the Statement or AC names as
+`spec/<file>` (a rule set, a legal text, a visual reference). The
 second covers the **test** — its *region*: the file's preamble (everything
 above the first tag) plus its own section (from its tags to the next tagged
 test or the end of the file), whitespace-normalised. Change either and the tag

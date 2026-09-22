@@ -40,6 +40,17 @@ def test_shows_title_statement_and_all_criteria(tmp_path):
     assert "token inside the 30s clock-skew window -> accepted" in out
 
 
+def test_lists_the_spec_files_the_requirement_references(tmp_path):
+    d = copy_fixture("tree", tmp_path)
+    spec = f"{d}/spec/requirements.md"
+    body = open(spec).read()
+    open(spec, "w").write(body.replace(
+        "is in the past.", "is in the past, per spec/token_rules.md and spec/gone.md."))
+    open(f"{d}/spec/token_rules.md", "w").write("rules\n")
+    out = run_show(d, "R-0042").stdout
+    assert "references: spec/gone.md (missing), spec/token_rules.md" in out
+
+
 def test_renders_the_parent_path_by_title_not_by_id(tmp_path):
     out = show("tree", tmp_path, "R-0042").stdout
     assert "Authentication › Sessions › Reject expired tokens" in out

@@ -189,7 +189,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 453 passing
+$ python -m pytest -q          # expects 476 passing
 ```
 
 ### 2. Link it into a separate test project
@@ -343,7 +343,8 @@ requirements; extend an existing spec with `hamilton design`.
 | `orphan-requirement` | A requirement with no `Parent:` does not name an `Actor:`. Add the `Actor:`, or give it a `Parent:`. |
 | `dangling-ref` | A `Parent:` or `Actor:` value names an entity that isn't declared. Fix the reference, or add the entity. |
 | `cyclic-parent` | Following `Parent:` links from some requirement loops back on itself. Re-point one `Parent:`. |
-| `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:` and method definition) or its test changed since the review — the message says which. Run `hamilton build`: it rewrites the test if the criterion changed, and has it reviewed. Never write a suffix by hand. |
+| `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:`, method definition and the spec files it references) or its test changed since the review — the message says which. Run `hamilton build`: it rewrites the test if the criterion changed, and has it reviewed. Never write a suffix by hand. |
+| `missing-reference` | A `Statement:` or criterion names a `spec/<file>` that does not exist. Add the file or correct the path (in spec phase). |
 | `malformed` | A requirement is missing its `Statement`, has no criteria, repeats an id, or has a line that doesn't parse — or the file has no real requirements at all. The message names the line. |
 
 It also prints **advisory warnings** — never fail the run, never change the
@@ -437,6 +438,27 @@ A shared field rule — a format, an enum, a validation rule — goes once in a
 `## Domain vocabulary` section at the top of the file and is referenced by name
 from the criteria that need it, never restated inside a `Statement:`.
 
+### Supporting files
+
+Content too long or too literal for a criterion — a pricing model with its
+constants, a legal text, the site's copy, a visual reference — goes in a file
+of its own in `spec/`, and the `Statement:` or criterion that incorporates it
+names it by path:
+
+```markdown
+Statement: The completed configuration is priced per spec/price_model.md.
+Criteria:
+- AC1: any valid configuration -> the total follows the calculation path in spec/price_model.md [unit]
+```
+
+The criterion still says what must hold; the file only supplies the content.
+That content is part of the criterion: the reviewer is shown it in full, and
+editing the file sends every test of a referencing criterion back to be
+rewritten, so the next `hamilton build` builds the change. A path to a file
+that does not exist fails `missing-reference`. Like the rest of `spec/`, these
+files are written in spec phase — `hamilton design` treats an edit to one as a
+change of its own and names the requirements it affects.
+
 ## What this does not do
 
 It has every test **reviewed** — it does not **prove** your tests are any
@@ -495,6 +517,13 @@ The first `hamilton build` runs a full review — one model call per test — an
 rewrites the tests the reviewer rejects; that review is the quality audit of
 your existing suite. `.hamilton/verified` is no longer used: `hamilton verify`
 prints a notice until you delete it.
+
+**A project whose criteria name supporting files** (`spec/<file>`) sees
+those criteria go `unreviewed` once after upgrading: the files are now part of
+what their tests were reviewed against. The next `hamilton build` rewrites and
+reviews them. Criteria that reference no file are unaffected. A file named
+without its `spec/` prefix is not a reference — add the prefix in a `hamilton
+design` session.
 
 **A project created before sessions moved in-process** still has an
 `agent_command` line in `.hamilton/config`. Nothing reads it any more —

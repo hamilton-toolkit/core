@@ -8,8 +8,9 @@ review suffix (D-020). `verify` is read-only: it never writes a file.
 A review suffix -- `@covers R-0005/AC2 #3f9a2c.81d0e4` -- is written only by
 the reviewer in `hamilton build` when it passes the test. It is two 6-hex-digit
 SHA-256 prefixes: the *obligation* (the AC id, its requirement's Statement,
-the AC text with marker, and the definitions of the methods under whose paths
-the test lies) and the *test* (the tag's region: the file's preamble plus the
+the AC text with marker, the definitions of the methods under whose paths
+the test lies, and the supporting spec files the Statement or AC names as
+`spec/<file>`) and the *test* (the tag's region: the file's preamble plus the
 tag's section, see `regions`). A change to either side leaves the suffix out of
 date, and the tag unreviewed.
 
@@ -35,6 +36,8 @@ verified (`[browser]`, `[unit, http]`); a test for it counts only under the
                      name the actor whose goal it is)
   dangling-ref       a Parent or Actor value names no such entity
   cyclic-parent      a requirement's Parent chain loops
+  missing-reference  a Statement or AC names a `spec/<file>` that does not
+                     exist
   unreviewed         a counting tag has no review suffix, or its AC or its
                      test changed since the review (one finding per tag)
   malformed          a requirement has no ACs, no Statement, a repeated id,
@@ -122,6 +125,9 @@ _METHOD_DEF_RE = re.compile(rf"-\s+\*\*({_METHOD_NAME})\*\*\s*[—–:-]\s*(.+)$
 _METHOD_MARKER_RE = re.compile(
     rf"\[\s*({_METHOD_NAME}(?:\s*,\s*{_METHOD_NAME})*)\s*\]$")
 PATHS_PREFIX = "paths."
+# a supporting spec file named in a Statement or AC: `spec/price_model.md`. It
+# ends in a word character, so the "." closing a sentence is not part of it.
+REF_RE = re.compile(r"(?<![\w/])spec/[\w./-]*\w")
 
 STATEMENT_WORD_LIMIT = 20
 # a sentence terminator with real text on both sides -> a second sentence;
@@ -164,15 +170,62 @@ def digest(text: str) -> str:
     return hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()[:6]
 
 
-def obligation(rid: str, acid: str, req: dict, methods, defined: dict) -> str:
+def obligation(rid: str, acid: str, req: dict, methods, defined: dict,
+               refs: dict | None = None) -> str:
     """The obligation half of a review suffix: what a test for ``rid/acid``
     owes. It covers the AC id, the requirement's Statement, the AC text with
-    its marker, and the definition of each of ``methods`` -- the AC's methods
-    under whose paths the test lies -- sorted by name. Renumbering an AC,
-    rewording it or its Statement, or redefining its method all change it."""
+    its marker, the definition of each of ``methods`` -- the AC's methods
+    under whose paths the test lies -- sorted by name, and the content of
+    each supporting file the criterion references (``refs``, {path: bytes or
+    None}, see `references`). Renumbering an AC, rewording it or its
+    Statement, redefining its method or editing a file it references all
+    change it. A criterion without references hashes as it did before
+    references existed."""
     parts = [f"{rid}/{acid}", req["statement"] or "", req["acs"][acid]["text"]]
     parts += [f"{m}: {defined[m]['description']}" for m in sorted(methods)]
+    parts += [f"{p}: {ref_digest(data)}" for p, data in sorted((refs or {}).items())]
     return digest("\n".join(normalize(p) for p in parts))
+
+
+def references(req: dict, acid: str) -> list:
+    """The supporting spec files a criterion incorporates: every `spec/<file>`
+    named in its requirement's Statement -- which every AC of it owes -- or in
+    its own text. `spec/requirements.md` is the model itself, not a
+    reference."""
+    return refs_in(f"{req['statement'] or ''} {req['acs'][acid]['text']}")
+
+
+def refs_in(text: str) -> list:
+    """Every `spec/<file>` ``text`` names, sorted, once each."""
+    return sorted({r for r in REF_RE.findall(text) if r != REQ_REL})
+
+
+def spec_file(root: str, rel: str) -> bytes | None:
+    """The bytes of a referenced spec file, or None if there is none."""
+    try:
+        with open(os.path.join(root, rel), "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def ref_text(data: bytes | None) -> str | None:
+    """A referenced file as text, or None when it is missing or not text (an
+    image, say)."""
+    try:
+        return data.decode("utf-8") if data is not None else None
+    except UnicodeDecodeError:
+        return None
+
+
+def ref_digest(data: bytes | None) -> str:
+    """What a referenced file contributes to an obligation: its text, hashed
+    like the rest (a whitespace-only edit is cosmetic), or its raw bytes when
+    it is not text."""
+    if data is None:
+        return "(missing)"
+    text = ref_text(data)
+    return digest(text) if text is not None else hashlib.sha256(data).hexdigest()[:6]
 
 
 def strip_suffixes(line: str) -> str:
@@ -592,6 +645,7 @@ class Counted(NamedTuple):
     methods: list      # the AC's methods the tag counts toward
     region: str        # the test text the review covers
     want: str          # the current review suffix, without its `#`
+    refs: dict         # {path: bytes or None}: the spec files the AC references
 
     @property
     def state(self) -> str:
@@ -602,7 +656,7 @@ def counted(root: str, reqs: dict, defined: dict, paths: dict, tags) -> list:
     """[Counted] for the ``tags`` that count: they name an existing AC and lie
     under the paths of one of its defined methods. Only these need a review;
     a `wrong-method` or `orphan-tag` tag is not a review candidate."""
-    out, files = [], {}
+    out, files, specs = [], {}, {}
     for t in tags:
         ac = reqs.get(t.rid, {}).get("acs", {}).get(t.acid)
         methods = counting_methods(ac, t.file, defined, paths) if ac else []
@@ -611,8 +665,14 @@ def counted(root: str, reqs: dict, defined: dict, paths: dict, tags) -> list:
         if t.file not in files:
             files[t.file] = regions(read_lines(root, t.file))
         region = files[t.file][t.line]
-        want = suffix(obligation(t.rid, t.acid, reqs[t.rid], methods, defined), region)
-        out.append(Counted(t, methods, region, want))
+        refs = {}
+        for rel in references(reqs[t.rid], t.acid):
+            if rel not in specs:
+                specs[rel] = spec_file(root, rel)
+            refs[rel] = specs[rel]
+        want = suffix(obligation(t.rid, t.acid, reqs[t.rid], methods, defined, refs),
+                      region)
+        out.append(Counted(t, methods, region, want, refs))
     return out
 
 
@@ -977,6 +1037,8 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
                     f"criterion by that method and tag it '@covers {qual}'.",
                     REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
 
+    out += _missing_references(root, reqs)
+
     # every counting tag needs its own review: another reviewed tag for the
     # same AC does not excuse it
     for c in counted(root, reqs, defined, paths, scanned):
@@ -996,6 +1058,28 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
     return out, warnings, notices, manual, n_reqs, n_acs
 
 
+def _missing_references(root: str, reqs: dict) -> list:
+    """A `spec/<file>` named in a Statement or AC that does not exist: the
+    criterion incorporates content nobody can read."""
+    out = []
+    for rid, r in reqs.items():
+        places = [(r["statement"] or "", r["statement_line"] or r["open_line"], None)]
+        places += [(ac["text"], ac["line"], acid) for acid, ac in sorted(r["acs"].items())]
+        for text, line, acid in places:
+            for rel in refs_in(text):
+                if os.path.isfile(os.path.join(root, rel)):
+                    continue
+                where = f"{rid}/{acid}" if acid else f"{rid}'s Statement"
+                out.append(_finding("missing-reference",
+                    f"{where} references {rel}, which does not exist. Expected: "
+                    f"every 'spec/<file>' a Statement or criterion names is a "
+                    f"file under spec/ -- its content is part of what the "
+                    f"criterion requires. Found: no such file. Fix: in a design "
+                    f"session, add the file or correct the path.",
+                    REQ_REL, line, req=rid, ac=acid))
+    return out
+
+
 # what an out-of-date suffix means, and what the agent does about it
 _UNREVIEWED = {
     NEVER_REVIEWED: (
@@ -1003,9 +1087,9 @@ _UNREVIEWED = {
         "test proves the criterion",
         "run 'hamilton build', which has it reviewed"),
     AC_CHANGED: (
-        "the criterion, its requirement's Statement or its method's "
-        "definition changed since the review, so the test may no longer "
-        "prove what the criterion now says",
+        "the criterion, its requirement's Statement, its method's "
+        "definition or a spec file it references changed since the review, "
+        "so the test may no longer prove what the criterion now says",
         "run 'hamilton build', which rewrites the test against the current "
         "wording and has it reviewed"),
     TEST_CHANGED: (
@@ -1013,8 +1097,8 @@ _UNREVIEWED = {
         "of its file",
         "run 'hamilton build' to have the changed test judged again"),
     BOTH_CHANGED: (
-        "both the criterion (or its Statement or method definition) and the "
-        "test changed since the review",
+        "both the criterion (or its Statement, method definition or a spec "
+        "file it references) and the test changed since the review",
         "run 'hamilton build', which rewrites the test against the current "
         "wording and has it reviewed"),
 }

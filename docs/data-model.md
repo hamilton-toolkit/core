@@ -23,6 +23,7 @@ retired — see `concept.md` §5.3.
 | **Requirement** | What shall be true, plus its acceptance criteria. The requirements form one `Parent` tree, which is the whole model. |
 | **Verification method** | How an acceptance criterion is proven: what a test observes, what is real and what is stubbed. Defined once per project; named by every AC. Not an entity with an id. |
 | **Region** | What counts as "the test" for a `@covers` tag: the file's preamble (every line above its first tag block) plus the tag's own section (its tag block down to the next tag block, or the end of the file). A layout rule, not a parser. |
+| **Supporting file** | A file in `spec/` beside the model — a rule set, legal or marketing text, a visual reference — that a `Statement` or AC incorporates by naming it as `spec/<file>`. Content, not verification: what must hold about it is stated by the AC. |
 | **Review suffix** | `#<obligation>.<test>` after a `@covers` tag: the record that a reviewer passed this test for this AC, as both stood then. Written only by the reviewer in `hamilton build`. |
 
 There is no **Component** and no **Module** entity (D-014), and no
@@ -122,7 +123,7 @@ text:
 
 | Half | Covers | A change means |
 |---|---|---|
-| obligation | the AC id, its requirement's `Statement`, the AC text with its marker, and the definition of each of the AC's methods whose paths hold the test file (sorted by name) | the test probably needs rewriting |
+| obligation | the AC id, its requirement's `Statement`, the AC text with its marker, the definition of each of the AC's methods whose paths hold the test file (sorted by name), and the content of each supporting file the `Statement` or AC references (sorted by path; only when there are any) | the test probably needs rewriting |
 | test | the tag's region (§1), with every suffix stripped from its tag lines | the test only needs another review |
 
 - **Each tag has its own.** In a stacked tag block the test half is the same
@@ -188,7 +189,13 @@ spec/
   actors.md         # flat list of A-nnnn
   requirements.md   # the one Parent tree -- the whole model
   vision.md         # purpose, users, non-goals -- prose, not entities (D-009)
+  <supporting files> # content criteria incorporate by `spec/<file>`
 ```
+
+A supporting file is read only through the criteria that reference it: its
+content is part of their obligation, so an edit to it leaves their tests
+`unreviewed`, and the reviewer is shown it in full. A criterion that
+references none hashes as if references did not exist.
 
 Review suffixes live in the test files, on the tags. `.hamilton/verified`, the
 per-AC hash file of earlier versions, is retired (D-020): nothing reads or
@@ -280,13 +287,17 @@ Reviews (D-020):
 15. Every counting tag carries a current review suffix — failure `unreviewed`,
     one per tag, naming which half changed. **[check]**
 
+Supporting files:
+16. Every `spec/<file>` a `Statement` or AC names exists — failure
+    `missing-reference`. **[check]**
+
 Advisory (warn, do not fail):
-16. A `Statement` over 20 words — warning `long-statement`. **[check]**
-17. An `Actor` `Description` that is more than one sentence — warning
+17. A `Statement` over 20 words — warning `long-statement`. **[check]**
+18. An `Actor` `Description` that is more than one sentence — warning
     `long-description`. **[check]**
-18. A root requirement whose ACs are all `unit` — warning `root-unit-only`.
+19. A root requirement whose ACs are all `unit` — warning `root-unit-only`.
     **[check]**
-19. A parent's children do not add up to it — **not checkable**; absence is
+20. A parent's children do not add up to it — **not checkable**; absence is
     invisible (concept §5.5). Mitigated by reading `hamilton show` upward.
 
 *(Gone with D-014: `component-tree`, `module-marker`, `tree-consistency`,

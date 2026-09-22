@@ -83,7 +83,8 @@ STEPS = {
 # Every rule `hamilton verify` can report belongs to exactly one step. This is
 # the loop's whole decision: keep it here, and nowhere else.
 SPEC_RULES = frozenset({"malformed", "dangling-ref", "orphan-requirement",
-                        "cyclic-parent", "no-method", "unknown-method"})
+                        "cyclic-parent", "no-method", "unknown-method",
+                        "missing-reference"})
 CONFIG_RULES = frozenset({"no-test-command", "no-method-paths", "retired-config"})
 COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
 SUITE_RULES = frozenset({"tests-failed"})
@@ -286,18 +287,22 @@ def _template(name: str) -> Template:
 
 def spec_of(reqs: dict, defined: dict, qual: str) -> str:
     """One criterion as a task sees it: its requirement, what the requirement
-    promises, the criterion itself and the definition of each method it is
-    verified by."""
+    promises, the criterion itself, the definition of each method it is
+    verified by, and the spec files it references -- by path: a task can
+    read them."""
     rid, acid = qual.split("/")
     req = reqs.get(rid) or {"title": "", "statement": "", "acs": {}}
     ac = req["acs"].get(acid) or {"text": "", "methods": []}
     methods = "\n".join(f"- **{m}** — {defined[m]['description']}"
                         for m in ac.get("methods", ()) if m in defined)
     title = f' "{req["title"]}"' if req.get("title") else ""
+    refs = _verify.refs_in(f"{req.get('statement') or ''} {ac['text']}")
+    referenced = (f"\nReferences: {', '.join(refs)} -- part of the criterion; "
+                  f"read them" if refs else "")
     return (f"Requirement: {rid}{title}\n"
             f"Statement: {req.get('statement') or '(none)'}\n"
             f"Criterion: {acid}: {ac['text']}\n"
-            f"Verified by:\n{methods or '- (none declared)'}")
+            f"Verified by:\n{methods or '- (none declared)'}{referenced}")
 
 
 def plan_prompt(root: str, work: Work, reqs: dict, defined: dict) -> str:

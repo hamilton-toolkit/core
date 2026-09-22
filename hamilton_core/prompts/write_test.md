@@ -44,7 +44,8 @@ of these hold:
    from a lower layer's already-prepared inputs.
 3. **Can fail** — the assertion would fail if the behaviour were missing. No
    tautologies, no assertion so loose that anything passes.
-4. **Independent expectation** — expected values come from the criterion, not
+4. **Independent expectation** — expected values come from the criterion
+   and the spec files it references (read them: they are part of it), not
    from the implementation's own constants or files.
 5. **Scope** — "any" or "every" in the criterion means the test covers the
    set, not one sample.

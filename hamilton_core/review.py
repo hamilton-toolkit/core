@@ -12,7 +12,8 @@ several tests can share a criterion's cases between them, and only together
 do they prove it. A `protocol.Judge` -- a fresh agent session with no tools --
 gets exactly the prompt this module builds: the criterion with its
 requirement's id, title and Statement, the definitions of the methods its
-tests count toward, and every one of its tests -- each file's preamble once,
+tests count toward, the full text of the spec files it references, and every
+one of its tests -- each file's preamble once,
 then the tagged sections. No implementation, no file access. It comes to one
 verdict per criterion:
 
@@ -57,7 +58,7 @@ from string import Template
 
 from hamilton_core.verify import (REQ_REL, REVIEWED, TAG_RE, UsageError,
                                  counted, extract, extract_methods,
-                                 method_paths, read_config, scan)
+                                 method_paths, read_config, ref_text, scan)
 from hamilton_core.session.console import Console, Rows
 
 VERDICTS = ("pass", "reject", "unclear")
@@ -105,7 +106,26 @@ def _criterion(reqs: dict, defined: dict, group) -> str:
             f"Requirement: {c.tag.rid}{title}\n"
             f"Statement: {r['statement'] or '(none)'}\n"
             f"Criterion: {c.tag.acid}: {r['acs'][c.tag.acid]['text']}\n"
-            f"Verified by:\n{listed}")
+            f"Verified by:\n{listed}" + _referenced(c.refs))
+
+
+def _referenced(refs: dict) -> str:
+    """The supporting spec files the criterion references, in full: they are
+    part of what it requires, and the reviewer has no other way to read
+    them."""
+    out = []
+    for path, data in sorted(refs.items()):
+        text = ref_text(data)
+        if data is None:
+            out.append(f"### `{path}`\n\n(missing)")
+        elif text is None:
+            out.append(f"### `{path}`\n\n(not text, not shown)")
+        else:
+            out.append(f"### `{path}`\n\n```\n{text.strip()}\n```")
+    if not out:
+        return ""
+    return ("\n\nReferenced specification -- part of the criterion:\n\n"
+            + "\n\n".join(out))
 
 
 def _tests(group) -> str:

@@ -798,3 +798,76 @@ def test_the_gate_is_hamilton_verify(tmp_path):
                           capture_output=True, text=True,
                           env={**os.environ, "PYTHONPATH": REPO})
     assert proc.returncode == 2 and "invalid choice" in proc.stderr
+# -- supporting spec files --------------------------------------------- #
+
+def _referencing(tmp_path):
+    """The reviewed web project, with the Statement referencing one spec file
+    and AC2 another -- every tag reviewed against them."""
+    d = _web(tmp_path)
+    _replace(f"{d}/spec/requirements.md", "is in the past.",
+             "is in the past, per spec/token_rules.md.")
+    _replace(f"{d}/spec/requirements.md", "-> accepted [http]",
+             "-> accepted, per the skew rule in spec/skew.md [http]")
+    open(f"{d}/spec/token_rules.md", "w").write("# Token rules\n\nexp is UTC.\n")
+    open(f"{d}/spec/skew.md", "w").write("# Skew\n\nUp to 30 seconds.\n")
+    stamp(d)
+    return d
+
+
+def test_a_referenced_file_is_part_of_the_obligation(tmp_path):
+    code, payload = _json(_referencing(tmp_path))
+    assert code == 0 and payload["findings"] == []
+    # a Statement's reference is owed by every AC, an AC's only by that AC
+    for rel, want in [("spec/skew.md", {"AC2": "AC changed"}),
+                      ("spec/token_rules.md", {"AC1": "AC changed", "AC2": "AC changed"})]:
+        d = _referencing(tmp_path)
+        _replace(f"{d}/{rel}", "\n\n", "\n\nChanged.\n")
+        _, payload = _json(d)
+        assert {f["ac"]: f["state"] for f in payload["findings"]} == want, rel
+
+
+def test_a_whitespace_only_edit_to_a_referenced_file_keeps_the_review(tmp_path):
+    d = _referencing(tmp_path)
+    _replace(f"{d}/spec/skew.md", "Up to 30 seconds.", "Up  to 30\n  seconds.")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+
+
+def test_an_unreferenced_file_in_spec_changes_nothing(tmp_path):
+    d = _referencing(tmp_path)
+    open(f"{d}/spec/notes.md", "w").write("anything\n")
+    assert _json(d)[1]["findings"] == []
+
+
+def test_a_missing_reference_is_a_finding_at_its_line(tmp_path):
+    d = _referencing(tmp_path)
+    os.remove(f"{d}/spec/skew.md")
+    _, payload = _json(d)
+    [f] = [f for f in payload["findings"] if f["rule"] == "missing-reference"]
+    lines = open(f"{d}/spec/requirements.md").read().splitlines()
+    assert "spec/skew.md" in lines[f["line"] - 1]
+    assert (f["req"], f["ac"]) == ("R-0001", "AC2")
+    assert "spec/skew.md, which does not exist" in f["message"]
+
+
+def test_a_criterion_without_references_hashes_as_before():
+    req = {"statement": "s.", "acs": {"AC1": {"text": "a -> b [unit]"}}}
+    defined = {"unit": {"description": "one module."}}
+    before = C.obligation("R-0001", "AC1", req, ["unit"], defined)
+    assert C.obligation("R-0001", "AC1", req, ["unit"], defined, {}) == before
+    assert C.obligation("R-0001", "AC1", req, ["unit"], defined,
+                        {"spec/a.md": b"rules"}) != before
+
+
+def test_references_are_spec_paths_only():
+    assert C.refs_in("priced per spec/price_model.md.") == ["spec/price_model.md"]
+    assert C.refs_in("(see spec/design/reference.html), then spec/a.md") == \
+        ["spec/a.md", "spec/design/reference.html"]
+    assert C.refs_in("per price_model.md or myspec/x.md") == []
+    assert C.refs_in("as spec/requirements.md says") == []
+
+
+def test_a_binary_reference_is_hashed_by_its_bytes():
+    assert C.ref_digest(b"\xff\x00png") != C.ref_digest(b"\xff\x01png")
+    assert C.ref_text(b"\xff\x00png") is None
+    assert C.ref_digest(None) == "(missing)"
