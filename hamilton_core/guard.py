@@ -24,7 +24,7 @@ path) a Write / Edit / MultiEdit / NotebookEdit whose target the current
   decisions, and those are its keys (`test_command`, `paths.<method>`). A
   path hook cannot lock individual lines, so the whole file is writable in
   `build`. The trade is deliberate;
-  `hamilton check` in CI, reviewed against the config diff, is the backstop.
+  `hamilton verify` in CI, reviewed against the config diff, is the backstop.
 
 No phase file -> not a Hamilton project -> allow. Any other phase value ->
 fail closed.
@@ -44,7 +44,7 @@ import json
 from collections import Counter
 
 from hamilton_core import phase as _phase
-from hamilton_core.check import TAG_RE
+from hamilton_core.verify import TAG_RE
 
 LOCKED_IN_BUILD_DIRS = ("spec", ".hamilton", ".claude")
 LOCKED_IN_BUILD_FILES = ("AGENTS.md", "CLAUDE.md")

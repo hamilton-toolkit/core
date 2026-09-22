@@ -3,7 +3,7 @@
 Nothing here reaches a model. The worker is scripted: it records the prompt it
 was given and, where the loop's progress depends on it, does what the real one
 would have done (write a tagged test, say). What is pinned is Hamilton's own
-decisions -- which step each `hamilton check` rule reaches, when a test is
+decisions -- which step each `hamilton verify` rule reaches, when a test is
 rewritten, when the run stops and what it asks.
 """
 
@@ -16,7 +16,7 @@ import re
 from conftest import copy_fixture, stamp
 
 from hamilton_core import build as B
-from hamilton_core import check as C
+from hamilton_core import verify as C
 from hamilton_core.session.console import Console
 
 QUAL_RE = re.compile(r"R-\d{4}/AC\d+")
@@ -95,7 +95,7 @@ def unclear(question="Is a skew of exactly 30s inside the window?"):
 
 def writes_a_test(root, body="expect(true).toBe(true);"):
     """A worker that writes the tagged test it was asked for, as the real
-    writer would, so the next `hamilton check` sees it."""
+    writer would, so the next `hamilton verify` sees it."""
     def act(prompt):
         if "Write the tests for one acceptance criterion" not in prompt:
             return ""

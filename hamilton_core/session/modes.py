@@ -110,7 +110,7 @@ REVERSE = Mode(
         "for my approval before writing it -- the spec captures intent and the "
         "load-bearing decisions, it does not restate the code."
     ),
-    footer=("hamilton reverse: session ended (phase 'spec'). `hamilton check` "
+    footer=("hamilton reverse: session ended (phase 'spec'). `hamilton verify` "
             "will be red on `uncovered` until you run `hamilton build` -- that "
             "session binds the existing tests to the derived criteria. Run "
             "`hamilton design` to keep refining the spec."),

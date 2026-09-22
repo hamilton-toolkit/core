@@ -105,7 +105,7 @@ def test_colour_is_off_without_a_tty_or_under_no_color(monkeypatch):
 def test_inline_markdown_becomes_ansi():
     paint = C.Paint(True)
     assert "\x1b[1m" in C.markdown("a **bold** word", paint)
-    assert "\x1b[36m" in C.markdown("run `hamilton check`", paint)
+    assert "\x1b[36m" in C.markdown("run `hamilton verify`", paint)
     assert C.markdown("## Heading", paint) == paint.bold("Heading")
 
 

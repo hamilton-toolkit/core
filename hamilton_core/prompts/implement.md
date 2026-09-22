@@ -20,7 +20,7 @@ Run only these, with the project's runner for each file (`phpunit <file>`,
 `npx playwright test <file>`, `node --test <file>` …). Do **not** run the
 full suite (`$command`) while you work: it runs every criterion's tests and
 takes minutes. Hamilton runs it once, at the end, and brings you back if
-anything else broke. `hamilton check R-nnnn/ACn` shows one criterion's status
+anything else broke. `hamilton verify R-nnnn/ACn` shows one criterion's status
 -- tagged, reviewed -- in a second, without running any tests.
 
 ## What to do

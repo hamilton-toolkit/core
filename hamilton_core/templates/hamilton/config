@@ -1,7 +1,7 @@
 # Hamilton project configuration. `key=value` per line; `#` starts a comment;
 # the value is the literal text after the first `=`.
 #
-# test_command  the test suite, run from the project root by `hamilton check`.
+# test_command  the test suite, run from the project root by `hamilton verify`.
 #               Must exit 0 on success. Use `python -m pytest`, not bare
 #               `pytest`, so the project root is importable from the tests.
 # paths.<method>  space-separated dirs holding the tests for one verification
@@ -13,7 +13,7 @@
 #               build-time calls, so `test_command` and the `paths.*` keys are
 #               the keys the agent MAY edit during a `build` session.
 # mutation_command  RESERVED. Per-language mutation testing (see concept.md
-#               5.3). Not implemented yet -- if you set it, `hamilton check`
+#               5.3). Not implemented yet -- if you set it, `hamilton verify`
 #               prints a notice every run and does NOT run it. Leave it unset.
 
 test_command=

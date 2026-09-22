@@ -55,7 +55,7 @@ import textwrap
 from importlib import resources
 from string import Template
 
-from hamilton_core.check import (REQ_REL, REVIEWED, TAG_RE, UsageError,
+from hamilton_core.verify import (REQ_REL, REVIEWED, TAG_RE, UsageError,
                                  counted, extract, extract_methods,
                                  method_paths, read_config, scan)
 from hamilton_core.session.console import Console, Rows

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from hamilton_core import check as _check
+from hamilton_core import verify as _verify
 from hamilton_core import guard as _guard
 from hamilton_core import init as _init
 from hamilton_core import show as _show
@@ -16,7 +16,7 @@ from hamilton_core.session.modes import MODES
 
 def _session():
     """Imported on demand: it pulls in the agent SDK, which the read-only
-    commands (`check`, `tree`, `show`, `status`, `guard`) have no use for."""
+    commands (`verify`, `tree`, `show`, `status`, `guard`) have no use for."""
     from hamilton_core.session import loop
     return loop
 
@@ -27,14 +27,14 @@ def main(argv=None) -> int:
     # something an engineer runs.
     sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
-    p_check = sub.add_parser("check", help="run the verification gate")
-    p_check.add_argument("ac", nargs="?", default=None,
-                         help="only this criterion's status, R-nnnn/ACn "
-                              "(the suite is not run)")
-    p_check.add_argument("--json", action="store_true",
-                         help="machine-readable output for hooks")
-    p_check.add_argument("--suite-output", action="store_true",
-                         help="stream the test suite's own output as it runs")
+    p_verify = sub.add_parser("verify", help="run the verification gate")
+    p_verify.add_argument("ac", nargs="?", default=None,
+                          help="only this criterion's status, R-nnnn/ACn "
+                               "(the suite is not run)")
+    p_verify.add_argument("--json", action="store_true",
+                          help="machine-readable output for hooks")
+    p_verify.add_argument("--suite-output", action="store_true",
+                          help="stream the test suite's own output as it runs")
     p_init = sub.add_parser("init", help="scaffold a project")
     p_init.add_argument("path", nargs="?", default=None,
                         help="target directory (default: current directory)")
@@ -58,9 +58,9 @@ def main(argv=None) -> int:
 
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
-    if args.cmd == "check":
-        return _check.main(as_json=args.json, suite_output=args.suite_output,
-                           only=args.ac)
+    if args.cmd == "verify":
+        return _verify.main(as_json=args.json, suite_output=args.suite_output,
+                            only=args.ac)
     if args.cmd == "init":
         return _init.main(args.path)
     if args.cmd == "guard":

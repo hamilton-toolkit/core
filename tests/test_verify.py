@@ -1,4 +1,4 @@
-"""`hamilton check` against every fixture: the exact rule set, exit code and
+"""`hamilton verify` against every fixture: the exact rule set, exit code and
 counts. Assertions run against `--json`. Fixtures are copied to a temp dir
 first (see conftest), so a test can edit them freely.
 
@@ -9,12 +9,14 @@ The model is one requirement tree (D-014): `spec/requirements.md` plus a flat
 import json
 import os
 import re
+import subprocess
+import sys
 
 import pytest
 
-from conftest import copy_fixture, run_check, run_fixture, run_json, stamp
+from conftest import REPO, copy_fixture, run_fixture, run_json, run_verify, stamp
 
-from hamilton_core import check as C
+from hamilton_core import verify as C
 
 # fixture -> (exit code, {rule names}, finding count)
 EXPECT = {
@@ -121,7 +123,7 @@ def test_tests_failed_points_at_the_config_and_reports_the_exit_status(tmp_path)
 def test_blank_test_command_is_its_own_rule_not_tests_failed(tmp_path):
     d = copy_fixture("clean", tmp_path)
     open(f"{d}/.hamilton/config", "w").write("test_command=\npaths.http=tests\npaths.unit=tests\n")
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     import json
     payload = json.loads(proc.stdout)
     assert proc.returncode == 1
@@ -132,7 +134,7 @@ def test_blank_test_command_is_its_own_rule_not_tests_failed(tmp_path):
 def test_missing_test_command_key_is_no_test_command(tmp_path):
     d = copy_fixture("clean", tmp_path)
     open(f"{d}/.hamilton/config", "w").write("paths.http=tests\npaths.unit=tests\n")
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     import json
     payload = json.loads(proc.stdout)
     assert proc.returncode == 1
@@ -192,7 +194,7 @@ def test_dangling_ref_covers_parent_and_actor(tmp_path):
     open(f"{d}/tests/covers.js", "a").write("// @covers R-0003/AC1\n")
     stamp(d)
     import json
-    payload = json.loads(run_check(d, "--json").stdout)
+    payload = json.loads(run_verify(d, "--json").stdout)
     msgs = " ".join(f["message"] for f in payload["findings"]
                     if f["rule"] == "dangling-ref")
     assert "A-0404" in msgs and "R-0999" in msgs
@@ -213,7 +215,7 @@ def test_retired_interface_field_is_recognised_and_ignored(tmp_path):
         "Actor: A-0001\n", "Actor: A-0001\nInterface: HTTP bearer token.\n")
     open(f"{d}/spec/requirements.md", "w").write(body)
     import json
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     payload = json.loads(proc.stdout)
     assert proc.returncode == 0
     assert payload["findings"] == [] and payload["warnings"] == []
@@ -227,7 +229,7 @@ def test_retired_component_field_is_recognised_and_ignored(tmp_path):
         "Actor: A-0001\n", "Actor: A-0001\nComponent: C-0001\n")
     open(f"{d}/spec/requirements.md", "w").write(body)
     import json
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     payload = json.loads(proc.stdout)
     assert proc.returncode == 0
     assert payload["findings"] == []
@@ -238,13 +240,13 @@ def test_mutation_command_set_prints_a_notice_and_does_not_fail(tmp_path):
     with open(f"{d}/.hamilton/config", "a") as fh:
         fh.write("mutation_command=mutmut run\n")
     import json
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     payload = json.loads(proc.stdout)
     assert proc.returncode == 0                       # notice, not a failure
     assert payload["findings"] == []
     assert any("mutation_command" in n and "not implemented" in n
                for n in payload["notices"])
-    human = run_check(d)
+    human = run_verify(d)
     assert "notice:" in human.stderr and "mutation_command" in human.stderr
 
 
@@ -259,7 +261,7 @@ def test_duplicate_requirement_id_is_malformed(tmp_path):
     d = copy_fixture("clean", tmp_path)
     open(f"{d}/spec/requirements.md", "a").write(
         "\n## R-0001\nStatement: a second block claiming R-0001.\n- AC1: x -> y\n")
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     import json
     payload = json.loads(proc.stdout)
     assert proc.returncode == 1
@@ -297,13 +299,17 @@ def test_the_human_view_is_the_spec_with_a_mark_per_criterion(tmp_path):
     lines = human.stdout.splitlines()
     assert lines[0].startswith("R-0001 ")
     assert lines[1] == "- ✓ AC1 expired token -> 401 and no user data in the response body [http]"
-    assert lines[2].startswith("- ✓ AC2 ")
-    assert "Suite ✓ passed" in human.stdout
+    # under each criterion, the test that verifies it -- here one tag block
+    # covering both, with no code under it
+    assert lines[2] == "  * (no code under the tag) (tests/covers.js:1-2)"
+    assert lines[3].startswith("- ✓ AC2 ")
+    assert lines[4] == lines[2]
+    assert re.search(r"Suite ✓ passed \(\d+s\)", human.stdout)
     assert "ok" in human.stderr
 
 
 def test_missing_requirements_file_is_a_usage_error(tmp_path):
-    proc = run_check(tmp_path, "--json")
+    proc = run_verify(tmp_path, "--json")
     assert proc.returncode == 2
     import json
     assert "error" in json.loads(proc.stdout)
@@ -313,7 +319,7 @@ def test_missing_config_file_is_a_usage_error(tmp_path):
     d = copy_fixture("clean", tmp_path)
     import os
     os.remove(f"{d}/.hamilton/config")
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     assert proc.returncode == 2
     import json
     assert "error" in json.loads(proc.stdout)
@@ -324,7 +330,7 @@ def test_zero_requirements_fails(tmp_path):
     # keep only the fenced example, no live requirement
     open(f"{d}/spec/requirements.md", "w").write(
         "# Requirements\n\n```markdown\n## R-0001\nStatement: fenced.\n- AC1: a -> b\n```\n")
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     import json
     payload = json.loads(proc.stdout)
     assert proc.returncode == 1
@@ -344,7 +350,7 @@ def _spec(d, criteria, methods="- **http** — requests to the running service.\
 
 def _json(d):
     import json
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     return proc.returncode, json.loads(proc.stdout)
 
 
@@ -411,7 +417,7 @@ def test_manual_needs_no_tag_and_is_listed(tmp_path):
     code, payload = _json(d)
     assert code == 0 and payload["findings"] == []
     assert payload["manual"] == ["R-0001/AC2"]
-    human = run_check(d)
+    human = run_verify(d)
     assert "1 criterion verified manually, not by the gate" in human.stderr
 
 
@@ -550,7 +556,7 @@ def test_check_never_writes(tmp_path):
             return {os.path.join(p, f): open(os.path.join(p, f), "rb").read()
                     for p, _, fs in os.walk(d) for f in fs}
         before = snapshot()
-        run_check(d)
+        run_verify(d)
         assert snapshot() == before, name
 
 
@@ -612,14 +618,14 @@ def test_the_suite_s_output_is_kept_out_of_the_way(tmp_path):
                                 "test_command=echo 'expected 3, got 4' && exit 1")
     with open(f"{d}/.hamilton/config", "w") as fh:
         fh.write(cfg)
-    human = run_check(d)
+    human = run_verify(d)
     assert "expected 3, got 4" not in human.stdout + human.stderr
-    assert "Suite ✗ failed -- full output: " in human.stdout
+    assert re.search(r"Suite ✗ failed \(\d+s\) -- full output: ", human.stdout)
     log = human.stdout.split("full output: ")[1].split()[0]
     assert "expected 3, got 4" in open(log).read()
     assert not os.path.abspath(log).startswith(os.path.abspath(d))   # not in the project
 
-    [failed] = [f for f in json.loads(run_check(d, "--json").stdout)["findings"]
+    [failed] = [f for f in json.loads(run_verify(d, "--json").stdout)["findings"]
                 if f["rule"] == "tests-failed"]
     assert failed["output"].strip() == "expected 3, got 4"
 
@@ -630,8 +636,8 @@ def test_the_suite_s_output_can_still_be_streamed(tmp_path):
         cfg = fh.read().replace("test_command=true", "test_command=echo 'running 61 tests'")
     with open(f"{d}/.hamilton/config", "w") as fh:
         fh.write(cfg)
-    assert "running 61 tests" not in run_check(d).stderr
-    assert "running 61 tests" in run_check(d, "--suite-output").stderr
+    assert "running 61 tests" not in run_verify(d).stderr
+    assert "running 61 tests" in run_verify(d, "--suite-output").stderr
 
 
 # --- one criterion's status ------------------------------------------------------
@@ -644,31 +650,31 @@ def test_one_criterion_s_status_needs_no_suite(tmp_path):
         cfg = fh.read()
     with open(f"{d}/.hamilton/config", "w") as fh:     # a suite that would fail
         fh.write(re.sub(r"test_command=.*", "test_command=false", cfg))
-    ok = run_check(d, "R-0001/AC1")
+    ok = run_verify(d, "R-0001/AC1")
     assert ok.returncode == 0
     assert "- ✓ AC1 " in ok.stdout and "AC2" not in ok.stdout and "Suite" not in ok.stdout
-    bad = run_check(d, "R-0001/AC2")
+    bad = run_verify(d, "R-0001/AC2")
     assert bad.returncode == 1 and "- ✗ AC2 " in bad.stdout
-    payload = json.loads(run_check(d, "R-0001/AC2", "--json").stdout)
+    payload = json.loads(run_verify(d, "R-0001/AC2", "--json").stdout)
     assert [f["rule"] for f in payload["findings"]] == ["uncovered"]
 
 
 @pytest.mark.parametrize("only", ["R-0001", "R-0001/AC9"])
 def test_one_criterion_must_be_one_that_exists(tmp_path, only):
     d = copy_fixture("clean", tmp_path)
-    assert run_check(d, only).returncode == 2
+    assert run_verify(d, only).returncode == 2
 
 
 
 def test_a_green_suite_leaves_no_log_behind(tmp_path):
-    from hamilton_core import check as C2
+    from hamilton_core import verify as C2
     log = C2.new_log()
     ok, _d, _l, output = C2.run_tests(str(tmp_path), {"test_command": ("echo fine", 1)},
                                       log=log)
     assert ok and output == "fine\n"
     d = copy_fixture("clean", tmp_path)
     before = set(os.listdir(os.path.dirname(log)))
-    assert run_check(d).returncode == 0
+    assert run_verify(d).returncode == 0
     new = {f for f in set(os.listdir(os.path.dirname(log))) - before
            if f.startswith("hamilton-suite-")}
     assert new == set()
@@ -682,9 +688,9 @@ def test_a_suite_that_never_ends_is_stopped(tmp_path, monkeypatch):
 
 def test_a_running_suite_can_be_followed_from_check_too(tmp_path):
     d = copy_fixture("clean", tmp_path)
-    human = run_check(d)
+    human = run_verify(d)
     assert "follow it: tail -f /" in human.stderr
-    assert "follow it" not in run_check(d, "--suite-output").stderr   # it streams
+    assert "follow it" not in run_verify(d, "--suite-output").stderr   # it streams
 
 
 def test_a_leftover_skill_copy_gets_a_notice(tmp_path):
@@ -697,3 +703,98 @@ def test_a_leftover_skill_copy_gets_a_notice(tmp_path):
     assert code == 0 and payload["findings"] == []
     assert any(n.startswith(".claude/skills/hamilton/SKILL.md is a leftover")
                for n in payload["notices"])
+
+
+# --- the tests under each criterion ---------------------------------------------
+
+def test_a_test_is_named_the_way_its_language_names_it():
+    names = {
+        "js": ["// @covers R-0001/AC1", "it('redirects http to https', () => {", "});"],
+        "py": ["# @covers R-0001/AC1", "@pytest.mark.slow",
+               "def test_http_is_redirected_to_https():", "    assert True"],
+        "php": ["// @covers R-0001/AC1", "public function testRedirectsHttp(): void", "{}"],
+        "go": ["// @covers R-0001/AC1", "func TestRedirectsHttp(t *testing.T) {", "}"],
+        "inline": ["def test_whitespace_runs():    # @covers R-0001/AC1",
+                   "    assert initials('ada   lovelace') == 'AL'"],
+        "none": ["// @covers R-0001/AC1", "expect(1).toBe(1);"],
+    }
+    got = {k: C.sections(v)[1].name for k, v in names.items()}
+    # a title as written; a function's name as written, so it can be found
+    assert got == {"js": "redirects http to https",
+                   "py": "test_http_is_redirected_to_https",
+                   "php": "testRedirectsHttp",
+                   "go": "TestRedirectsHttp",
+                   "inline": "test_whitespace_runs",
+                   "none": "expect(1).toBe(1);"}
+
+
+def test_a_section_spans_its_tag_block_to_its_last_line_of_code():
+    lines = ["import x", "",
+             "// @covers R-0001/AC1", "// @covers R-0001/AC2", "it('a', () => {", "});", "", "",
+             "// @covers R-0001/AC3", "it('b', () => {});", ""]
+    s = C.sections(lines)
+    assert s[3] == s[4] == C.Section("a", 3, 6)        # a block shares its section
+    assert s[9] == C.Section("b", 9, 10)
+
+
+TESTED = """import { get } from './support.js';
+
+// @covers R-0001/AC1
+it('rejects an expired token', async () => {
+  expect((await get('/me', EXPIRED)).status).toBe(401);
+});
+
+// @covers R-0001/AC1
+it('returns no user data for an expired token', async () => {
+  expect((await get('/me', EXPIRED)).body).toEqual({});
+});
+"""
+
+
+def test_the_view_lists_the_tests_that_verify_each_criterion(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    with open(f"{d}/tests/covers.js", "w") as fh:
+        fh.write(TESTED + "\n// @covers R-0001/AC2\nit('accepts a skewed token', () => {});\n")
+    stamp(d)
+    lines = run_verify(d).stdout.splitlines()
+    ac1 = lines.index(next(ln for ln in lines if ln.startswith("- ✓ AC1 ")))
+    assert lines[ac1 + 1:ac1 + 5] == [
+        "  * rejects an expired token (tests/covers.js:3-6)",
+        "  * returns no user data for an expired token (tests/covers.js:8-11)",
+        lines[ac1 + 3],
+        "  * accepts a skewed token (tests/covers.js:13-14)"]
+    assert lines[ac1 + 3].startswith("- ✓ AC2 ")
+
+
+def test_one_criterion_s_view_lists_its_tests_too(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    with open(f"{d}/tests/covers.js", "w") as fh:
+        fh.write(TESTED)
+    stamp(d)
+    out = run_verify(d, "R-0001/AC1").stdout
+    assert "  * rejects an expired token (tests/covers.js:3-6)" in out
+    assert "AC2" not in out
+
+
+def test_the_indicator_runs_while_the_suite_does(tmp_path, monkeypatch):
+    """The one `hamilton build` shows -- but not under --json, which a hook
+    reads, nor when the suite's own output is streamed."""
+    from hamilton_core.session import console
+    started = []
+    monkeypatch.setattr(console.Console, "start_working",
+                        lambda self, label="": started.append(label))
+    monkeypatch.chdir(copy_fixture("clean", tmp_path))
+    assert C.main() == 0
+    assert started == ["Running the tests"]
+    C.main(as_json=True)
+    C.main(suite_output=True)
+    assert started == ["Running the tests"]
+
+
+def test_the_gate_is_hamilton_verify(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    assert run_verify(d).returncode == 0
+    proc = subprocess.run([sys.executable, "-m", "hamilton_core", "check"], cwd=d,
+                          capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": REPO})
+    assert proc.returncode == 2 and "invalid choice" in proc.stderr

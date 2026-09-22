@@ -3,7 +3,7 @@
 import re
 import unicodedata
 
-from hamilton_core.check import digest, normalize
+from hamilton_core.verify import digest, normalize
 
 
 def test_collapses_internal_whitespace_runs():

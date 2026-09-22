@@ -1,4 +1,4 @@
-"""Shared helpers for the hamilton check test-suite.
+"""Shared helpers for the hamilton verify test-suite.
 
 Fixtures are copied into a fresh temp directory before a test touches them, so
 the committed fixture trees are never mutated. Their tags carry review
@@ -19,11 +19,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(REPO, "tests", "fixtures")
 
 
-def run_check(cwd, *args):
-    """Invoke the real console entry point (`hamilton check`) in `cwd`."""
+def run_verify(cwd, *args):
+    """Invoke the real console entry point (`hamilton verify`) in `cwd`."""
     env = {**os.environ, "PYTHONPATH": REPO}
     return subprocess.run(
-        [sys.executable, "-m", "hamilton_core", "check", *args],
+        [sys.executable, "-m", "hamilton_core", "verify", *args],
         cwd=str(cwd), capture_output=True, text=True, env=env,
     )
 
@@ -39,18 +39,18 @@ def stamp(root):
     """Give every counting tag under `root` its current review suffix, as a
     passed review would. Test code only: the product writes a suffix only
     when its reviewer passes the test."""
-    from hamilton_core import check, review
-    spec = os.path.join(str(root), check.REQ_REL)
-    reqs, _dupes, _malformed = check.extract(spec)
-    defined = check.extract_methods(spec)
-    paths = check.method_paths(check.read_config(str(root)))
-    tags = check.scan(str(root), [d for ds in paths.values() for d in ds])
-    for c in check.counted(str(root), reqs, defined, paths, tags):
+    from hamilton_core import verify, review
+    spec = os.path.join(str(root), verify.REQ_REL)
+    reqs, _dupes, _malformed = verify.extract(spec)
+    defined = verify.extract_methods(spec)
+    paths = verify.method_paths(verify.read_config(str(root)))
+    tags = verify.scan(str(root), [d for ds in paths.values() for d in ds])
+    for c in verify.counted(str(root), reqs, defined, paths, tags):
         review.write_suffix(str(root), c.tag, c.want)
 
 
 def run_fixture(name, tmp_path, *args):
-    return run_check(copy_fixture(name, tmp_path), *args)
+    return run_verify(copy_fixture(name, tmp_path), *args)
 
 
 def run_json(name, tmp_path):

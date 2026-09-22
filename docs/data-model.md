@@ -91,7 +91,7 @@ Not an entity, not an id. A `## Verification methods` section at the top of
 - **The marker is part of the AC.** It, and the method's definition, are part
   of the obligation a test's review covers (§2.4), so changing an AC's method —
   or redefining the method — leaves its tests `unreviewed`.
-- **`manual` is reserved.** It needs no definition and no test; `hamilton check`
+- **`manual` is reserved.** It needs no definition and no test; `hamilton verify`
   lists it as not machine-verified.
 - **The method is spec, the tool is not.** Which framework runs a method's tests
   and where they live is a build-phase decision: `paths.<method>` in
@@ -133,7 +133,7 @@ text:
   `orphan-tag` tags are not reviewed.
 - **Only the reviewer in `hamilton build` writes it**, when it passes the test; the
   write gate refuses a file edit that introduces or changes one. A green
-  `hamilton check` writes nothing.
+  `hamilton verify` writes nothing.
 - **Cross-file code is in no region.** A shared helper in another file can
   change without invalidating any review (concept §5.3).
 
@@ -192,9 +192,9 @@ spec/
 
 Review suffixes live in the test files, on the tags. `.hamilton/verified`, the
 per-AC hash file of earlier versions, is retired (D-020): nothing reads or
-writes it, and `hamilton check` prints a notice while it still exists.
+writes it, and `hamilton verify` prints a notice while it still exists.
 
-`vision.md` holds prose rather than entities and is not read by `hamilton check`.
+`vision.md` holds prose rather than entities and is not read by `hamilton verify`.
 It is phase-gated like the rest of `spec/`. A pre-D-014 project may still have
 `spec/components.md` / `spec/modules.md` on disk; they are simply unread.
 
@@ -243,7 +243,7 @@ Criteria:
 ## 5. Invariants (validator)
 
 This is the target invariant set. A row marked **[check]** is enforced by
-`hamilton check` today; the rest are the roadmap for it.
+`hamilton verify` today; the rest are the roadmap for it.
 
 Structural:
 1. IDs unique across the model and well-formed for their type. **[check]** for

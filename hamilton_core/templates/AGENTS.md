@@ -21,7 +21,7 @@ the workflows.
 - `.hamilton/` is read-only in build phase, except `.hamilton/config`: choosing
   the test framework and layout (`test_command`, `paths.<method>`) is a
   build-time call and yours to make. Do not touch any other key there.
-- `hamilton check` passes before a merge request opens.
+- `hamilton verify` passes before a merge request opens.
 - A correct failing test is never edited to pass.
 - An existing codebase gets its first spec with `hamilton reverse`: derive
   intent and the load-bearing decisions from the code and its history — do not

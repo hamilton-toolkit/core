@@ -1,9 +1,9 @@
-"""`hamilton check` -- the verification gate.
+"""`hamilton verify` -- the verification gate.
 
 Reads `spec/requirements.md`, `spec/actors.md` and `.hamilton/config`, runs the
 project's test command, scans the configured method paths for `@covers
 R-nnnn/ACn` tags, and checks that every tag that counts carries a current
-review suffix (D-020). `check` is read-only: it never writes a file.
+review suffix (D-020). `verify` is read-only: it never writes a file.
 
 A review suffix -- `@covers R-0005/AC2 #3f9a2c.81d0e4` -- is written only by
 the reviewer in `hamilton build` when it passes the test. It is two 6-hex-digit
@@ -61,11 +61,13 @@ project:
                     verifies the actor's goal end to end
 
 A person reads the gate as the spec: every requirement, each criterion
-under it with a mark (`view`), then the suite's result, then whatever is
-about no one criterion. The suite's own output is not shown -- it goes, as it
-runs, into a temp file named on failure (a green suite's is deleted), and its
-end travels with the `tests-failed` finding; `--suite-output` streams it
-instead.
+under it with a mark, each test that verifies the criterion under that --
+its name and `file:first-last` (`view`) -- then the suite's result, then
+whatever is about no one criterion. While the suite runs, the working
+indicator of `hamilton build` shows. The suite's own output is not shown --
+it goes, as it runs, into a temp file named on failure (a green suite's is
+deleted), and its end travels with the `tests-failed` finding;
+`--suite-output` streams it instead.
 
 The finding messages -- in `--json`, and handed to the agents `hamilton
 build` runs -- are the tool's real interface to an agent: each states where,
@@ -82,6 +84,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from typing import NamedTuple
 
@@ -177,27 +180,90 @@ def strip_suffixes(line: str) -> str:
     return TAG_RE.sub(lambda m: f"@covers {m.group(1)}/{m.group(2)}", line)
 
 
-def regions(lines) -> dict:
-    """{tag line number: region text} for the lines of one file.
+def _blocks(lines) -> tuple[list, list]:
+    """(tagged, blocks): whether each line holds a `@covers` tag, and each
+    tag block's section as (index of its first tag line, index of the line
+    after its section).
 
     Hamilton does not parse tests, so "the test" is a layout rule. A *tag
-    block* is a run of consecutive lines that each hold a `@covers` tag. A
-    tag's *region* is the file's preamble (every line before the first tag
-    block) plus its own section: its tag block down to the line before the
-    next tag block, or the end of the file. Review suffixes are stripped, so
-    writing one never changes a region."""
+    block* is a run of consecutive lines that each hold a `@covers` tag. Its
+    *section* runs from the block down to the line before the next tag block,
+    or the end of the file."""
     tagged = [bool(TAG_RE.search(line)) for line in lines]
     starts = [i for i, t in enumerate(tagged) if t and (i == 0 or not tagged[i - 1])]
-    if not starts:
+    return tagged, [(s, starts[k + 1] if k + 1 < len(starts) else len(lines))
+                    for k, s in enumerate(starts)]
+
+
+def regions(lines) -> dict:
+    """{tag line number: region text} for the lines of one file. A tag's
+    *region* is the file's preamble (every line before the first tag block)
+    plus its own section (see `_blocks`). Review suffixes are stripped, so
+    writing one never changes a region."""
+    tagged, blocks = _blocks(lines)
+    if not blocks:
         return {}
-    preamble = list(lines[:starts[0]])
+    preamble = list(lines[:blocks[0][0]])
     out = {}
-    for k, start in enumerate(starts):
-        stop = starts[k + 1] if k + 1 < len(starts) else len(lines)
+    for start, stop in blocks:
         text = "\n".join(preamble + [strip_suffixes(ln) for ln in lines[start:stop]])
         end = start
         while end < stop and tagged[end]:
             out[end + 1] = text
+            end += 1
+    return out
+
+
+class Section(NamedTuple):
+    """A test as the engineer reads it: its name, and the lines it spans."""
+    name: str
+    first: int          # its first tag line, 1-based
+    last: int           # its last line that is not blank
+
+
+# How a test is named, as its own framework writes it: the title where the
+# test is an unnamed callback, the function's name as written everywhere else,
+# so it can be searched for. The first line of a section that matches one of
+# these names it. The name only helps the eye; `file:first-last` is what
+# locates the test, in any language.
+_NAME_RES = (
+    re.compile(r"\b(?:it|test|specify|scenario)\s*\(\s*(['\"`])(?P<name>.+?)\1"),
+    re.compile(r"\bdef\s+(?P<name>test\w*)"),               # Python
+    re.compile(r"\bfunction\s+(?P<name>test\w*)", re.I),    # PHP
+    re.compile(r"\bfunc\s+(?P<name>Test\w*)"),              # Go
+    re.compile(r"\bfn\s+(?P<name>\w+)"),                    # Rust
+    re.compile(r"\bvoid\s+(?P<name>\w+)\s*\("),             # Java, C#
+)
+NAME_WIDTH = 72         # a name longer than this is cut
+
+
+def _name(lines) -> str:
+    """What a section's test is called, or else its first line of code. A
+    tag may share its line with the code it covers, so the tag is taken out
+    rather than the line."""
+    code = [ln for ln in (TAG_RE.sub("", ln).strip() for ln in lines)
+            if re.search(r"\w", ln)]            # a bare `//` or `#` is no code
+    for line in code:
+        for pattern in _NAME_RES:
+            m = pattern.search(line)
+            if m:
+                return m.group("name")[:NAME_WIDTH]
+    return code[0][:NAME_WIDTH] if code else "(no code under the tag)"
+
+
+def sections(lines) -> dict:
+    """{tag line number: Section} for the lines of one file. Every tag of a
+    tag block shares its section."""
+    tagged, blocks = _blocks(lines)
+    out = {}
+    for start, stop in blocks:
+        last = stop
+        while last > start + 1 and not lines[last - 1].strip():
+            last -= 1
+        section = Section(_name(lines[start:stop]), start + 1, last)
+        end = start
+        while end < stop and tagged[end]:
+            out[end + 1] = section
             end += 1
     return out
 
@@ -305,7 +371,7 @@ def run_tests(root: str, cfg: dict, echo: bool = False, log: str | None = None):
     cmd, lineno = entry[0], entry[1]
     try:
         if echo:
-            print(f"hamilton check: running test_command: {cmd.strip()}", file=sys.stderr)
+            print(f"hamilton verify: running test_command: {cmd.strip()}", file=sys.stderr)
             p = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr,
                                timeout=SUITE_TIMEOUT)
             output = ""
@@ -550,6 +616,27 @@ def counted(root: str, reqs: dict, defined: dict, paths: dict, tags) -> list:
     return out
 
 
+def tested(root: str, reqs: dict) -> dict:
+    """{"R-nnnn/ACn": [(file, Section)]}: the tests that count toward each
+    criterion -- what the suite runs to verify it -- in file order."""
+    defined = extract_methods(os.path.join(root, REQ_REL))
+    paths = method_paths(read_config(root))
+    tags = scan(root, [d for ds in paths.values() for d in ds])
+    out: dict = {}
+    files: dict = {}
+    for c in counted(root, reqs, defined, paths, tags):
+        t = c.tag
+        if t.file not in files:
+            files[t.file] = sections(read_lines(root, t.file))
+        found = (t.file, files[t.file][t.line])
+        mine = out.setdefault(f"{t.rid}/{t.acid}", [])
+        if found not in mine:
+            mine.append(found)
+    for mine in out.values():
+        mine.sort(key=lambda f: (f[0], f[1].first))
+    return out
+
+
 def _sample(ids, limit=8):
     """A bounded, sorted preview of an id collection for a finding message."""
     ids = sorted(ids)
@@ -591,7 +678,7 @@ def _notices(root: str, cfg: dict) -> list:
     if os.path.exists(os.path.join(root, RETIRED_VERIFIED_REL)):
         out.append(
             f"{RETIRED_VERIFIED_REL} is no longer used -- reviews are recorded "
-            f"in the '@covers' tags' suffixes now (D-020), and hamilton check "
+            f"in the '@covers' tags' suffixes now (D-020), and hamilton verify "
             f"neither reads nor writes it. Delete it.")
     for rel in RETIRED_SCAFFOLD:
         if os.path.exists(os.path.join(root, rel)):
@@ -667,7 +754,7 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
     that takes ten minutes is not worth re-running to learn that a tag is
     still unreviewed."""
     if not os.path.isfile(os.path.join(root, REQ_REL)):
-        raise UsageError(f"{REQ_REL}: not found (run hamilton check from the "
+        raise UsageError(f"{REQ_REL}: not found (run hamilton verify from the "
                          f"project root, the directory that holds spec/)")
     cfg = read_config(root)
     notices = _notices(root, cfg)
@@ -683,7 +770,7 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
             "one '## R-nnnn' block -- with a Statement and acceptance criteria "
             "-- outside any fenced code block. Found: only the fenced example, "
             "or an empty file. Fix: write a real requirement below the "
-            "example, then re-run hamilton check.",
+            "example, then re-run hamilton verify.",
             REQ_REL, 1)], [], notices, [], n_reqs, n_acs)
 
     out = []
@@ -963,10 +1050,11 @@ def _one(root: str, only: str, as_json: bool) -> int:
         return 1 if mine else 0
     from hamilton_core.session.console import Paint, supports_color
     one = {rid: dict(reqs[rid], acs={acid: reqs[rid]["acs"][acid]})}
-    lines, _other = view(mine, one, manual, Paint(supports_color(sys.stdout)))
+    lines, _other = view(mine, one, manual, Paint(supports_color(sys.stdout)),
+                         tested(root, one))
     for text in lines:
         print(text)
-    print(f"hamilton check: {only} only -- the suite was not run", file=sys.stderr)
+    print(f"hamilton verify: {only} only -- the suite was not run", file=sys.stderr)
     return 1 if mine else 0
 
 
@@ -981,11 +1069,14 @@ _AC_MARKS = {
 }
 
 
-def view(findings: list, reqs: dict, manual: list, paint) -> tuple[list, list]:
+def view(findings: list, reqs: dict, manual: list, paint,
+         tests: dict | None = None) -> tuple[list, list]:
     """The gate as a person reads it: every requirement, then each of its
     criteria with a mark -- `✓` fine, `✗` no usable test, `?` not reviewed,
-    `○` verified by a person. Returns (lines, the findings that are about no
-    one criterion); those are shown after, in full."""
+    `○` verified by a person -- and under each criterion the tests that
+    verify it (`tested`). Returns (lines, the findings that are about no one
+    criterion); those are shown after, in full."""
+    tests = tests or {}
     by_ac: dict = {}
     other = []
     for f in findings:
@@ -1012,6 +1103,9 @@ def view(findings: list, reqs: dict, manual: list, paint) -> tuple[list, list]:
                              f"{paint.dim('verified by a person')}")
             else:
                 lines.append(f"- {paint.green('✓')} {acid} {ac['text']}")
+            for path, sec in tests.get(f"{rid}/{acid}", ()):
+                span = f"{sec.first}-{sec.last}" if sec.last > sec.first else f"{sec.first}"
+                lines.append(f"  * {sec.name} {paint.dim(f'({path}:{span})')}")
     return lines, other
 
 
@@ -1024,19 +1118,29 @@ def main(as_json: bool = False, suite_output: bool = False,
     tags and reviews -- without running the suite: the question a step working
     on that criterion asks, answered in a second. The full gate is the run
     without it."""
+    from hamilton_core.session.console import Console, Paint, elapsed, supports_color
     root = os.getcwd()
+    # While the suite runs, the indicator `hamilton build` shows. Not under
+    # --json (a hook reads that) nor when the suite's output is streamed.
+    console = Console()
+    started = time.monotonic()
     try:
         if only is not None:
             return _one(root, only, as_json)
+        if not (as_json or suite_output):
+            console.start_working("Running the tests")
         findings, warnings, notices, manual, n_reqs, n_acs = run(
             root, echo=suite_output,
-            on_log=lambda log: print(follow_hint(log), file=sys.stderr))
+            on_log=lambda log: console.say(console.paint.dim(follow_hint(log))))
     except UsageError as exc:
         if as_json:
             print(json.dumps({"error": str(exc)}))
         else:
-            print(f"hamilton check: {exc}", file=sys.stderr)
+            print(f"hamilton verify: {exc}", file=sys.stderr)
         return 2
+    finally:
+        console.stop_working()
+    took = elapsed(time.monotonic() - started)
     if as_json:
         print(json.dumps({"ok": not findings, "findings": findings,
                           "warnings": warnings, "notices": notices,
@@ -1044,10 +1148,9 @@ def main(as_json: bool = False, suite_output: bool = False,
                           "acceptance_criteria": n_acs}))
         return 1 if findings else 0
 
-    from hamilton_core.session.console import Paint, supports_color
     paint = Paint(supports_color(sys.stdout))
     reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
-    lines, other = view(findings, reqs, manual, paint)
+    lines, other = view(findings, reqs, manual, paint, _tested(root, reqs))
     for text in lines:
         print(text)
 
@@ -1055,9 +1158,9 @@ def main(as_json: bool = False, suite_output: bool = False,
     ran = not any(f["rule"] == "no-test-command" for f in other)
     if failed:
         where = f" -- full output: {failed['log']}" if failed.get("log") else ""
-        print(f"\nSuite {paint.red('✗')} failed{where}")
+        print(f"\nSuite {paint.red('✗')} failed ({took}){where}")
     elif ran:
-        print(f"\nSuite {paint.green('✓')} passed")
+        print(f"\nSuite {paint.green('✓')} passed ({took})")
     rest = [f for f in other if f is not failed]
     if rest:
         print(f"\n{paint.bold('Other findings')}")
@@ -1067,17 +1170,26 @@ def main(as_json: bool = False, suite_output: bool = False,
     for w in warnings:
         print(w["message"], file=sys.stderr)
     for n in notices:
-        print(f"hamilton check: notice: {n}", file=sys.stderr)
+        print(f"hamilton verify: notice: {n}", file=sys.stderr)
     noun = "criterion" if n_acs == 1 else "criteria"
-    print(f"hamilton check: {n_reqs} requirement(s), {n_acs} acceptance {noun}",
+    print(f"hamilton verify: {n_reqs} requirement(s), {n_acs} acceptance {noun}",
           file=sys.stderr)
     if manual:
         noun = "criterion" if len(manual) == 1 else "criteria"
-        print(f"hamilton check: {len(manual)} {noun} verified manually, "
+        print(f"hamilton verify: {len(manual)} {noun} verified manually, "
               f"not by the gate", file=sys.stderr)
     if warnings:
-        print(f"hamilton check: {len(warnings)} warning(s) — advisory, "
+        print(f"hamilton verify: {len(warnings)} warning(s) — advisory, "
               f"not failures", file=sys.stderr)
-    print(f"hamilton check: {'ok' if not findings else str(len(findings)) + ' problem(s)'}",
+    print(f"hamilton verify: {'ok' if not findings else str(len(findings)) + ' problem(s)'}",
           file=sys.stderr)
     return 1 if findings else 0
+
+
+def _tested(root: str, reqs: dict) -> dict:
+    """`tested`, or nothing when the config it reads is what the gate just
+    reported as broken -- the view still shows the rest."""
+    try:
+        return tested(root, reqs)
+    except UsageError:
+        return {}

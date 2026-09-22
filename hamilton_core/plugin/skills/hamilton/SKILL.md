@@ -10,14 +10,14 @@ requirements and their acceptance criteria. It opens with a `## Verification
 methods` section, and every criterion ends in a marker naming one of those
 methods, e.g. `[browser]`. `spec/actors.md` is a flat supporting list.
 `spec/` is writable only in `spec` phase; code and tests only in `build` phase.
-`hamilton check` runs the test suite (`test_command` in `.hamilton/config`),
+`hamilton verify` runs the test suite (`test_command` in `.hamilton/config`),
 checks that every acceptance criterion has a `@covers`-tagged test under the
 paths of its method (`paths.<method>` in `.hamilton/config`), and that every
 such tag carries a current **review suffix** — `@covers R-nnnn/ACn
 #xxxxxx.yyyyyy`. Only the reviewer in `hamilton build` writes a suffix, when it
 passes the test; a change to the AC, its requirement's Statement, its method's
-definition, or the test itself leaves the tag `unreviewed`. `hamilton check`
-never writes anything. It prints the spec with a mark per criterion; `hamilton check --json`
+definition, or the test itself leaves the tag `unreviewed`. `hamilton verify`
+never writes anything. It prints the spec with a mark per criterion; `hamilton verify --json`
 carries each finding in full -- `file:line`, rule and fix -- treat those as the
 work list. It also prints advisory **warnings** (`long-statement`,
 `long-description`, `root-unit-only`) that never fail a run but flag spec prose
@@ -92,7 +92,7 @@ answer before Phase 1.
 
 `spec/vision.md` is prose — **Purpose** (one or two sentences), **Users**
 (bullets), **Non-goals** (tempting out-of-scope features, each with why).
-`hamilton check` never reads it; it is here so a reviewer, and a future agent,
+`hamilton verify` never reads it; it is here so a reviewer, and a future agent,
 can tell a requested change from an unrequested feature. The **Non-goals** are
 the load-bearing part.
 
@@ -159,7 +159,7 @@ in review, in the summary, anywhere. Not just in review.
    └─ R-0058 "Revoke a session on logout"   ← new
    ```
 4. **Statement and ACs together, always.** The statement is what the
-   requirement means; the ACs are what `hamilton check` enforces. Show both for
+   requirement means; the ACs are what `hamilton verify` enforces. Show both for
    every item. Neither is skippable.
 5. **Every AC with its method.** Show the marker as part of the AC. Justify the
    method in one line only when it is not obvious.
@@ -170,7 +170,7 @@ in review, in the summary, anywhere. Not just in review.
 the actor-level goals, what someone wants from the whole system — before
 decomposing any of them. A root requirement has no `Parent:` and names the
 `Actor:` whose goal it is. Everything else has a `Parent:` and is a child of
-another requirement. `hamilton check` fails a root with no `Actor:`
+another requirement. `hamilton verify` fails a root with no `Actor:`
 (`orphan-requirement`) and a `Parent` or `Actor` that names nothing
 (`dangling-ref`).
 
@@ -182,7 +182,7 @@ no finding, because absence is invisible.
 **STATEMENT — one sentence, under 20 words, one behaviour.** If it needs an
 "and", a semicolon, or a dash introducing more detail, it is two requirements.
 Split it. The detail does not disappear — it moves into acceptance criteria,
-where the gate can act on it. `hamilton check` emits a `long-statement`
+where the gate can act on it. `hamilton verify` emits a `long-statement`
 *warning* (advisory, never a failure) for any Statement over 20 words; treat it
 as a split you owe the engineer, not as noise.
 
@@ -211,9 +211,9 @@ observes, never by what is cheapest to test:
 - a subjective quality (looks, feel) -> first make it checkable, e.g. a
   screenshot compared against an approved reference kept in `spec/`; `manual`
   only as a last resort. `manual` is reserved: it needs no definition and no
-  test, and `hamilton check` lists it as not machine-verified.
+  test, and `hamilton verify` lists it as not machine-verified.
 - **every root needs at least one AC with an actor-facing method.** A root
-  whose ACs are all `unit` proves the parts, never the goal — `hamilton check`
+  whose ACs are all `unit` proves the parts, never the goal — `hamilton verify`
   warns `root-unit-only`. If no actor-facing method fits, ask the engineer.
 - Two methods on one AC (`[unit, http]`) are allowed, and each then needs its
   own test. It is rare: it usually means the AC is two ACs — prefer splitting.
@@ -224,7 +224,7 @@ Description that runs to a second sentence gets a `long-description` warning.
 
 **Shared field rules go in a `## Domain vocabulary` section**, not in
 statements. Put it at the top of `spec/requirements.md`, next to `## Verification
-methods` and above the first `## R-nnnn` — `hamilton check` reads only the
+methods` and above the first `## R-nnnn` — `hamilton verify` reads only the
 methods section there and ignores the rest as prose. Define a
 format, an enum, or a validation rule once, and reference it by name from the
 ACs that need it. Never restate a shared rule inside a Statement.
@@ -359,7 +359,7 @@ not trivial — give it a Phase 3 turn.
 
 **Phase 4 — summary.** State what was written, what the engineer changed or
 rejected during review, and the consolidated red list: which rules
-`hamilton check` will now report and why, e.g. *"R-0016 (2 ACs) and R-0017
+`hamilton verify` will now report and why, e.g. *"R-0016 (2 ACs) and R-0017
 (4 ACs) become `uncovered`; work them in build phase."* Name requirements and
 count their ACs — do not list every AC. Do not re-explain the per-item
 CONSEQUENCE lines. A reworded AC whose test is tagged goes `unreviewed`; one
@@ -490,7 +490,7 @@ approval, write on approval) and every rule in **How to show a requirement** and
 State what was written: the vision, the actor count, and the tree shape (root
 count and depth). Then, plainly:
 
-> Almost every AC is now `uncovered` and `hamilton check` will be red. That is
+> Almost every AC is now `uncovered` and `hamilton verify` will be red. That is
 > the expected state after `hamilton reverse`, not a failure.
 
 Next step for the engineer: `hamilton build`. It binds the derived criteria to
@@ -502,7 +502,7 @@ one where none does — and takes the gate from there.
 ## Build phase — `hamilton build` drives
 
 You do not implement a Hamilton project by hand, and neither does an agent.
-`hamilton build` is a loop Hamilton runs itself: it reads `hamilton check`,
+`hamilton build` is a loop Hamilton runs itself: it reads `hamilton verify`,
 scaffolds each new surface as a contract, has each criterion's tests written
 against it in a file of their own, has them judged -- a criterion's tests
 together -- by a reviewer that sees only the spec and those tests,

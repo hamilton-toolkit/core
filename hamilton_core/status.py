@@ -19,7 +19,7 @@ import sys
 
 from hamilton_core import model as M
 from hamilton_core import phase as _phase_file
-from hamilton_core.check import REQ_REL, extract
+from hamilton_core.verify import REQ_REL, extract
 
 
 def _phase(root: str, phase: str | None) -> str:

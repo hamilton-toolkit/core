@@ -9,7 +9,7 @@ import os
 from conftest import copy_fixture
 
 from hamilton_core import model as M
-from hamilton_core.check import extract_methods
+from hamilton_core.verify import extract_methods
 
 
 def load(name, tmp_path):

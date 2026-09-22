@@ -1,6 +1,6 @@
 """`hamilton init` -- scaffold generation and the post-init state.
 
-After `init` a project has zero real requirements, so `hamilton check` there
+After `init` a project has zero real requirements, so `hamilton verify` there
 now *fails* with a "no requirements" finding (it must not crash). A second
 `init` refuses.
 """
@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 
-from conftest import REPO, run_check
+from conftest import REPO, run_verify
 
 COVERS_TAG_RE = re.compile(r"@covers\s+R-\d{4}/AC\d+")
 
@@ -80,7 +80,7 @@ def test_init_does_not_create_a_ledger_or_verified_file(tmp_path):
 
 def test_init_then_check_reports_no_requirements_without_crashing(tmp_path):
     assert run_init(tmp_path).returncode == 0
-    proc = run_check(tmp_path, "--json")
+    proc = run_verify(tmp_path, "--json")
     assert proc.returncode == 1, proc.stdout + proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["requirements"] == 0
@@ -137,7 +137,7 @@ def test_settings_json_wires_pretooluse_guard_hook(tmp_path):
 
 def test_requirements_template_has_no_live_requirement_block(tmp_path):
     """Every `## R-nnnn` in the shipped template is inside a fenced code block,
-    so `hamilton check` extracts zero requirements from it."""
+    so `hamilton verify` extracts zero requirements from it."""
     run_init(tmp_path)
     text = (tmp_path / "spec" / "requirements.md").read_text()
     live, in_fence = [], False

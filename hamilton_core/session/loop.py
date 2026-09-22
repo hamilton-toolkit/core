@@ -14,12 +14,12 @@ what makes three things possible:
 
 This drives the spec-phase modes. Build is not a session: `hamilton build` is
 a loop Hamilton runs itself (`hamilton_core.build`), because what comes next
-there follows from `hamilton check`, not from an agent's judgement.
+there follows from `hamilton verify`, not from an agent's judgement.
 
 `HAMILTON_SESSION` is exported before the agent starts, so a `design` /
 `build` that an agent shells out to from inside a session is refused: the
 phase is fixed for the session. As ever this stops drift, not a determined operator --
-`hamilton check` in CI is the authoritative gate.
+`hamilton verify` in CI is the authoritative gate.
 
 What differs between the modes is defined once, in `modes`.
 

@@ -4,7 +4,7 @@
 - **http** — requests to the running service; external services stubbed.
 - **unit** — one module in isolation, no I/O.
 
-An example, fenced so `hamilton check` skips it:
+An example, fenced so `hamilton verify` skips it:
 
 ```markdown
 ## R-9999

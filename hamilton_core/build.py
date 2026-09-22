@@ -1,7 +1,7 @@
 """`hamilton build` -- the loop that gets the gate green.
 
 Build is not a conversation, and it is not an agent left to its own judgement:
-what to do next follows from `hamilton check`. So Hamilton drives, and calls
+what to do next follows from `hamilton verify`. So Hamilton drives, and calls
 an agent only for the work that needs one.
 
     check   Hamilton runs the gate in-process. Its findings are the work list,
@@ -48,13 +48,13 @@ from dataclasses import asdict, dataclass, field
 from importlib import resources
 from string import Template
 
-from hamilton_core import check as _check
+from hamilton_core import verify as _verify
 from hamilton_core import clarify as _clarify
 from hamilton_core import guard as _guard
 from hamilton_core import phase as _phase
 from hamilton_core import review as _review
 from hamilton_core import status as _status
-from hamilton_core.check import REQ_REL, UsageError
+from hamilton_core.verify import REQ_REL, UsageError
 from hamilton_core.session import protocol as P
 from hamilton_core.session.console import Console, Rows, elapsed
 
@@ -80,7 +80,7 @@ STEPS = {
     "code": "Coding",
 }
 
-# Every rule `hamilton check` can report belongs to exactly one step. This is
+# Every rule `hamilton verify` can report belongs to exactly one step. This is
 # the loop's whole decision: keep it here, and nowhere else.
 SPEC_RULES = frozenset({"malformed", "dangling-ref", "orphan-requirement",
                         "cyclic-parent", "no-method", "unknown-method"})
@@ -89,7 +89,7 @@ COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
 SUITE_RULES = frozenset({"tests-failed"})
 # `unreviewed` is routed by its state: a criterion that changed needs the test
 # written again, anything else only needs reviewing.
-REWRITE_STATES = frozenset({_check.AC_CHANGED, _check.BOTH_CHANGED})
+REWRITE_STATES = frozenset({_verify.AC_CHANGED, _verify.BOTH_CHANGED})
 
 
 def qual_of(finding: dict) -> str:
@@ -350,9 +350,9 @@ def rejected_by_criterion(results: list, skipped) -> dict:
 
 def tagged_files(root: str, quals) -> dict:
     """{qual: the files holding a `@covers` tag for it}."""
-    paths = _check.method_paths(_check.read_config(root))
+    paths = _verify.method_paths(_verify.read_config(root))
     out: dict = {q: set() for q in quals}
-    for t in _check.scan(root, [d for ds in paths.values() for d in ds]):
+    for t in _verify.scan(root, [d for ds in paths.values() for d in ds]):
         out.get(f"{t.rid}/{t.acid}", set()).add(t.file)
     return out
 
@@ -478,9 +478,9 @@ class Run:
         # The suite's output goes to a file, not the screen, so the indicator
         # keeps running through it: follow the file to watch, the build shows
         # the outcome, and a failure's output goes to the coding step.
-        findings, _w, _n, _manual, _nr, _na = _check.run(
+        findings, _w, _n, _manual, _nr, _na = _verify.run(
             self.root, suite=suite,
-            on_log=lambda log: self.said(_check.follow_hint(log)))
+            on_log=lambda log: self.said(_verify.follow_hint(log)))
         self.checks += 1
         self.suites += suite
         took = f" ({elapsed(time.monotonic() - started)})"
@@ -498,7 +498,7 @@ class Run:
     def command(self) -> str:
         """The project's full-suite command, named in a brief as the one not
         to run."""
-        entry = _check.read_config(self.root).get("test_command")
+        entry = _verify.read_config(self.root).get("test_command")
         return entry[0].strip() if entry else "(no test_command set)"
 
     async def task(self, key, label: str, prompt: str) -> str:
@@ -645,7 +645,7 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
 
     console.say()
     console.error("build: still not green after "
-                  f"{PASSES} passes -- what is left is in `hamilton check`.")
+                  f"{PASSES} passes -- what is left is in `hamilton verify`.")
     state.stopped = "passes spent"
     state.save(root)
     return 1
@@ -722,9 +722,9 @@ def _declared(reqs: dict, qual: str) -> bool:
 
 
 def _model(root: str):
-    reqs, _dupes, _malformed = _check.extract(os.path.join(root, REQ_REL))
-    defined = _check.extract_methods(os.path.join(root, REQ_REL))
-    paths = _check.method_paths(_check.read_config(root))
+    reqs, _dupes, _malformed = _verify.extract(os.path.join(root, REQ_REL))
+    defined = _verify.extract_methods(os.path.join(root, REQ_REL))
+    paths = _verify.method_paths(_verify.read_config(root))
     return reqs, defined, paths
 
 
@@ -915,7 +915,7 @@ def main() -> int:
         return asyncio.run(build(root, worker, ClaudeSdkJudge(), console, state))
     except KeyboardInterrupt:
         console.error("interrupted -- run `hamilton build` again to carry on "
-                      "from wherever `hamilton check` now stands.")
+                      "from wherever `hamilton verify` now stands.")
         state.save(root)
         return 130
     except Exception as exc:        # a traceback tells the engineer nothing

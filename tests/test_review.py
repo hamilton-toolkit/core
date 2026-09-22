@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-from conftest import copy_fixture, run_check, stamp
+from conftest import copy_fixture, run_verify, stamp
 
 from hamilton_core import review as R
 from hamilton_core.session.console import Paint
@@ -91,7 +91,7 @@ def test_a_pass_writes_exactly_that_tags_suffix(tmp_path):
     old, new = changed[0]
     assert old == "// @covers R-0001/AC2"
     assert new.startswith("// @covers R-0001/AC2 #") and len(new) == len(old) + 15
-    assert run_check(d).returncode == 0
+    assert run_verify(d).returncode == 0
     assert R.line(r, PAINT) == "✓ R-0001/AC2  tests/covers.js:7"
     assert R.summary([r]) == "1 reviewed · 1 passed. Suffixes written for the 1 that passed."
 
@@ -203,7 +203,7 @@ def test_a_test_tagged_for_two_criteria_is_judged_with_each(tmp_path):
     assert {r["verdict"] for r in reviewed(d, judge)} == {"pass"}
     assert len(judge.prompts) == 2
     assert all("it('both', ...)" in p for p in judge.prompts)
-    assert run_check(d).returncode == 0
+    assert run_verify(d).returncode == 0
 
 
 def test_a_criterion_s_tests_are_judged_together_wherever_they_lie(tmp_path):
@@ -223,11 +223,11 @@ def test_a_criterion_s_tests_are_judged_together_wherever_they_lie(tmp_path):
     # each file's preamble once, not once per test
     assert prompt.count("import { skew } from './support.js';") == 1
     assert "Judge them **together**" in prompt
-    assert run_check(d).returncode == 0
+    assert run_verify(d).returncode == 0
 
 
 def test_writing_a_suffix_keeps_line_endings_and_replaces_an_old_one(tmp_path):
-    from hamilton_core.check import Tag
+    from hamilton_core.verify import Tag
     (tmp_path / "t.js").write_bytes(
         b"// @covers R-0001/AC1 #000000.000000\r\nit('x')\r\n// @covers R-0001/AC2\r\n")
     R.write_suffix(str(tmp_path), Tag("R-0001", "AC1", "t.js", 1, "000000.000000"),
@@ -260,7 +260,7 @@ def test_reviewers_run_side_by_side_up_to_the_cap_and_results_keep_file_order(tm
     assert peak[0] == R.PARALLEL
     assert [r["file"] for r in results] == \
         ["tests/covers.js"] + [f"tests/t{i}.js" for i in range(6)]
-    assert run_check(d).returncode == 0
+    assert run_verify(d).returncode == 0
 
 
 def test_the_watcher_hears_each_criterion_start_and_finish(tmp_path):

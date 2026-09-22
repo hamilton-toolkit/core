@@ -404,7 +404,7 @@ def test_an_edit_that_does_not_apply_is_judged_on_its_own_strings(tmp_path):
 
 def test_a_line_starting_with_a_hash_after_a_tag_is_no_suffix(tmp_path):
     """`#include` or a shebang on the line after a tag is the next line, not a
-    review suffix -- the tag is read line by line, as `hamilton check` reads it."""
+    review suffix -- the tag is read line by line, as `hamilton verify` reads it."""
     root = _tagged(tmp_path)
     for after in ("#include <stdio.h>", "#!/bin/sh"):
         write = {"file_path": "tests/c.c",

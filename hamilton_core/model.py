@@ -1,10 +1,10 @@
 """Read-only readers for the spec model, shared by the view commands
 (`hamilton tree`, `hamilton show`). Nothing here writes, and none of it feeds
-`hamilton check`.
+`hamilton verify`.
 
 The model is one tree (D-014): `spec/requirements.md`, whose criteria each name
 their verification method (D-019). `spec/actors.md` is a flat supporting list.
-`hamilton check` owns the requirement extractor; this module reuses it, adds
+`hamilton verify` owns the requirement extractor; this module reuses it, adds
 the actor reader, and the derived views the data model calls for:
 computed dotted paths, rolled-up coverage, reverse links.
 """
@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import re
 
-from hamilton_core.check import (MANUAL, REQ_REL, REVIEWED, UsageError,
+from hamilton_core.verify import (MANUAL, REQ_REL, REVIEWED, UsageError,
                                  counted, extract, extract_methods,
                                  method_paths, missing_methods, read_config,
                                  scan, spec_lines)

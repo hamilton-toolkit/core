@@ -6,7 +6,7 @@ Hamilton is a small framework for building software **with** an AI agent
 without taking its word for when the work is done. You write down what the
 software must do — as specific, testable acceptance criteria — *before* it is
 built. The agent then implements it and writes the tests. One command,
-`hamilton check`, verifies that every criterion has a test that names it, that
+`hamilton verify`, verifies that every criterion has a test that names it, that
 the suite passes, and that a reviewer Hamilton runs itself has judged each test
 to prove its criterion — and judged it again after either one changed.
 Specification, code and tests live in one repository and land in one review.
@@ -44,13 +44,13 @@ point that it deserved to be taken as seriously as any other kind.
    against it — all of them together, since between them they prove it. When
    it passes them, each tag gets a review suffix —
    `@covers R-0001/AC1 #3f9a2c.81d0e4`; tests it rejects are rewritten.
-4. **`hamilton check` verifies.** It runs your suite and stays red until every
+4. **`hamilton verify` verifies.** It runs your suite and stays red until every
    criterion has a passing, reviewed, tagged test of the kind its verification
    method names. Reword a criterion or edit its test and it goes red again
    until the test is reviewed against the current wording.
 
 The acceptance criteria are yours. The rigorous tests that bind to them are the
-agent's. `hamilton check` is what keeps the two honest.
+agent's. `hamilton verify` is what keeps the two honest.
 
 ## The two phases
 
@@ -77,7 +77,7 @@ read-only paths are refused as fast feedback.
 
 None of this is unbypassable — unset the variable, edit the phase file by hand,
 or run an agent directly and you are outside it. It stops drift, not a
-determined operator. `hamilton check` run in CI, which ignores the phase
+determined operator. `hamilton verify` run in CI, which ignores the phase
 entirely, is the gate that enforces the outcome for real.
 
 ### How a spec session runs
@@ -116,7 +116,7 @@ able to see what is happening:
 ### How a build run differs
 
 `hamilton build` is not a session. What comes next in build phase follows from
-`hamilton check`, not from an agent's judgement, so Hamilton runs the loop and
+`hamilton verify`, not from an agent's judgement, so Hamilton runs the loop and
 calls an agent only for the parts that need one:
 
 - **Hamilton decides, the agents work.** The gate's findings are the work
@@ -162,7 +162,7 @@ calls an agent only for the parts that need one:
 - **Re-running is the resume.** `.hamilton/build` keeps only what re-running
   could not work out for itself — what you chose to skip, how many rewrites
   each criterion has had, and what the reviewer said about the criteria whose
-  tests have not passed yet. Everything else comes back out of `hamilton check`.
+  tests have not passed yet. Everything else comes back out of `hamilton verify`.
 
 Hamilton runs on Claude, through the Claude Agent SDK, which installs with it.
 The model is reached behind a single adapter: the session driver, the phase
@@ -187,7 +187,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 447 passing
+$ python -m pytest -q          # expects 453 passing
 ```
 
 ### 2. Link it into a separate test project
@@ -244,10 +244,10 @@ from the installed Hamilton.
 ```
 $ hamilton design      # spec phase: draft the vision and the requirements with the agent
 $ hamilton build       # build phase: Hamilton drives — plan, write the tagged tests, review them, implement, until the gate is green
-$ hamilton check       # the verification gate — run it yourself, and in CI
+$ hamilton verify      # the verification gate — run it yourself, and in CI
 ```
 
-`hamilton check` exits `0` when every criterion has a passing, reviewed,
+`hamilton verify` exits `0` when every criterion has a passing, reviewed,
 tagged test; `1` on any finding; `2` if it cannot run at all. It never writes
 anything. Wire the same command into your pipeline — that CI run, outside the
 agent, is the real gate.
@@ -264,12 +264,22 @@ $ printf spec  > .hamilton/phase      # (what `hamilton design` does)
 $ printf build > .hamilton/phase      # (what `hamilton build` does)
 #   ... write tests/ with @covers tags, then the implementation ...
 $ hamilton build       # a reviewer session per criterion; needs Claude credentials
-$ hamilton check
-hamilton check: running test_command: python -m pytest -q
-2 passed in 0.01s
-hamilton check: 1 requirement(s), 2 acceptance criteria
-hamilton check: ok
+$ hamilton verify
+R-0001 Initials of a name
+- ✓ AC1 `initials "ada lovelace"` -> prints "AL" [cli]
+  * test_prints_the_initials (tests/cli/test_initials.py:4-7)
+- ✓ AC2 runs of whitespace between words count as one separator [unit]
+  * test_whitespace_runs (tests/unit/test_initials.py:1-2)
+
+Suite ✓ passed (1s)
+hamilton verify: 1 requirement(s), 2 acceptance criteria
+hamilton verify: ok
 ```
+
+Each criterion lists the tests that verify it: where each lies,
+`file:first-last`, after its name as the test framework writes it — the
+title of a `it('…')`, or the function's name. While the suite runs, the same working indicator as in `hamilton build`
+shows how long it has been going.
 
 The review suffixes the reviewer writes into the tags are the record that
 each test was judged against its criterion. Commit them with the tests; the
@@ -286,7 +296,7 @@ $ hamilton reverse     # spec phase: the agent surveys the code and its git
                        # history, confirms with you what the system is and who
                        # its actors are, then derives the requirement tree
                        # module by module — you ratify each piece
-$ hamilton check       # red on `uncovered` — expected; the derived spec has
+$ hamilton verify      # red on `uncovered` — expected; the derived spec has
                        # no tests bound to it yet
 $ hamilton build       # binds your existing tests to the derived criteria
                        # (and writes AC-level tests where the unit tests are
@@ -296,7 +306,7 @@ $ hamilton build       # binds your existing tests to the derived criteria
 
 The derived spec is deliberately **thinner than the code** — it records intent
 and the load-bearing decisions and leaves the rest to the implementing agent, so
-`hamilton check` still runs against the same one-tree model as a greenfield
+`hamilton verify` still runs against the same one-tree model as a greenfield
 project. `hamilton reverse` refuses once `spec/requirements.md` has real
 requirements; extend an existing spec with `hamilton design`.
 
@@ -306,17 +316,17 @@ requirements; extend an existing spec with `hamilton design`.
 |---|---|---|
 | `hamilton init [path]` | — | Scaffold a project: `spec/`, `.hamilton/`, `AGENTS.md` / `CLAUDE.md`, `.claude/`. Refuses if `.hamilton/` already exists. |
 | `hamilton design` | sets **spec** | Write the phase, print the status banner, run a spec-phase session with a kickoff to draft the vision / requirements through the review protocol. Offers to resume an unfinished spec session. |
-| `hamilton build` | sets **build** | Get the gate green, as a loop Hamilton drives rather than a session an agent drives: `hamilton check` is the work list; a planner scaffolds each new surface as a contract; a writer per criterion writes its tests against it, in a file of their own (and may read the code); a reviewer that sees only the spec and the criterion's tests, judged together, lists what they cover and what is wrong; revisions are re-reviewed against that list only, until it is settled; then the implementation is written against the tests. Each step names itself and shows what is running. The one question it asks is a clarification: a criterion the spec cannot settle, answered by you and written into the spec on your approval. Without a terminal it reports and exits non-zero. |
+| `hamilton build` | sets **build** | Get the gate green, as a loop Hamilton drives rather than a session an agent drives: `hamilton verify` is the work list; a planner scaffolds each new surface as a contract; a writer per criterion writes its tests against it, in a file of their own (and may read the code); a reviewer that sees only the spec and the criterion's tests, judged together, lists what they cover and what is wrong; revisions are re-reviewed against that list only, until it is settled; then the implementation is written against the tests. Each step names itself and shows what is running. The one question it asks is a clarification: a criterion the spec cannot settle, answered by you and written into the spec on your approval. Without a terminal it reports and exits non-zero. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
-| `hamilton check [R-nnnn/ACn] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton check R-nnnn/ACn` shows one criterion's status in a second, without running the suite. Writes nothing to the project. This is the gate — run it in CI. |
+| `hamilton verify [R-nnnn/ACn] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — and under it each test that verifies it, by name and `file:lines`, then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton verify R-nnnn/ACn` shows one criterion's status in a second, without running the suite. Writes nothing to the project. This is the gate — run it in CI. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. |
 | `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
 
-`hamilton check`, `hamilton tree`, `hamilton show` and `hamilton status` write
+`hamilton verify`, `hamilton tree`, `hamilton show` and `hamilton status` write
 nothing. `check`, `tree` and `show` take `--json` for tooling.
 
-### When `hamilton check` fails
+### When `hamilton verify` fails
 
 | Rule | What it means / what to do |
 |---|---|
@@ -345,12 +355,12 @@ key is reserved for future mutation testing and is not implemented — unset it.
 ## The spec files
 
 `hamilton init` writes three files under `spec/`. Each opens with a fenced
-example that `hamilton check` ignores; you replace it with your own content
+example that `hamilton verify` ignores; you replace it with your own content
 below the fence. `spec/` is writable in spec phase, read-only in build.
 
 ### `spec/vision.md`
 
-Prose, not a model — `hamilton check` never reads it. Three sections:
+Prose, not a model — `hamilton verify` never reads it. Three sections:
 **Purpose** (one or two sentences on what the software is for and for whom),
 **Users** (who uses it and what they need), **Non-goals** (plausible features
 that are deliberately out of scope, each with why). The non-goals are the
@@ -388,7 +398,7 @@ The file opens with a `## Verification methods` section that defines, once,
 how this project proves a criterion: what a test observes, what is real and
 what is stubbed. Every criterion ends in a marker naming one of them. The agent
 proposes a method per criterion; you ratify it like the criterion itself.
-`manual` is reserved — a person judges it, and `hamilton check` lists it
+`manual` is reserved — a person judges it, and `hamilton verify` lists it
 without enforcing it.
 
 ```markdown
@@ -445,11 +455,11 @@ Related limits, stated plainly:
   suffix change shows in the merge-request diff.
 - **The phase hook is defeatable from a shell.** It covers file-editing tools
   only, so it stops drift inside a cooperating session, not deliberate
-  circumvention. CI — `hamilton check` run outside the agent — is the real gate.
+  circumvention. CI — `hamilton verify` run outside the agent — is the real gate.
 - **Only requirements and criteria can *fail* the gate.** `spec/actors.md` is
   read for the view commands, for `dangling-ref` on an `Actor:` link, and for
   `long-description` warnings, but nothing in it turns a build red by itself.
-- **IDs are hand-written.** A repeated `R-nnnn` is caught by `hamilton check`
+- **IDs are hand-written.** A repeated `R-nnnn` is caught by `hamilton verify`
   (`malformed`), not prevented as you type.
 - **Hamilton runs on Claude, and only Claude.** The model sits behind one
   adapter and nothing above it is Claude-specific, so a second model is an
@@ -467,7 +477,7 @@ is.
 
 **A project created before the workflows moved into the package** still has
 `.claude/skills/hamilton/SKILL.md` (and perhaps `.claude/commands/spec.md` and
-`build.md`). Nothing reads them any more; `hamilton check` prints a notice
+`build.md`). Nothing reads them any more; `hamilton verify` prints a notice
 until you delete them.
 
 **A project created before verification methods** goes red after upgrading,
@@ -482,7 +492,7 @@ delete them at your leisure.
 purpose: every tagged test is `unreviewed`. There is no automatic migration.
 The first `hamilton build` runs a full review — one model call per test — and
 rewrites the tests the reviewer rejects; that review is the quality audit of
-your existing suite. `.hamilton/verified` is no longer used: `hamilton check`
+your existing suite. `.hamilton/verified` is no longer used: `hamilton verify`
 prints a notice until you delete it.
 
 **A project created before sessions moved in-process** still has an

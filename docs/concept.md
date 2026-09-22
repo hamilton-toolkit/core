@@ -163,7 +163,7 @@ rule: a root's criteria are usually observed through the actor's channel, a
 leaf's are often `unit`, but a leaf whose outcome the actor sees is verified
 where the actor sees it.
 
-`hamilton check` enforces the choice: a test counts for an AC only under the
+`hamilton verify` enforces the choice: a test counts for an AC only under the
 directories configured for its method (`paths.<method>`, §5.6). A `manual` AC
 needs no test and is listed as not machine-verified. Changing a method changes
 what the AC's tests owe, so they go `unreviewed` like a reworded AC's (§5.3).
@@ -219,10 +219,10 @@ its marker, and the definitions of the methods the test counts toward. The
 second covers the **test** — its *region*: the file's preamble (everything
 above the first tag) plus its own section (from its tags to the next tagged
 test or the end of the file), whitespace-normalised. Change either and the tag
-is `unreviewed`; `hamilton check` fails and says which half changed, because
+is `unreviewed`; `hamilton verify` fails and says which half changed, because
 an AC change means the test probably needs rewriting and a test change only
 needs another review. Nothing else writes a suffix — in particular not a green
-`hamilton check`, which writes nothing — so a review cannot clear itself.
+`hamilton verify`, which writes nothing — so a review cannot clear itself.
 
 **Why this is not the removed falsification record.** An earlier draft put a
 hand-run falsification protocol here — mutate the implementation, confirm the
@@ -247,7 +247,7 @@ mutation testing driven by a `mutation_command` in `.hamilton/config` — empty
 by default; when set, surviving mutants fail the gate. Per-language by nature
 (`mutmut`, `Stryker`, `cargo-mutants`), so it is configuration rather than a
 built-in. Not yet implemented: a `mutation_command` that is set today prints a
-`hamilton check` notice every run and is not executed — config that looks
+`hamilton verify` notice every run and is not executed — config that looks
 active and does nothing is exactly the failure the falsification record had.
 
 ### 5.4 Coverage policy
@@ -256,7 +256,7 @@ active and does nothing is exactly the failure the falsification record had.
 - every AC maps to ≥1 test that names it (`@covers R-nnnn/ACn`) under the
   paths of each of its methods; `manual` ACs are listed instead
 - every such tag carries a current review suffix (§5.3)
-- `hamilton check` runs `test_command` and requires exit 0
+- `hamilton verify` runs `test_command` and requires exit 0
 
 Both are checkable at commit time — coverage from the `@covers` tags, the pass
 from actually running the suite. Neither needs the API to have been known when
@@ -277,7 +277,7 @@ A root requirement carries acceptance criteria like any other, and it is
 verified **through them**: at least one of them names an actor-facing method,
 so a test exercises the running product the way the actor reaches it. Green
 children do not verify their parent — the parts can each pass while the product
-that wires them together is broken. `hamilton check` warns (`root-unit-only`)
+that wires them together is broken. `hamilton verify` warns (`root-unit-only`)
 on a root whose criteria are all `unit`.
 
 There is **no separate acceptance mechanism** — no `accept` command, no stored
@@ -399,7 +399,7 @@ Hamilton writes it itself, not through a hooked tool.
 `HAMILTON_SESSION`, edits `.hamilton/phase` by hand, `chmod`s the paths back,
 or starts the agent directly is outside the gate. This prevents *drift* — a
 cooperating agent staying in its lane across a long session — not a determined
-one. The authoritative gate is `hamilton check` run in CI, outside the agent's
+one. The authoritative gate is `hamilton verify` run in CI, outside the agent's
 reach (§8).
 
 ### 7.2 The three steps
@@ -416,7 +416,7 @@ decides. No code is written.
 - *2d:* Claude implements against the ratified requirements.
 
 **Step 3 — Verification**
-- `hamilton check` runs `test_command`; Claude repairs failures within the mutability rule below. A test it edits is `unreviewed` again and goes back through *2b*.
+- `hamilton verify` runs `test_command`; Claude repairs failures within the mutability rule below. A test it edits is `unreviewed` again and goes back through *2b*.
 - The AC coverage gate (§5.4) is the exit condition and the precondition for opening the MR.
 
 ### 7.3 Mutability rule during Step 3
@@ -432,7 +432,7 @@ Without an explicit rule, agents repair red suites by weakening assertions, dele
 > A test that is correct and failing is a bug in the implementation. It is never edited to pass.
 
 The review suffix makes this rule visible: an edited test loses its review, so
-an edit to make it pass shows up in `hamilton check` and in the next review.
+an edit to make it pass shows up in `hamilton verify` and in the next review.
 
 ### 7.4 Loop-back edges
 
@@ -456,11 +456,11 @@ Enforced from day one; advisory processes degrade as soon as a session gets long
 - **Fast feedback** — the `PreToolUse` phase hook, inside an agent session. It
   keeps a cooperating agent on-process. It covers only the file-editing tools
   and is defeatable from a shell (§7.1); it is not the guarantee.
-- **Authoritative** — `hamilton check` run in CI, outside the agent's reach, on
+- **Authoritative** — `hamilton verify` run in CI, outside the agent's reach, on
   every change. This is the tier that actually gates.
 
 The framework ships **no CI config** — a pipeline is host-specific (D-005). A
-project wires `hamilton check` into its own pipeline; the two lines that needs
+project wires `hamilton verify` into its own pipeline; the two lines that needs
 are in the README. The authoritative tier must not be left implicit just
 because it is unscaffolded.
 

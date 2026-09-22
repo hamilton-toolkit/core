@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from string import Template
 
-from hamilton_core.check import MANUAL, REQ_REL, extract, extract_methods
+from hamilton_core.verify import MANUAL, REQ_REL, extract, extract_methods
 
 NEW = "NEW"
 _LINE_RE = re.compile(r"^-\s+(AC\d+|NEW):\s+(.+?)\s*$")
