@@ -1,9 +1,18 @@
-"""`hamilton check` -- the verification gate.
+"""`hamilton verify` -- the verification gate.
 
 Reads `spec/requirements.md`, `spec/actors.md` and `.hamilton/config`, runs the
 project's test command, scans the configured method paths for `@covers
-R-nnnn/ACn` tags, and compares every acceptance criterion against
-`.hamilton/verified` (the hashes recorded the last time `check` passed).
+R-nnnn/ACn` tags, and checks that every tag that counts carries a current
+review suffix (D-020). `verify` is read-only: it never writes a file.
+
+A review suffix -- `@covers R-0005/AC2 #3f9a2c.81d0e4` -- is written only by
+the reviewer in `hamilton build` when it passes the test. It is two 6-hex-digit
+SHA-256 prefixes: the *obligation* (the AC id, its requirement's Statement,
+the AC text with marker, the definitions of the methods under whose paths
+the test lies, and the supporting spec files the Statement or AC names as
+`spec/<file>`) and the *test* (the tag's region: the file's preamble plus the
+tag's section, see `regions`). A change to either side leaves the suffix out of
+date, and the tag unreviewed.
 
 The model is one tree (D-014): `spec/requirements.md`, headed by a
 `## Verification methods` section. Every AC ends in a marker naming how it is
@@ -27,20 +36,23 @@ verified (`[browser]`, `[unit, http]`); a test for it counts only under the
                      name the actor whose goal it is)
   dangling-ref       a Parent or Actor value names no such entity
   cyclic-parent      a requirement's Parent chain loops
-  stale              an AC's text or method changed since check last passed
+  missing-reference  a Statement or AC names a `spec/<file>` that does not
+                     exist
+  unreviewed         a counting tag has no review suffix, or its AC or its
+                     test changed since the review (one finding per tag)
   malformed          a requirement has no ACs, no Statement, a repeated id,
                      or an unparseable line
 
-Every problem in a run is reported, not just the first. On a fully clean run
-with at least one requirement, `check` rewrites `.hamilton/verified` and exits
-0. Exit 1 on any finding; exit 2 when it cannot run at all (`spec/requirements.md`
-or `.hamilton/config` missing). `--json` emits
+Every problem in a run is reported, not just the first. Exit 0 on a clean run
+with at least one requirement, 1 on any finding; exit 2 when it cannot run at
+all (`spec/requirements.md` or `.hamilton/config` missing). `--json` emits
 {"ok": bool, "findings": [...], "warnings": [...], "notices": [...],
 "manual": ["R-nnnn/ACn", ...], "requirements": int,
 "acceptance_criteria": int} or {"error": "..."}. `manual` lists the criteria a
 person verifies, which the gate does not. `notices` flag config that is set
 but does nothing (e.g. `mutation_command`, which is reserved and
-unimplemented); they never change the exit code.
+unimplemented) and files nothing reads any more (`.hamilton/verified`); they
+never change the exit code.
 
 Advisory **warnings** never change the exit code and never fail an existing
 project:
@@ -51,9 +63,19 @@ project:
   root-unit-only    a root requirement whose ACs are all `unit` -- nothing
                     verifies the actor's goal end to end
 
-The finding messages are the tool's real interface: the primary reader is an
-agent repairing a mistake it just made, so each one states where, which rule
-fired, what was expected, what was found, and the concrete next action.
+A person reads the gate as the spec: every requirement, each criterion
+under it with a mark, each test that verifies the criterion under that --
+its name and `file:first-last` (`view`) -- then the suite's result, then
+whatever is about no one criterion. While the suite runs, the working
+indicator of `hamilton build` shows. The suite's own output is not shown --
+it goes, as it runs, into a temp file named on failure (a green suite's is
+deleted), and its end travels with the `tests-failed` finding;
+`--suite-output` streams it instead.
+
+The finding messages -- in `--json`, and handed to the agents `hamilton
+build` runs -- are the tool's real interface to an agent: each states where,
+which rule fired, what was expected, what was found, and the concrete next
+action.
 """
 
 from __future__ import annotations
@@ -64,16 +86,34 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 import unicodedata
+from typing import NamedTuple
 
 REQ_REL = "spec/requirements.md"
 CONFIG_REL = ".hamilton/config"
-VERIFIED_REL = ".hamilton/verified"
+# retired by D-020; a leftover file only earns a notice
+RETIRED_VERIFIED_REL = ".hamilton/verified"
+# Files a past `hamilton init` copied in that nothing reads any more: the
+# `hamilton` skill now loads from the installed package, and `/spec` and
+# `/build` became `hamilton design` and `hamilton build`.
+RETIRED_SCAFFOLD = (".claude/skills/hamilton/SKILL.md",
+                    ".claude/commands/spec.md",
+                    ".claude/commands/build.md")
 KNOWN_FIELDS = {"Parent", "Actor", "Statement", "Criteria"}
 # Fields a past model used; recognised and ignored so an older `requirements.md`
 # still parses (D-014, D-019). Not stored, not flagged.
 RETIRED_FIELDS = {"Component", "Interface"}
-TAG_RE = re.compile(r"@covers\s+(R-\d{4})/(AC\d+)\b")
+# `@covers R-0005/AC2`, optionally followed by its review suffix `#3f9a2c.81d0e4`
+TAG_RE = re.compile(r"@covers\s+(R-\d{4})/(AC\d+)\b(?:\s+#(\S+))?")
+
+# the review state of a counting tag (D-020)
+REVIEWED = "reviewed"
+NEVER_REVIEWED = "no review yet"
+AC_CHANGED = "AC changed"
+TEST_CHANGED = "test changed"
+BOTH_CHANGED = "AC and test changed"
 
 METHODS_HEADING = "Verification methods"
 # a method needs no tag: a person verifies it, the gate only lists it
@@ -85,6 +125,9 @@ _METHOD_DEF_RE = re.compile(rf"-\s+\*\*({_METHOD_NAME})\*\*\s*[—–:-]\s*(.+)$
 _METHOD_MARKER_RE = re.compile(
     rf"\[\s*({_METHOD_NAME}(?:\s*,\s*{_METHOD_NAME})*)\s*\]$")
 PATHS_PREFIX = "paths."
+# a supporting spec file named in a Statement or AC: `spec/price_model.md`. It
+# ends in a word character, so the "." closing a sentence is not part of it.
+REF_RE = re.compile(r"(?<![\w/])spec/[\w./-]*\w")
 
 STATEMENT_WORD_LIMIT = 20
 # a sentence terminator with real text on both sides -> a second sentence;
@@ -96,10 +139,20 @@ class UsageError(Exception):
     """Missing spec or config file -> exit 2."""
 
 
+class Tag(NamedTuple):
+    """One `@covers` tag: where it is, and its review suffix without the `#`
+    (None when it has none)."""
+    rid: str
+    acid: str
+    file: str
+    line: int
+    suffix: str | None
+
+
 def normalize(text: str) -> str:
-    """Canonical form of an AC string, used for hashing. It defines when an AC
-    counts as changed: an edit that survives normalisation changes the hash;
-    one that does not is cosmetic.
+    """Canonical form of hashed text -- an obligation or a test region. It
+    defines when either counts as changed: an edit that survives normalisation
+    changes the hash; one that does not is cosmetic.
 
       1. Unicode NFC, so canonically-equivalent forms hash identically.
       2. Every run of whitespace -- ASCII or any Unicode whitespace --
@@ -111,9 +164,181 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", unicodedata.normalize("NFC", text)).strip()
 
 
-def sha(text: str) -> str:
-    """"sha256:" + the SHA-256 of ``normalize(text)``, UTF-8 encoded."""
-    return "sha256:" + hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()
+def digest(text: str) -> str:
+    """The first 6 hex digits of the SHA-256 of ``normalize(text)``, UTF-8
+    encoded: one half of a review suffix."""
+    return hashlib.sha256(normalize(text).encode("utf-8")).hexdigest()[:6]
+
+
+def obligation(rid: str, acid: str, req: dict, methods, defined: dict,
+               refs: dict | None = None) -> str:
+    """The obligation half of a review suffix: what a test for ``rid/acid``
+    owes. It covers the AC id, the requirement's Statement, the AC text with
+    its marker, the definition of each of ``methods`` -- the AC's methods
+    under whose paths the test lies -- sorted by name, and the content of
+    each supporting file the criterion references (``refs``, {path: bytes or
+    None}, see `references`). Renumbering an AC, rewording it or its
+    Statement, redefining its method or editing a file it references all
+    change it. A criterion without references hashes as it did before
+    references existed."""
+    parts = [f"{rid}/{acid}", req["statement"] or "", req["acs"][acid]["text"]]
+    parts += [f"{m}: {defined[m]['description']}" for m in sorted(methods)]
+    parts += [f"{p}: {ref_digest(data)}" for p, data in sorted((refs or {}).items())]
+    return digest("\n".join(normalize(p) for p in parts))
+
+
+def references(req: dict, acid: str) -> list:
+    """The supporting spec files a criterion incorporates: every `spec/<file>`
+    named in its requirement's Statement -- which every AC of it owes -- or in
+    its own text. `spec/requirements.md` is the model itself, not a
+    reference."""
+    return refs_in(f"{req['statement'] or ''} {req['acs'][acid]['text']}")
+
+
+def refs_in(text: str) -> list:
+    """Every `spec/<file>` ``text`` names, sorted, once each."""
+    return sorted({r for r in REF_RE.findall(text) if r != REQ_REL})
+
+
+def spec_file(root: str, rel: str) -> bytes | None:
+    """The bytes of a referenced spec file, or None if there is none."""
+    try:
+        with open(os.path.join(root, rel), "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def ref_text(data: bytes | None) -> str | None:
+    """A referenced file as text, or None when it is missing or not text (an
+    image, say)."""
+    try:
+        return data.decode("utf-8") if data is not None else None
+    except UnicodeDecodeError:
+        return None
+
+
+def ref_digest(data: bytes | None) -> str:
+    """What a referenced file contributes to an obligation: its text, hashed
+    like the rest (a whitespace-only edit is cosmetic), or its raw bytes when
+    it is not text."""
+    if data is None:
+        return "(missing)"
+    text = ref_text(data)
+    return digest(text) if text is not None else hashlib.sha256(data).hexdigest()[:6]
+
+
+def strip_suffixes(line: str) -> str:
+    """``line`` with the review suffix dropped from every tag on it."""
+    return TAG_RE.sub(lambda m: f"@covers {m.group(1)}/{m.group(2)}", line)
+
+
+def _blocks(lines) -> tuple[list, list]:
+    """(tagged, blocks): whether each line holds a `@covers` tag, and each
+    tag block's section as (index of its first tag line, index of the line
+    after its section).
+
+    Hamilton does not parse tests, so "the test" is a layout rule. A *tag
+    block* is a run of consecutive lines that each hold a `@covers` tag. Its
+    *section* runs from the block down to the line before the next tag block,
+    or the end of the file."""
+    tagged = [bool(TAG_RE.search(line)) for line in lines]
+    starts = [i for i, t in enumerate(tagged) if t and (i == 0 or not tagged[i - 1])]
+    return tagged, [(s, starts[k + 1] if k + 1 < len(starts) else len(lines))
+                    for k, s in enumerate(starts)]
+
+
+def regions(lines) -> dict:
+    """{tag line number: region text} for the lines of one file. A tag's
+    *region* is the file's preamble (every line before the first tag block)
+    plus its own section (see `_blocks`). Review suffixes are stripped, so
+    writing one never changes a region."""
+    tagged, blocks = _blocks(lines)
+    if not blocks:
+        return {}
+    preamble = list(lines[:blocks[0][0]])
+    out = {}
+    for start, stop in blocks:
+        text = "\n".join(preamble + [strip_suffixes(ln) for ln in lines[start:stop]])
+        end = start
+        while end < stop and tagged[end]:
+            out[end + 1] = text
+            end += 1
+    return out
+
+
+class Section(NamedTuple):
+    """A test as the engineer reads it: its name, and the lines it spans."""
+    name: str
+    first: int          # its first tag line, 1-based
+    last: int           # its last line that is not blank
+
+
+# How a test is named, as its own framework writes it: the title where the
+# test is an unnamed callback, the function's name as written everywhere else,
+# so it can be searched for. The first line of a section that matches one of
+# these names it. The name only helps the eye; `file:first-last` is what
+# locates the test, in any language.
+_NAME_RES = (
+    re.compile(r"\b(?:it|test|specify|scenario)\s*\(\s*(['\"`])(?P<name>.+?)\1"),
+    re.compile(r"\bdef\s+(?P<name>test\w*)"),               # Python
+    re.compile(r"\bfunction\s+(?P<name>test\w*)", re.I),    # PHP
+    re.compile(r"\bfunc\s+(?P<name>Test\w*)"),              # Go
+    re.compile(r"\bfn\s+(?P<name>\w+)"),                    # Rust
+    re.compile(r"\bvoid\s+(?P<name>\w+)\s*\("),             # Java, C#
+)
+NAME_WIDTH = 72         # a name longer than this is cut
+
+
+def _name(lines) -> str:
+    """What a section's test is called, or else its first line of code. A
+    tag may share its line with the code it covers, so the tag is taken out
+    rather than the line."""
+    code = [ln for ln in (TAG_RE.sub("", ln).strip() for ln in lines)
+            if re.search(r"\w", ln)]            # a bare `//` or `#` is no code
+    for line in code:
+        for pattern in _NAME_RES:
+            m = pattern.search(line)
+            if m:
+                return m.group("name")[:NAME_WIDTH]
+    return code[0][:NAME_WIDTH] if code else "(no code under the tag)"
+
+
+def sections(lines) -> dict:
+    """{tag line number: Section} for the lines of one file. Every tag of a
+    tag block shares its section."""
+    tagged, blocks = _blocks(lines)
+    out = {}
+    for start, stop in blocks:
+        last = stop
+        while last > start + 1 and not lines[last - 1].strip():
+            last -= 1
+        section = Section(_name(lines[start:stop]), start + 1, last)
+        end = start
+        while end < stop and tagged[end]:
+            out[end + 1] = section
+            end += 1
+    return out
+
+
+def suffix(obligation_half: str, region: str) -> str:
+    """The review suffix, without its `#`, for an obligation half and a region
+    text."""
+    return f"{obligation_half}.{digest(region)}"
+
+
+def review_state(found: str | None, want: str) -> str:
+    """How a tag's suffix ``found`` compares to the current one ``want``:
+    REVIEWED, or which half no longer matches."""
+    if found == want:
+        return REVIEWED
+    halves = (found or "").split(".")
+    if len(halves) != 2:
+        return NEVER_REVIEWED
+    ob_ok, test_ok = (h == w for h, w in zip(halves, want.split(".")))
+    if ob_ok:
+        return TEST_CHANGED
+    return AC_CHANGED if test_ok else BOTH_CHANGED
 
 
 def read_config(root: str) -> dict:
@@ -163,21 +388,64 @@ def missing_methods(methods, paths: dict, files) -> list:
             if m != MANUAL and not any(under(f, paths.get(m, ())) for f in files)]
 
 
-def run_tests(root: str, cfg: dict):
-    """Run test_command in ``root``. Returns (ok, detail, lineno). The command's
-    own output is redirected to stderr so `--json` stdout stays clean."""
+SUITE_TAIL = 200         # lines of a failed suite's output a finding carries
+
+
+SUITE_TIMEOUT = 1800     # seconds before a suite that never ends is stopped
+
+
+def new_log() -> str:
+    """A file for a suite's output -- outside the project, so the gate still
+    never writes to it. Named before the suite starts, so it can be followed
+    while it runs."""
+    fd, path = tempfile.mkstemp(prefix="hamilton-suite-", suffix=".log")
+    os.close(fd)
+    return path
+
+
+def follow_hint(log: str) -> str:
+    """How to watch a suite that is running: its log, in the runner's own
+    words."""
+    return f"follow it: tail -f {log}"
+
+
+def run_tests(root: str, cfg: dict, echo: bool = False, log: str | None = None):
+    """Run test_command in ``root``. Returns (ok, detail, lineno, output).
+
+    The suite's output is not shown: a person reading the gate wants to know
+    *whether* it passed, and the details are for whoever fixes it. It goes,
+    as it comes, into `log` (a new temp file if none is given), which anyone
+    who wants to watch can follow. `echo` streams it to stderr instead, for
+    CI logs and debugging."""
     entry = cfg.get("test_command")
     if entry is None or not entry[0].strip():
-        return False, "test_command is not set in .hamilton/config", (entry[1] if entry else 1)
+        return (False, "test_command is not set in .hamilton/config",
+                (entry[1] if entry else 1), "")
     cmd, lineno = entry[0], entry[1]
-    print(f"hamilton check: running test_command: {cmd.strip()}", file=sys.stderr)
     try:
-        p = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr, timeout=1800)
+        if echo:
+            print(f"hamilton verify: running test_command: {cmd.strip()}", file=sys.stderr)
+            p = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr,
+                               timeout=SUITE_TIMEOUT)
+            output = ""
+        else:
+            log = log or new_log()
+            with open(log, "w", encoding="utf-8") as fh:
+                p = subprocess.Popen(cmd, shell=True, cwd=root, stdout=fh,
+                                     stderr=subprocess.STDOUT)
+                try:
+                    p.wait(timeout=SUITE_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+                    raise
+            with open(log, encoding="utf-8", errors="replace") as fh:
+                output = fh.read()
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"test_command could not be run ({exc})", lineno
+        return False, f"test_command could not be run ({exc})", lineno, ""
     if p.returncode == 0:
-        return True, "", lineno
-    return False, f"test_command {cmd.strip()!r} exited {p.returncode}", lineno
+        return True, "", lineno, output
+    return False, f"test_command {cmd.strip()!r} exited {p.returncode}", lineno, output
 
 
 def spec_lines(path: str):
@@ -328,11 +596,17 @@ def _iter_files(root: str):
             yield os.path.relpath(os.path.join(dpath, fn), root)
 
 
+def read_lines(root: str, rel: str) -> list:
+    """The lines of a text file, numbered as `scan` numbers them."""
+    with open(os.path.join(root, rel), "r", encoding="utf-8") as fh:
+        return fh.read().split("\n")
+
+
 def scan(root: str, dirs):
-    """Return [(R-id, AC-id, relpath, line)] for `@covers R-nnnn/ACn` tags found
-    in files under one of ``dirs`` (relative to root, as `method_paths` gives
-    them). A tag anywhere else -- README, the implementation, a notes file --
-    does not count. Also skips .git/, spec/, .hamilton/, files over 2 MB, and
+    """Return [Tag] for the `@covers R-nnnn/ACn` tags found in files under one
+    of ``dirs`` (relative to root, as `method_paths` gives them). A tag
+    anywhere else -- README, the implementation, a notes file -- does not
+    count. Also skips .git/, spec/, .hamilton/, files over 2 MB, and
     git-ignored paths. The tag is matched as raw text, so any comment syntax in
     any language works.
     """
@@ -350,39 +624,77 @@ def scan(root: str, dirs):
         try:
             if os.path.getsize(full) > 2_000_000:
                 continue
-            with open(full, "r", encoding="utf-8") as fh:
-                for i, line in enumerate(fh, 1):
-                    for m in TAG_RE.finditer(line):
-                        hits.append((m.group(1), m.group(2), rel, i))
+            for i, line in enumerate(read_lines(root, rel), 1):
+                for m in TAG_RE.finditer(line):
+                    hits.append(Tag(m.group(1), m.group(2), rel, i, m.group(3)))
         except (OSError, UnicodeDecodeError):
             continue
     return hits
 
 
-def read_verified(root: str) -> dict:
-    """{"R-nnnn/ACn": "sha256:..."} from `.hamilton/verified`, one `id hash`
-    per line. This is the state left by the last passing `check`; a missing or
-    empty file means no run has passed yet, so nothing is stale."""
-    path = os.path.join(root, VERIFIED_REL)
-    out = {}
-    if not os.path.isfile(path):
-        return out
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            parts = line.split()
-            if len(parts) == 2:
-                out[parts[0]] = parts[1]
+def counting_methods(ac: dict, file: str, defined: dict, paths: dict) -> list:
+    """The methods of ``ac`` whose paths hold ``file``. A tag there counts
+    toward those methods; with none it does not count at all."""
+    return [m for m in ac["methods"]
+            if m != MANUAL and m in defined and under(file, paths.get(m, ()))]
+
+
+class Counted(NamedTuple):
+    """A tag that counts toward coverage, with what its review covers."""
+    tag: Tag
+    methods: list      # the AC's methods the tag counts toward
+    region: str        # the test text the review covers
+    want: str          # the current review suffix, without its `#`
+    refs: dict         # {path: bytes or None}: the spec files the AC references
+
+    @property
+    def state(self) -> str:
+        return review_state(self.tag.suffix, self.want)
+
+
+def counted(root: str, reqs: dict, defined: dict, paths: dict, tags) -> list:
+    """[Counted] for the ``tags`` that count: they name an existing AC and lie
+    under the paths of one of its defined methods. Only these need a review;
+    a `wrong-method` or `orphan-tag` tag is not a review candidate."""
+    out, files, specs = [], {}, {}
+    for t in tags:
+        ac = reqs.get(t.rid, {}).get("acs", {}).get(t.acid)
+        methods = counting_methods(ac, t.file, defined, paths) if ac else []
+        if not methods:
+            continue
+        if t.file not in files:
+            files[t.file] = regions(read_lines(root, t.file))
+        region = files[t.file][t.line]
+        refs = {}
+        for rel in references(reqs[t.rid], t.acid):
+            if rel not in specs:
+                specs[rel] = spec_file(root, rel)
+            refs[rel] = specs[rel]
+        want = suffix(obligation(t.rid, t.acid, reqs[t.rid], methods, defined, refs),
+                      region)
+        out.append(Counted(t, methods, region, want, refs))
     return out
 
 
-def write_verified(root: str, reqs: dict) -> None:
-    """Record the current hash of every AC, sorted by id for a stable diff.
-    Called only on a fully clean run. Commit this file so staleness is
-    meaningful on other machines and in CI."""
-    lines = sorted(f"{rid}/{acid} {sha(ac['text'])}"
-                   for rid, r in reqs.items() for acid, ac in r["acs"].items())
-    with open(os.path.join(root, VERIFIED_REL), "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + ("\n" if lines else ""))
+def tested(root: str, reqs: dict) -> dict:
+    """{"R-nnnn/ACn": [(file, Section)]}: the tests that count toward each
+    criterion -- what the suite runs to verify it -- in file order."""
+    defined = extract_methods(os.path.join(root, REQ_REL))
+    paths = method_paths(read_config(root))
+    tags = scan(root, [d for ds in paths.values() for d in ds])
+    out: dict = {}
+    files: dict = {}
+    for c in counted(root, reqs, defined, paths, tags):
+        t = c.tag
+        if t.file not in files:
+            files[t.file] = sections(read_lines(root, t.file))
+        found = (t.file, files[t.file][t.line])
+        mine = out.setdefault(f"{t.rid}/{t.acid}", [])
+        if found not in mine:
+            mine.append(found)
+    for mine in out.values():
+        mine.sort(key=lambda f: (f[0], f[1].first))
+    return out
 
 
 def _sample(ids, limit=8):
@@ -395,10 +707,15 @@ def _sample(ids, limit=8):
     return ", ".join(ids[:limit]) + f", ... ({len(ids)} total)"
 
 
-def _finding(rule, detail, file, line, req=None, ac=None, methods=None):
+def _finding(rule, detail, file, line, req=None, ac=None, methods=None,
+             state=None):
+    """`state` is set for `unreviewed`: which of the review states it is in,
+    so a reader does not have to parse it back out of the prose. `hamilton
+    build` routes on it -- a changed criterion needs the test written again,
+    anything else only needs reviewing."""
     message = f"{file}:{line}: {rule}: {detail}"
     return {"rule": rule, "file": file, "line": line, "req": req, "ac": ac,
-            "methods": methods, "message": message}
+            "methods": methods, "state": state, "message": message}
 
 
 def _warning(rule, detail, file, line):
@@ -413,11 +730,21 @@ def _one_sentence(text: str) -> bool:
     return not _SECOND_SENTENCE_RE.search(collapsed)
 
 
-def _config_notices(cfg: dict) -> list:
-    """Config that is set but does nothing yet. A line that looks active and is
-    silently ignored is the failure the falsification ledger had, so say so
-    every run."""
+def _notices(root: str, cfg: dict) -> list:
+    """Config that is set but does nothing yet, and state files nothing reads
+    any more. A line that looks active and is silently ignored is the failure
+    the falsification ledger had, so say so every run."""
     out = []
+    if os.path.exists(os.path.join(root, RETIRED_VERIFIED_REL)):
+        out.append(
+            f"{RETIRED_VERIFIED_REL} is no longer used -- reviews are recorded "
+            f"in the '@covers' tags' suffixes now (D-020), and hamilton verify "
+            f"neither reads nor writes it. Delete it.")
+    for rel in RETIRED_SCAFFOLD:
+        if os.path.exists(os.path.join(root, rel)):
+            out.append(f"{rel} is a leftover of an older Hamilton -- the "
+                       f"workflows now load from the installed package, and "
+                       f"nothing reads this copy. Delete it.")
     mc = cfg.get("mutation_command")
     if mc is not None and mc[0].strip():
         out.append(
@@ -473,16 +800,24 @@ def collect_warnings(root: str, reqs: dict, actors=None):
     return out
 
 
-def run(root: str):
+def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
     """Returns (findings, warnings, notices, manual, requirement_count,
     ac_count). `warnings` are advisory (module docstring); `notices` flag
     configuration that is set but does nothing. Neither changes the exit code.
-    `manual` lists the "R-nnnn/ACn" a person verifies instead of the gate."""
+    `manual` lists the "R-nnnn/ACn" a person verifies instead of the gate.
+
+    `on_log` is told the suite's log file just before the suite starts.
+
+    `suite=False` leaves the project's own test command unrun, and with it the
+    only finding it produces (`tests-failed`). The gate always runs it; the
+    build loop asks for the shape of the spec between its steps, and a suite
+    that takes ten minutes is not worth re-running to learn that a tag is
+    still unreviewed."""
     if not os.path.isfile(os.path.join(root, REQ_REL)):
-        raise UsageError(f"{REQ_REL}: not found (run hamilton check from the "
+        raise UsageError(f"{REQ_REL}: not found (run hamilton verify from the "
                          f"project root, the directory that holds spec/)")
     cfg = read_config(root)
-    notices = _config_notices(cfg)
+    notices = _notices(root, cfg)
 
     reqs, duplicates, malformed = extract(os.path.join(root, REQ_REL))
     defined = extract_methods(os.path.join(root, REQ_REL))
@@ -495,7 +830,7 @@ def run(root: str):
             "one '## R-nnnn' block -- with a Statement and acceptance criteria "
             "-- outside any fenced code block. Found: only the fenced example, "
             "or an empty file. Fix: write a real requirement below the "
-            "example, then re-run hamilton check.",
+            "example, then re-run hamilton verify.",
             REQ_REL, 1)], [], notices, [], n_reqs, n_acs)
 
     out = []
@@ -514,17 +849,29 @@ def run(root: str):
             f"Fix: set test_command in {CONFIG_REL}, e.g. "
             f"'test_command=python -m pytest -q'.",
             CONFIG_REL, tc[1] if tc else 1))
-    else:
-        ok, detail, cfg_line = run_tests(root, cfg)
+    elif suite:
+        log = None if echo else new_log()
+        if log and on_log is not None:
+            on_log(log)                     # before it starts: it can be followed
+        ok, detail, cfg_line, output = run_tests(root, cfg, echo, log)
+        if ok and log:
+            os.remove(log)                  # a green suite's output is not needed
         if not ok:
             cmd = tc[0].strip()
-            out.append(_finding("tests-failed",
+            log = log if output else ""
+            failed = _finding("tests-failed",
                 f"{detail}. Expected: the project's own test suite to pass "
-                f"before the gate certifies anything. Found: it did not. Fix: "
+                f"before the gate certifies anything. Found: it did not"
+                f"{' -- its full output is in ' + log if log else ''}. Fix: "
                 f"run '{cmd}' yourself from the project root to see why it "
                 f"fails and repair the implementation or the test; or "
                 f"set/correct test_command in {CONFIG_REL}.",
-                CONFIG_REL, cfg_line))
+                CONFIG_REL, cfg_line)
+            # the end of the output, for whoever fixes it (`hamilton build`
+            # hands it to its coding step), and where the whole of it is
+            failed["output"] = "\n".join(output.splitlines()[-SUITE_TAIL:])
+            failed["log"] = log
+            out.append(failed)
 
     for rid, line, first in duplicates:
         out.append(_finding("malformed",
@@ -612,8 +959,9 @@ def run(root: str):
             CONFIG_REL, retired[1]))
 
     paths = method_paths(cfg)
+    scanned = scan(root, [d for ds in paths.values() for d in ds])
     tags = {}
-    for req, ac, file, line in scan(root, [d for ds in paths.values() for d in ds]):
+    for req, ac, file, line, _suffix in scanned:
         if req not in reqs:
             out.append(_finding("orphan-tag",
                 f"the tag '@covers {req}/{ac}' names requirement {req}, which "
@@ -634,7 +982,6 @@ def run(root: str):
         else:
             tags.setdefault((req, ac), []).append((file, line))
 
-    verified = read_verified(root)
     manual, unpathed = [], {}
     for rid, r in reqs.items():
         for acid, ac in sorted(r["acs"].items()):
@@ -689,18 +1036,14 @@ def run(root: str):
                     f"Found: {found}. Fix: add a test that exercises this "
                     f"criterion by that method and tag it '@covers {qual}'.",
                     REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
-            want, seen = sha(ac["text"]), verified.get(qual)
-            if seen is not None and seen != want:
-                out.append(_finding("stale",
-                    f"{qual} was reworded, or its method changed, since "
-                    f"hamilton check last passed. Expected: the AC text to "
-                    f"still hash to {seen} (recorded in {VERIFIED_REL} at the "
-                    f"last green run). Found: it now hashes to {want}. Its test "
-                    f"and implementation may no longer match what it says. Fix: "
-                    f"re-check the implementation and the '@covers {qual}' test "
-                    f"against the new wording and method; a clean hamilton "
-                    f"check records the new hash.",
-                    REQ_REL, ac["line"], req=rid, ac=acid, methods=methods))
+
+    out += _missing_references(root, reqs)
+
+    # every counting tag needs its own review: another reviewed tag for the
+    # same AC does not excuse it
+    for c in counted(root, reqs, defined, paths, scanned):
+        if c.state != REVIEWED:
+            out.append(_unreviewed(c, reqs[c.tag.rid]["acs"][c.tag.acid]))
 
     for m, first in sorted(unpathed.items()):
         out.append(_finding("no-method-paths",
@@ -712,46 +1055,225 @@ def run(root: str):
             REQ_REL, defined[m]["line"]))
 
     out.sort(key=lambda f: (f["file"] or "", f["line"] or 0, f["rule"]))
-    # Re-record the AC hashes whenever nothing but `stale` is outstanding: the
-    # tests pass, every AC is covered, the spec parses. `stale` is then a
-    # single red run after an AC edit -- it forces one more `hamilton check`
-    # (which re-runs the suite against the new wording) and then clears.
-    if not [f for f in out if f["rule"] != "stale"]:
-        write_verified(root, reqs)
     return out, warnings, notices, manual, n_reqs, n_acs
 
 
-def main(as_json: bool = False) -> int:
+def _missing_references(root: str, reqs: dict) -> list:
+    """A `spec/<file>` named in a Statement or AC that does not exist: the
+    criterion incorporates content nobody can read."""
+    out = []
+    for rid, r in reqs.items():
+        places = [(r["statement"] or "", r["statement_line"] or r["open_line"], None)]
+        places += [(ac["text"], ac["line"], acid) for acid, ac in sorted(r["acs"].items())]
+        for text, line, acid in places:
+            for rel in refs_in(text):
+                if os.path.isfile(os.path.join(root, rel)):
+                    continue
+                where = f"{rid}/{acid}" if acid else f"{rid}'s Statement"
+                out.append(_finding("missing-reference",
+                    f"{where} references {rel}, which does not exist. Expected: "
+                    f"every 'spec/<file>' a Statement or criterion names is a "
+                    f"file under spec/ -- its content is part of what the "
+                    f"criterion requires. Found: no such file. Fix: in a design "
+                    f"session, add the file or correct the path.",
+                    REQ_REL, line, req=rid, ac=acid))
+    return out
+
+
+# what an out-of-date suffix means, and what the agent does about it
+_UNREVIEWED = {
+    NEVER_REVIEWED: (
+        "the tag has no review suffix, so no reviewer has judged that this "
+        "test proves the criterion",
+        "run 'hamilton build', which has it reviewed"),
+    AC_CHANGED: (
+        "the criterion, its requirement's Statement, its method's "
+        "definition or a spec file it references changed since the review, "
+        "so the test may no longer prove what the criterion now says",
+        "run 'hamilton build', which reviews the test against the current "
+        "wording and has it rewritten only if it no longer proves it"),
+    TEST_CHANGED: (
+        "the test changed since the review -- its section, or the preamble "
+        "of its file",
+        "run 'hamilton build' to have the changed test judged again"),
+    BOTH_CHANGED: (
+        "both the criterion (or its Statement, method definition or a spec "
+        "file it references) and the test changed since the review",
+        "run 'hamilton build', which reviews the test against the current "
+        "wording and has it rewritten only if it no longer proves it"),
+}
+
+
+def _unreviewed(c: Counted, ac: dict):
+    t, state = c.tag, c.state
+    qual = f"{t.rid}/{t.acid}"
+    found, fix = _UNREVIEWED[state]
+    return _finding("unreviewed",
+        f"the '@covers {qual}' test is unreviewed ({state}). Expected: a "
+        f"current review suffix, which the reviewer in 'hamilton build' "
+        f"writes when it passes the test. Found: "
+        f"{'#' + t.suffix if t.suffix else 'no suffix'} -- {found}. Fix: "
+        f"{fix.format(qual=qual)}. Never write or edit a suffix yourself.",
+        t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"], state=state)
+
+
+def _one(root: str, only: str, as_json: bool) -> int:
+    m = _QUAL_RE.fullmatch(only)
+    if not m:
+        raise UsageError(f"{only!r} is not an acceptance criterion id; give it "
+                         f"as R-nnnn/ACn, e.g. R-0001/AC2")
+    rid, acid = m.groups()
+    findings, _w, _n, manual, _nr, _na = run(root, suite=False)
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    if acid not in reqs.get(rid, {}).get("acs", {}):
+        raise UsageError(f"{only} is not declared in {REQ_REL}")
+    mine = [f for f in findings if (f.get("req"), f.get("ac")) == (rid, acid)]
+    if as_json:
+        print(json.dumps({"ok": not mine, "findings": mine,
+                          "manual": [q for q in manual if q == only]}))
+        return 1 if mine else 0
+    from hamilton_core.session.console import Paint, supports_color
+    one = {rid: dict(reqs[rid], acs={acid: reqs[rid]["acs"][acid]})}
+    lines, _other = view(mine, one, manual, Paint(supports_color(sys.stdout)),
+                         tested(root, one))
+    for text in lines:
+        print(text)
+    print(f"hamilton verify: {only} only -- the suite was not run", file=sys.stderr)
+    return 1 if mine else 0
+
+
+# How a criterion reads in the human view, decided by the worst finding for
+# it: a missing or unusable test first, then a missing review.
+_AC_MARKS = {
+    "uncovered": ("✗", "no test by its method"),
+    "wrong-method": ("✗", "tested, but not by its method"),
+    "no-method": ("✗", "no [method] marker"),
+    "unknown-method": ("✗", "names a method the spec does not define"),
+    "unreviewed": ("?", "not reviewed"),
+}
+
+
+def view(findings: list, reqs: dict, manual: list, paint,
+         tests: dict | None = None) -> tuple[list, list]:
+    """The gate as a person reads it: every requirement, then each of its
+    criteria with a mark -- `✓` fine, `✗` no usable test, `?` not reviewed,
+    `○` verified by a person -- and under each criterion the tests that
+    verify it (`tested`). Returns (lines, the findings that are about no one
+    criterion); those are shown after, in full."""
+    tests = tests or {}
+    by_ac: dict = {}
+    other = []
+    for f in findings:
+        rid, acid = f.get("req"), f.get("ac")
+        if f["rule"] in _AC_MARKS and acid in reqs.get(rid, {}).get("acs", {}):
+            by_ac.setdefault((rid, acid), []).append(f)
+        else:
+            other.append(f)
+    lines = []
+    for rid, r in reqs.items():
+        title = r.get("title") or " ".join((r.get("statement") or "").split())
+        lines.append(paint.bold(f"{rid} {title}".rstrip()))
+        for acid, ac in r["acs"].items():
+            found = by_ac.get((rid, acid))
+            if found:
+                worst = min(found, key=lambda f: "✗?".index(_AC_MARKS[f["rule"]][0]))
+                mark, why = _AC_MARKS[worst["rule"]]
+                if worst["rule"] == "unreviewed" and worst.get("state"):
+                    why = f"not reviewed ({worst['state']})"
+                colour = paint.red if mark == "✗" else paint.yellow
+                lines.append(f"- {colour(mark)} {acid} {ac['text']}  {paint.dim(why)}")
+            elif f"{rid}/{acid}" in manual:
+                lines.append(f"- {paint.dim('○')} {acid} {ac['text']}  "
+                             f"{paint.dim('verified by a person')}")
+            else:
+                lines.append(f"- {paint.green('✓')} {acid} {ac['text']}")
+            for path, sec in tests.get(f"{rid}/{acid}", ()):
+                span = f"{sec.first}-{sec.last}" if sec.last > sec.first else f"{sec.first}"
+                lines.append(f"  * {sec.name} {paint.dim(f'({path}:{span})')}")
+    return lines, other
+
+
+_QUAL_RE = re.compile(r"(R-\d{4})/(AC\d+)")
+
+
+def main(as_json: bool = False, suite_output: bool = False,
+         only: str | None = None) -> int:
+    """`only` ("R-nnnn/ACn") narrows the gate to one criterion's status -- its
+    tags and reviews -- without running the suite: the question a step working
+    on that criterion asks, answered in a second. The full gate is the run
+    without it."""
+    from hamilton_core.session.console import Console, Paint, elapsed, supports_color
+    root = os.getcwd()
+    # While the suite runs, the indicator `hamilton build` shows. Not under
+    # --json (a hook reads that) nor when the suite's output is streamed.
+    console = Console()
+    started = time.monotonic()
     try:
-        findings, warnings, notices, manual, n_reqs, n_acs = run(os.getcwd())
+        if only is not None:
+            return _one(root, only, as_json)
+        if not (as_json or suite_output):
+            console.start_working("Running the tests")
+        findings, warnings, notices, manual, n_reqs, n_acs = run(
+            root, echo=suite_output,
+            on_log=lambda log: console.say(console.paint.dim(follow_hint(log))))
     except UsageError as exc:
         if as_json:
             print(json.dumps({"error": str(exc)}))
         else:
-            print(f"hamilton check: {exc}", file=sys.stderr)
+            print(f"hamilton verify: {exc}", file=sys.stderr)
         return 2
+    finally:
+        console.stop_working()
+    took = elapsed(time.monotonic() - started)
     if as_json:
         print(json.dumps({"ok": not findings, "findings": findings,
                           "warnings": warnings, "notices": notices,
                           "manual": manual, "requirements": n_reqs,
                           "acceptance_criteria": n_acs}))
-    else:
-        for f in findings:
-            print(f["message"])
-        for w in warnings:
-            print(w["message"], file=sys.stderr)
-        for n in notices:
-            print(f"hamilton check: notice: {n}", file=sys.stderr)
-        noun = "criterion" if n_acs == 1 else "criteria"
-        print(f"hamilton check: {n_reqs} requirement(s), {n_acs} acceptance {noun}",
-              file=sys.stderr)
-        if manual:
-            noun = "criterion" if len(manual) == 1 else "criteria"
-            print(f"hamilton check: {len(manual)} {noun} verified manually, "
-                  f"not by the gate", file=sys.stderr)
-        if warnings:
-            print(f"hamilton check: {len(warnings)} warning(s) — advisory, "
-                  f"not failures", file=sys.stderr)
-        print(f"hamilton check: {'ok' if not findings else str(len(findings)) + ' problem(s)'}",
-              file=sys.stderr)
+        return 1 if findings else 0
+
+    paint = Paint(supports_color(sys.stdout))
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    lines, other = view(findings, reqs, manual, paint, _tested(root, reqs))
+    for text in lines:
+        print(text)
+
+    failed = next((f for f in other if f["rule"] == "tests-failed"), None)
+    ran = not any(f["rule"] == "no-test-command" for f in other)
+    if failed:
+        where = f" -- full output: {failed['log']}" if failed.get("log") else ""
+        print(f"\nSuite {paint.red('✗')} failed ({took}){where}")
+    elif ran:
+        print(f"\nSuite {paint.green('✓')} passed ({took})")
+    rest = [f for f in other if f is not failed]
+    if rest:
+        print(f"\n{paint.bold('Other findings')}")
+        for f in rest:
+            print(f"  {paint.red('✗')} {f['message']}")
+
+    for w in warnings:
+        print(w["message"], file=sys.stderr)
+    for n in notices:
+        print(f"hamilton verify: notice: {n}", file=sys.stderr)
+    noun = "criterion" if n_acs == 1 else "criteria"
+    print(f"hamilton verify: {n_reqs} requirement(s), {n_acs} acceptance {noun}",
+          file=sys.stderr)
+    if manual:
+        noun = "criterion" if len(manual) == 1 else "criteria"
+        print(f"hamilton verify: {len(manual)} {noun} verified manually, "
+              f"not by the gate", file=sys.stderr)
+    if warnings:
+        print(f"hamilton verify: {len(warnings)} warning(s) — advisory, "
+              f"not failures", file=sys.stderr)
+    print(f"hamilton verify: {'ok' if not findings else str(len(findings)) + ' problem(s)'}",
+          file=sys.stderr)
     return 1 if findings else 0
+
+
+def _tested(root: str, reqs: dict) -> dict:
+    """`tested`, or nothing when the config it reads is what the gate just
+    reported as broken -- the view still shows the rest."""
+    try:
+        return tested(root, reqs)
+    except UsageError:
+        return {}

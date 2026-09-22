@@ -2,9 +2,9 @@
 banner `hamilton design` / `hamilton build` print before they launch the agent.
 
 `render(root, phase)` is pure: it parses the spec and scans for `@covers` tags
-(the same readers `hamilton tree` uses) but never runs the test suite and never
+(the same readers `hamilton show` uses) but never runs the test suite and never
 writes. It reports the phase, the requirement / acceptance-criterion counts,
-coverage, whether the gate has ever passed, and the last three `spec/` commits.
+coverage and review, and the last three `spec/` commits.
 For a `build` banner it also shows `git diff --stat spec/` -- the uncommitted
 spec change that a build session exists to propagate.
 
@@ -19,9 +19,7 @@ import sys
 
 from hamilton_core import model as M
 from hamilton_core import phase as _phase_file
-from hamilton_core.check import REQ_REL, extract
-
-VERIFIED_REL = ".hamilton/verified"
+from hamilton_core.verify import REQ_REL, extract
 
 
 def _phase(root: str, phase: str | None) -> str:
@@ -38,24 +36,24 @@ def _counts(root: str):
 
 
 def _coverage(root: str):
-    """(covered, uncovered, stale, manual) AC counts, or None when coverage is
-    unknown (no .hamilton/config, so no method paths to scan)."""
+    """(covered, uncovered, unreviewed, manual) AC counts, or None when
+    coverage is unknown (no .hamilton/config, so no method paths to scan)."""
     m = M.Model(root)
     if not m.coverage_known:
         return None
-    covered = uncovered = stale = manual = 0
+    covered = uncovered = unreviewed = manual = 0
     for rid, r in m.reqs.items():
         for acid in r["acs"]:
             st = m.ac_status(rid, acid)
             if st == "covered":
                 covered += 1
-            elif st == "stale":
-                stale += 1
+            elif st == "unreviewed":
+                unreviewed += 1
             elif st == "manual":
                 manual += 1
             else:
                 uncovered += 1
-    return covered, uncovered, stale, manual
+    return covered, uncovered, unreviewed, manual
 
 
 def _git(root: str, *args) -> str | None:
@@ -91,10 +89,6 @@ def render(root: str, phase: str | None = None) -> str:
     ph = _phase(root, phase)
     n_reqs, n_acs = _counts(root)
     cov = _coverage(root)
-    verified = os.path.join(root, VERIFIED_REL)
-    gate = ("gate last passed"
-            if os.path.isfile(verified) and os.path.getsize(verified) > 0
-            else "gate never passed")
 
     rule = "─" * 60
     lines = [rule, f"Hamilton · {ph} phase"]
@@ -104,16 +98,16 @@ def render(root: str, phase: str | None = None) -> str:
         lines.append(f"{n_reqs} requirement(s), {n_acs} acceptance {crit} "
                      f"· coverage unknown (no .hamilton/config)")
     else:
-        covered, uncovered, stale, manual = cov
+        covered, uncovered, unreviewed, manual = cov
         tail = f"{covered}/{n_acs} covered"
         if uncovered:
             tail += f" · {uncovered} uncovered"
-        if stale:
-            tail += f" · {stale} stale"
+        if unreviewed:
+            tail += f" · {unreviewed} unreviewed"
         if manual:
             tail += f" · {manual} manual"
         lines.append(f"{n_reqs} requirement(s), {n_acs} acceptance {crit} "
-                     f"· {tail} · {gate}")
+                     f"· {tail}")
 
     lines.append("")
     lines.append("Last 3 spec/ changes:")

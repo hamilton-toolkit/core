@@ -16,25 +16,38 @@ from conftest import copy_fixture
 from hamilton_core.session import loop as L
 from hamilton_core.session.console import Console
 from hamilton_core.session import protocol as P
-from hamilton_core.session.modes import BUILD, DESIGN, MODES
+from hamilton_core.session.modes import DESIGN, MODES
 
 
 class FakeAdapter:
-    """Yields a scripted list of events per turn and records what it was sent."""
+    """Answers each message with a scripted list of events, then ends the
+    turn, and records what it was sent."""
 
     def __init__(self, *turns, session_ref=None):
         self._turns = [list(t) for t in turns]
+        self._stream = None
         self.session_ref = session_ref
         self.sent = []
         self.closed = False
 
-    async def run_turn(self, text):
+    async def connect(self):
+        self._stream = asyncio.Queue()
+
+    async def send(self, text):
         self.sent.append(text)
         for ev in (self._turns.pop(0) if self._turns else []):
-            yield ev
+            self._stream.put_nowait(ev)
+        self._stream.put_nowait(P.TurnEnded())
+
+    async def events(self):
+        while True:
+            yield await self._stream.get()
 
     async def close(self):
         self.closed = True
+
+
+DONE = P.AgentText(P.SENTINEL)      # the agent's end of an iteration
 
 
 def console(keys=""):
@@ -90,7 +103,7 @@ FINISH = "5\n"        # the spec menu's four steps, then "Finish this session"
 def test_a_finished_iteration_offers_the_next_step_instead_of_exiting(tmp_path):
     """The agent's summary closes an *iteration*, not the session: ending there
     threw away a conversation the engineer still wanted."""
-    a = FakeAdapter([P.AgentText("summary"), P.PhaseDone("summary")],
+    a = FakeAdapter([P.AgentText("summary"), DONE],
                     [P.AgentText("on to the next thing")],
                     session_ref="s1")
     rc, out, cp = drive(tmp_path, a, keys="1\n" + "\n")
@@ -102,7 +115,7 @@ def test_a_finished_iteration_offers_the_next_step_instead_of_exiting(tmp_path):
 
 
 def test_finishing_from_the_menu_ends_the_session_as_complete(tmp_path):
-    a = FakeAdapter([P.AgentText("summary"), P.PhaseDone("summary")],
+    a = FakeAdapter([P.AgentText("summary"), DONE],
                     session_ref="s1")
     rc, out, cp = drive(tmp_path, a, keys=FINISH)
     assert rc == 0
@@ -112,14 +125,14 @@ def test_finishing_from_the_menu_ends_the_session_as_complete(tmp_path):
 
 
 def test_a_continued_iteration_stays_resumable(tmp_path):
-    a = FakeAdapter([P.PhaseDone()], [P.AgentText("working")],
+    a = FakeAdapter([DONE], [P.AgentText("working")],
                     session_ref="s1")
     rc, out, cp = drive(tmp_path, a, keys="1\n" + "\n")
     assert cp.done is False and cp.resumable is True
 
 
 def test_the_next_step_menu_offers_no_typed_answer(tmp_path):
-    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
     rc, out, cp = drive(tmp_path, a, keys="split R-0004 into two\n" + "1\n" + "\n")
     assert "type your own" not in out
     assert "review protocol" in a.sent[1]       # the typed text was not sent
@@ -129,18 +142,44 @@ def test_each_menu_choice_carries_its_own_instruction(tmp_path):
     for pick, expected in (("1\n", "review protocol"),
                            ("3\n", "decompose"),
                            ("4\n", "add up")):
-        a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")],
+        a = FakeAdapter([DONE], [P.AgentText("ok")],
                         session_ref="s1")
         drive(tmp_path, a, keys=pick + "\n")
         assert expected in a.sent[1].lower(), (pick, a.sent[1])
 
 
-def test_a_build_session_is_offered_build_steps(tmp_path):
-    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
-    c, out = console("1\n" + "\n")
-    asyncio.run(L.drive(str(tmp_path), BUILD, "KICKOFF", a, c))
-    assert "hamilton check" in a.sent[1]
-    assert "Take another build task" in out.getvalue()
+class AskingAdapter(FakeAdapter):
+    """Asks the engineer one question during the first turn, the way the
+    agent does, before the turn's scripted events."""
+
+    def __init__(self, *turns, ask, session_ref=None):
+        super().__init__(*turns, session_ref=session_ref)
+        self._ask = ask
+
+    async def send(self, text):
+        if not self.sent:
+            await asyncio.to_thread(self._ask, P.Question(
+                "Which parent?", (P.Choice("R-0007"), P.Choice("R-0009"))))
+        await super().send(text)
+
+
+def drive_asking(tmp_path, keys):
+    c, out = console(keys)
+    a = AskingAdapter([P.AgentText("stopping here")], ask=c.ask, session_ref="s1")
+    rc = asyncio.run(L.drive(str(tmp_path), DESIGN, "KICKOFF", a, c))
+    return rc, a, P.Checkpoint.load(str(tmp_path))
+
+
+def test_finishing_at_the_agents_question_ends_the_session_as_complete(tmp_path):
+    rc, a, cp = drive_asking(tmp_path, "3\n")    # two choices, then Finish
+    assert rc == 0 and a.sent == ["KICKOFF"]
+    assert cp.done is True and cp.resumable is False
+
+
+def test_leaving_the_agents_question_keeps_the_session_resumable(tmp_path):
+    rc, a, cp = drive_asking(tmp_path, "")        # EOF at the question
+    assert a.sent == ["KICKOFF"]
+    assert cp.done is False and cp.resumable is True
 
 
 def test_an_unfinished_session_checkpoints_as_resumable(tmp_path):
@@ -164,9 +203,19 @@ def test_the_engineer_can_take_another_turn(tmp_path):
 
 def test_a_denied_write_is_shown_to_the_engineer(tmp_path):
     a = FakeAdapter([P.ToolDenied("src/x.py", "phase is 'spec'"),
-                     P.PhaseDone()])
+                     DONE])
     rc, out, cp = drive(tmp_path, a)
     assert "src/x.py" in out and "phase is 'spec'" in out
+
+
+def test_a_finished_subagent_leaves_a_line(tmp_path):
+    a = FakeAdapter([P.TaskStarted("X", "Write test R-0001/AC1"),
+                     P.TaskEnded("X", True),
+                     P.TaskStarted("Y", "Write test R-0001/AC2"),
+                     P.TaskEnded("Y", False), DONE])
+    rc, out, cp = drive(tmp_path, a, keys=FINISH)
+    assert "✓ Write test R-0001/AC1 (0s)" in out
+    assert "✗ Write test R-0001/AC2 failed (0s)" in out
 
 
 def test_a_session_error_ends_the_session_nonzero(tmp_path):
@@ -180,9 +229,8 @@ def test_a_session_error_ends_the_session_nonzero(tmp_path):
 
 def test_the_adapter_is_closed_even_when_a_turn_raises(tmp_path):
     class Boom(FakeAdapter):
-        async def run_turn(self, text):
+        async def send(self, text):
             raise RuntimeError("transport died")
-            yield  # pragma: no cover -- makes this an async generator
 
     a = Boom()
     c, _ = console()
@@ -197,7 +245,7 @@ def test_the_adapter_is_closed_even_when_a_turn_raises(tmp_path):
 
 def test_picked_requirements_and_the_change_are_sent_to_the_agent(tmp_path):
     root = copy_fixture("tree", tmp_path)
-    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
     c, out = console("2\n" + "3\n" + "let tokens expire after an hour\n" + "\n")
     asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
     assert 'R-0042 "Reject expired tokens"' in a.sent[1]
@@ -207,7 +255,7 @@ def test_picked_requirements_and_the_change_are_sent_to_the_agent(tmp_path):
 
 def test_the_tree_is_offered_indented_by_depth(tmp_path):
     root = copy_fixture("tree", tmp_path)
-    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
     c, out = console("2\n" + "1\n" + "x\n" + "\n")
     asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
     assert '  1) R-0001 "Authentication"' in out.getvalue()
@@ -216,7 +264,7 @@ def test_the_tree_is_offered_indented_by_depth(tmp_path):
 
 def test_backing_out_of_the_pick_shows_the_menu_again(tmp_path):
     root = copy_fixture("tree", tmp_path)
-    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
     c, out = console("2\n" + "\n" + "1\n" + "\n")      # back out, then step 1
     asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
     assert out.getvalue().count("Iteration complete") == 2
@@ -224,7 +272,7 @@ def test_backing_out_of_the_pick_shows_the_menu_again(tmp_path):
 
 
 def test_an_empty_tree_has_nothing_to_pick(tmp_path):
-    a = FakeAdapter([P.PhaseDone()], [P.AgentText("ok")], session_ref="s1")
+    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
     rc, out, cp = drive(tmp_path, a, keys="2\n" + "1\n" + "\n")
     assert "nothing to pick" in out
     assert "review protocol" in a.sent[1]

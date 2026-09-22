@@ -1,7 +1,7 @@
 # Vision
 
 Purpose, users, and non-goals for this project. This is prose, not a model —
-`hamilton check` does not read it. It is here so an agent, and a reviewer, can
+`hamilton verify` does not read it. It is here so an agent, and a reviewer, can
 tell a requested change from an unrequested feature. It is phase-gated like the
 rest of `spec/`: writable in spec phase, read-only in build.
 

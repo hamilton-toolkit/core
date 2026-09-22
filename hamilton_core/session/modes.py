@@ -1,8 +1,12 @@
-"""The session modes: `hamilton design`, `build`, `reverse`, and any added
+"""The session modes: `hamilton design`, `hamilton reverse`, and any added
 later. A mode is everything that differs between them -- which phase it sets,
 how the agent is told to start, what is offered after an iteration, and how
 the session is summed up. Everything else (the console, the adapter, the
 turn loop) is shared, so a new mode is one `Mode` here and nothing more.
+
+Both modes here are spec work, which is a conversation with the engineer.
+Build is not a mode: `hamilton build` is a loop Hamilton drives itself, in
+`hamilton_core.build`, and calls an agent per step.
 """
 
 from __future__ import annotations
@@ -10,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from hamilton_core import tree
+from hamilton_core import show
 
 
 @dataclass(frozen=True)
@@ -52,10 +56,10 @@ _SPEC_STEPS: tuple[Step, ...] = (
          picks_requirements=True),
     Step("Decompose a requirement further",
          "The engineer wants to decompose an existing requirement into "
-         "children. Render `hamilton tree`, ask which requirement to take, "
+         "children. Render `hamilton show`, ask which requirement to take, "
          "then run the review protocol for the new children."),
     Step("Check the tree adds up",
-         "Render `hamilton tree` and read it upward: for each parent, ask "
+         "Render `hamilton show` and read it upward: for each parent, ask "
          "whether its children add up to it. Report any gap you find, then "
          "run the review protocol for whatever the engineer decides to fix."),
 )
@@ -63,7 +67,7 @@ _SPEC_STEPS: tuple[Step, ...] = (
 
 def _spec_is_empty(root: str) -> str | None:
     """`reverse` derives a *first* spec, so it refuses a spec with content."""
-    n = len(tree.rows(root))
+    n = len(show.rows(root))
     if not n:
         return None
     return (f"spec/requirements.md already has {n} requirement(s). `hamilton "
@@ -91,33 +95,6 @@ DESIGN = Mode(
     next_steps=_SPEC_STEPS,
 )
 
-BUILD = Mode(
-    name="build",
-    phase="build",
-    help="set phase to build, then run the build session",
-    kickoff=(
-        "Start the Hamilton build session now: follow the `hamilton` skill's "
-        "\"Propagate a change\" / \"Verify\" workflow immediately -- run "
-        "`git diff spec/` and `hamilton check`, bring the code and tests to "
-        "green, then give the closing summary. If this is the first build after "
-        "`hamilton reverse` (no `.hamilton/verified`, most ACs uncovered, the "
-        "spec only just landed in `git log -- spec`), follow \"Adopt an "
-        "existing test suite\" instead. Do not wait for further instruction."
-    ),
-    footer=("hamilton build: session ended (phase 'build'). Run `hamilton "
-            "check` to confirm the gate is green before opening a merge "
-            "request."),
-    next_steps=(
-        Step("Take another build task",
-             "The engineer has more for you to build. Ask what it is, then "
-             "follow the Implement / Propagate a change workflow and get "
-             "`hamilton check` green."),
-        Step("Re-run the gate",
-             "Run `hamilton check` again and report what it says. If it is "
-             "red, follow the Verify workflow until it is green."),
-    ),
-)
-
 REVERSE = Mode(
     name="reverse",
     phase="spec",
@@ -133,7 +110,7 @@ REVERSE = Mode(
         "for my approval before writing it -- the spec captures intent and the "
         "load-bearing decisions, it does not restate the code."
     ),
-    footer=("hamilton reverse: session ended (phase 'spec'). `hamilton check` "
+    footer=("hamilton reverse: session ended (phase 'spec'). `hamilton verify` "
             "will be red on `uncovered` until you run `hamilton build` -- that "
             "session binds the existing tests to the derived criteria. Run "
             "`hamilton design` to keep refining the spec."),
@@ -141,4 +118,4 @@ REVERSE = Mode(
     precheck=_spec_is_empty,
 )
 
-MODES: dict[str, Mode] = {m.name: m for m in (DESIGN, BUILD, REVERSE)}
+MODES: dict[str, Mode] = {m.name: m for m in (DESIGN, REVERSE)}

@@ -26,11 +26,11 @@ def test_render_reports_counts_and_coverage(tmp_path):
     root = copy_fixture("tree", tmp_path)
     out = status.render(root, "spec")
     assert "Hamilton · spec phase" in out
-    # tree fixture: 3 requirements, 4 ACs; R-0042/AC1 tagged but its recorded
-    # hash is stale -> 0 covered, 3 uncovered, 1 stale
+    # tree fixture: 3 requirements, 4 ACs; R-0042/AC1 tagged but its review
+    # suffix predates the AC -> 0 covered, 3 uncovered, 1 unreviewed
     assert "3 requirement(s), 4 acceptance criteria" in out
-    assert "0/4 covered" in out and "3 uncovered" in out and "1 stale" in out
-    assert "gate last passed" in out
+    assert "0/4 covered" in out and "3 uncovered" in out and "1 unreviewed" in out
+    assert "gate" not in out
 
 
 def test_render_counts_manual_criteria_apart(tmp_path):

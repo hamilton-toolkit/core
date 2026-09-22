@@ -1,5 +1,5 @@
-"""`hamilton design` / `hamilton build` / `hamilton reverse` -- the session
-driver. The rendering it drives lives in `console`.
+"""`hamilton design` / `hamilton reverse` -- the session driver. The rendering
+it drives lives in `console`.
 
 Hamilton sets `.hamilton/phase`, prints a status banner, then drives the agent
 session turn by turn, in process. It does not hand over the terminal, which is
@@ -12,10 +12,14 @@ what makes three things possible:
   * an interrupted session is not lost -> every turn boundary writes a
     `Checkpoint`, and the next launch offers to resume it.
 
-`HAMILTON_SESSION` is exported before the agent starts, so a `design` / `build`
-that an agent shells out to from inside a session is refused: the phase is
-fixed for the session. As ever this stops drift, not a determined operator --
-`hamilton check` in CI is the authoritative gate.
+This drives the spec-phase modes. Build is not a session: `hamilton build` is
+a loop Hamilton runs itself (`hamilton_core.build`), because what comes next
+there follows from `hamilton verify`, not from an agent's judgement.
+
+`HAMILTON_SESSION` is exported before the agent starts, so a `design` /
+`build` that an agent shells out to from inside a session is refused: the
+phase is fixed for the session. As ever this stops drift, not a determined operator --
+`hamilton verify` in CI is the authoritative gate.
 
 What differs between the modes is defined once, in `modes`.
 
@@ -33,9 +37,10 @@ import os
 
 from hamilton_core import guard as _guard
 from hamilton_core import phase as _phase
+from hamilton_core import show as _show
 from hamilton_core import status as _status
-from hamilton_core import tree as _tree
 from hamilton_core.session import protocol as P
+from hamilton_core.session.agent import Agent
 from hamilton_core.session.claude_sdk_adapter import ClaudeSdkAdapter
 from hamilton_core.session.console import Console
 from hamilton_core.session.modes import Mode, Step
@@ -46,7 +51,7 @@ NEXT_PROMPT = "That iteration is done. What next? Pick a step, or finish the ses
 
 RESUME_KICKOFF = (
     "Resuming this Hamilton session after an interruption. Re-read the state "
-    "you need (`hamilton status`, `hamilton tree`, `git diff spec/`), say in "
+    "you need (`hamilton status`, `hamilton show`, `git diff spec/`), say in "
     "one or two lines where we had got to, and carry on from there -- do not "
     "restart the workflow from the top."
 )
@@ -76,7 +81,7 @@ def next_step(console: Console, mode: Mode, root: str) -> str | None:
 def _change_picked_requirements(console: Console, step: Step, root: str) -> str | None:
     """Let the engineer pick requirements from the tree and say what should
     change. None if the tree is empty or they back out."""
-    rows = _tree.rows(root)
+    rows = _show.rows(root)
     if not rows:
         console.note("The spec has no requirements yet -- nothing to pick.")
         return None
@@ -101,7 +106,9 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
     and everything the agent has already read and ratified -- still live.
     Checkpoints after every turn; that is the resume path.
     """
-    cp = P.Checkpoint(phase=mode.phase, session_ref=adapter.session_ref)
+    agent = Agent(adapter)
+    console.follow(agent.activity)
+    cp = P.Checkpoint(phase=mode.phase, session_ref=agent.session_ref)
     text: str | None = kickoff
     rc = 0
     try:
@@ -111,12 +118,14 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
             # that reads or draws, including the questions the agent asks from
             # its own thread.
             console.start_working()
-            async for ev in adapter.run_turn(text):
+            async for ev in agent.run_turn(text):
                 if isinstance(ev, P.AgentText):
                     console.agent_text(ev.text)
                     body = ev.text.strip()
                     if body:
                         cp.last_summary = body.splitlines()[-1][:200]
+                elif isinstance(ev, P.SubagentDone):
+                    console.subagent_done(ev.label, ev.ok, ev.elapsed)
                 elif isinstance(ev, P.ToolDenied):
                     console.denial(ev.path, ev.reason)
                 elif isinstance(ev, P.SessionError):
@@ -126,11 +135,13 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
                     done = True
 
             console.stop_working()
-            cp.session_ref = adapter.session_ref
+            cp.session_ref = agent.session_ref
             cp.turns_completed += 1
 
             if console.aborted or rc:
-                cp.save(root)           # interrupted: leave it resumable
+                # resumable unless the engineer chose to finish
+                cp.done = console.finished and not rc
+                cp.save(root)
                 break
 
             if done:
@@ -143,7 +154,7 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
             text = await asyncio.to_thread(console.next_message)
     finally:
         console.stop_working()
-        await adapter.close()
+        await agent.close()
     return rc
 
 

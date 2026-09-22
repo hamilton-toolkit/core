@@ -1,15 +1,23 @@
 """The Claude Agent SDK adapter -- the one module that imports the SDK.
 
 Nothing here connects to a model: what is worth pinning is the translation in
-both directions -- SDK tool arguments into a Hamilton `Question`, and
-Hamilton's phase policy into an SDK permission result.
+both directions -- SDK tool arguments into a Hamilton `Question`, Hamilton's
+phase policy into an SDK permission result, and SDK messages into Hamilton
+events.
 """
 
 import asyncio
 
+from claude_agent_sdk import (
+    AssistantMessage, ResultMessage, TaskNotificationMessage,
+    TaskProgressMessage, TaskStartedMessage, TaskUpdatedMessage, TextBlock,
+    ToolResultBlock, ToolUseBlock, UserMessage,
+)
+
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import (
-    ClaudeSdkAdapter, _as_question, _strip_sentinel,
+    FOREGROUND, ClaudeSdkAdapter, ClaudeSdkJudge, ClaudeSdkWorker, Tasks,
+    _as_question, _foreground_only, _spent, _translate,
 )
 
 
@@ -21,11 +29,25 @@ def adapter(answerer=None, write_policy=None, **kw):
 
 # --- session options ---------------------------------------------------------
 
-def test_project_settings_are_loaded_so_the_hamilton_skill_applies():
+def test_the_hamilton_skill_loads_from_the_installed_package():
+    """Not from a copy in the project, which would go stale on the next
+    Hamilton: the package ships it as a plugin."""
+    import json
+    import os
+
+    from hamilton_core.session.claude_sdk_adapter import PLUGIN, SKILL
     o = adapter()._options
     assert o.setting_sources == ["project"]
-    assert o.skills == ["hamilton"]
+    assert o.plugins == [{"type": "local", "path": PLUGIN}]
+    assert os.path.isabs(PLUGIN)                  # a relative one is not loaded
+    assert o.skills == [SKILL]
     assert "hamilton" in o.mcp_servers
+    # a plugin's skill is named "<plugin>:<skill>"
+    plugin, skill = SKILL.split(":")
+    with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json")) as fh:
+        assert json.load(fh)["name"] == plugin
+    with open(os.path.join(PLUGIN, "skills", skill, "SKILL.md")) as fh:
+        assert f"\nname: {skill}\n" in fh.read()
 
 
 def test_the_permission_callback_is_not_shadowed():
@@ -94,13 +116,254 @@ def test_a_notebook_write_is_gated_on_its_own_path_field():
     assert r.behavior == "deny" and "n.ipynb" in r.message
 
 
-# --- the completion sentinel -------------------------------------------------
+def test_a_forged_review_suffix_is_denied(tmp_path):
+    (tmp_path / ".hamilton").mkdir()
+    (tmp_path / ".hamilton" / "phase").write_text("build")
+    a = ClaudeSdkAdapter(root=str(tmp_path), answerer=lambda q: "ok",
+                         write_policy=lambda p: None)
+    forged = {"file_path": "tests/a.js",
+              "content": "// @covers R-0001/AC1 #aaaaaa.bbbbbb\n"}
+    r = asyncio.run(a._can_use_tool("Write", forged, None))
+    assert r.behavior == "deny" and "hamilton build" in r.message
 
-def test_the_sentinel_is_detected_and_hidden_from_the_engineer():
-    body, hit = _strip_sentinel(f"Spec is ratified.\n{P.SENTINEL}")
-    assert hit is True and body.strip() == "Spec is ratified."
-    assert P.SENTINEL not in body
+
+# --- the reviewer ------------------------------------------------------------
+
+def test_the_judge_session_has_no_tools_settings_or_history():
+    o = ClaudeSdkJudge()._options("/tmp/empty")
+    assert o.tools == [] and o.allowed_tools == []
+    assert o.setting_sources == [] and o.strict_mcp_config is True
+    assert o.mcp_servers == {} and o.resume is None
+    assert o.max_turns == 1 and o.cwd == "/tmp/empty"
 
 
-def test_text_without_the_sentinel_is_untouched():
-    assert _strip_sentinel("plain text") == ("plain text", False)
+# --- the message stream, as Hamilton events --------------------------------
+
+def said(text, parent=None):
+    return AssistantMessage([TextBlock(text)], "m", parent_tool_use_id=parent)
+
+
+def called(name, id, parent=None, **input):
+    return AssistantMessage([ToolUseBlock(id, name, input)], "m",
+                            parent_tool_use_id=parent)
+
+
+def returned(id, is_error=None, parent=None):
+    return UserMessage([ToolResultBlock(id, "done", is_error)],
+                       parent_tool_use_id=parent)
+
+
+def result(origin=None, is_error=False, text="ok"):
+    return ResultMessage("success", 1, 1, is_error, 1, "sess-9", result=text,
+                         origin=origin)
+
+
+def progress(task_id, tool_uses, last_tool, tool_use_id="X"):
+    return TaskProgressMessage(
+        "task_progress", {}, task_id=task_id, description="running tests",
+        usage={"total_tokens": 1, "tool_uses": tool_uses, "duration_ms": 1},
+        uuid="u", session_id="s", tool_use_id=tool_use_id, last_tool_name=last_tool)
+
+
+def task_started(task_id, tool_use_id, description="Write test R-0001/AC1"):
+    return TaskStartedMessage("task_started", {}, task_id=task_id,
+                              description=description, uuid="u", session_id="s",
+                              tool_use_id=tool_use_id)
+
+
+def notified(task_id, status):
+    return TaskNotificationMessage("task_notification", {}, task_id=task_id,
+                                   status=status, output_file="/tmp/o",
+                                   summary="done", uuid="u", session_id="s")
+
+
+def updated(task_id, status):
+    return TaskUpdatedMessage("task_updated", {}, task_id=task_id,
+                              patch={"status": status}, status=status)
+
+
+def translate(*messages):
+    """The events a fresh stream makes of `messages`, in order."""
+    tasks = Tasks()
+    return [ev for msg in messages for ev in _translate(msg, tasks)]
+
+
+def test_the_main_agents_text_is_shown():
+    assert translate(said("Tests are green.")) == [P.AgentText("Tests are green.")]
+
+
+def test_a_subagents_text_and_calls_are_not():
+    assert translate(said("thinking aloud", parent="X")) == []
+    assert translate(called("Bash", "b1", parent="X", command="ls")) == []
+    assert translate(UserMessage("the subagent's prompt", parent_tool_use_id="X")) == []
+
+
+def test_a_subagent_is_a_row_from_its_task_starting_to_its_task_finishing():
+    """The `Agent` call returns as soon as the subagent is launched, so its
+    tool result says nothing about whether the work is done -- only the task's
+    own lifecycle does."""
+    assert translate(
+        called("Agent", "X", description="Write test R-0001/AC1", prompt="..."),
+        task_started("t1", "X"),
+        progress("t1", 3, "Edit"),
+        notified("t1", "completed"),
+    ) == [P.TaskStarted("t1", "Write test R-0001/AC1"),
+          P.TaskProgress("t1", "editing a file"),
+          P.TaskEnded("t1", True)]
+
+
+def test_the_tool_call_returning_does_not_close_the_row():
+    assert translate(called("Agent", "X", description="Write test", prompt="..."),
+                     task_started("t1", "X", "Write test"),
+                     returned("X")) == [P.TaskStarted("t1", "Write test")]
+
+
+def test_a_task_that_only_reports_its_end_as_an_update_still_closes():
+    assert translate(called("Agent", "X", description="Write test", prompt="..."),
+                     task_started("t1", "X", "Write test"),
+                     updated("t1", "killed")) == [P.TaskStarted("t1", "Write test"),
+                                                  P.TaskEnded("t1", False)]
+    # a patch that changes something else leaves the row open
+    assert translate(called("Agent", "Y", description="Write test", prompt="..."),
+                     task_started("t2", "Y", "Write test"),
+                     updated("t2", "running")) == [P.TaskStarted("t2", "Write test")]
+
+
+def test_a_failed_subagent_is_reported_as_one():
+    for status in ("failed", "stopped"):
+        assert translate(called("Agent", "X", description="W", prompt="..."),
+                         task_started("t1", "X"),
+                         notified("t1", status))[-1] == P.TaskEnded("t1", False)
+
+
+def test_the_clis_own_tasks_are_not_the_agents_subagents():
+    """A background command the CLI runs is a task too; it is not a subagent
+    and does not hold the turn open."""
+    assert translate(called("Bash", "b2", command="npm test"),
+                     task_started("t9", "b2", description="npm test"),
+                     progress("t9", 1, "Bash"),
+                     notified("t9", "completed")) == []
+
+
+def test_every_turns_result_is_reported_and_whose_it_was():
+    assert translate(result()) == [P.TurnEnded(False)]
+    assert translate(result(origin={"kind": "human"})) == [P.TurnEnded(False)]
+    assert translate(result(origin={"kind": "task-notification"})) == [
+        P.TurnEnded(True)]
+
+
+def test_a_failed_result_is_a_session_error():
+    assert translate(result(is_error=True, text="out of budget")) == [
+        P.SessionError("out of budget"), P.TurnEnded(False)]
+
+
+def test_the_foreground_hook_is_installed_for_the_subagent_tool():
+    [matcher] = adapter()._options.hooks["PreToolUse"]
+    assert matcher.matcher == "Agent|Task" and matcher.hooks == [_foreground_only]
+
+
+def test_a_background_subagent_is_refused_and_a_foreground_one_allowed():
+    def hook(**tool_input):
+        return asyncio.run(_foreground_only(
+            {"tool_name": "Agent", "tool_input": tool_input}, "X", None))
+
+    assert hook(description="d", prompt="p") == {}
+    assert hook(description="d", prompt="p", run_in_background=False) == {}
+    denied = hook(description="d", prompt="p", run_in_background=True)
+    assert denied["hookSpecificOutput"] == {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": FOREGROUND}
+
+
+def test_the_stream_carries_denials_and_records_the_session_ref():
+    class Client:
+        async def receive_messages(self):
+            yield said("hi")
+            yield result()
+
+    async def collect(a):
+        return [ev async for ev in a.events()]
+
+    a = adapter()
+    a._client = Client()
+    a._denials.append(P.ToolDenied("spec/r.md", "phase is 'build'"))
+    assert asyncio.run(collect(a)) == [P.ToolDenied("spec/r.md", "phase is 'build'"),
+                                       P.AgentText("hi"), P.TurnEnded()]
+    assert a.session_ref == "sess-9"
+
+
+# --- the worker: one step of `hamilton build` --------------------------------
+
+def test_a_worker_runs_in_the_project_under_the_phase_gate():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: f"no: {p}")
+    assert w._options().cwd == "/tmp/p"
+    # every task works under the project's own conventions and hooks
+    assert w._options().setting_sources == ["project"]
+    r = asyncio.run(w._can_use_tool("Write", {"file_path": "spec/r.md"}, None))
+    assert r.behavior == "deny" and "spec/r.md" in r.message
+    assert w.denials == [P.ToolDenied("spec/r.md", "no: spec/r.md")]
+    allowed = asyncio.run(w._can_use_tool("Bash", {"command": "ls"}, None))
+    assert allowed.behavior == "allow"
+
+
+def test_one_write_policy_serves_the_session_and_the_workers():
+    """The gate is the same whoever is writing; only the caller differs."""
+    from hamilton_core.session.claude_sdk_adapter import refusal
+    policy = lambda p: "phase is 'spec'" if p.startswith("src/") else None
+    assert refusal("/tmp", policy, "Edit", {"file_path": "src/x.py"}) == \
+        "phase is 'spec'"
+    assert refusal("/tmp", policy, "Edit", {"file_path": "tests/x.py"}) is None
+    assert refusal("/tmp", policy, "Bash", {"command": "rm -rf src"}) is None
+
+
+
+# --- what a running task is doing, in words ------------------------------------
+
+def test_a_tool_call_reads_as_what_it_does_to_what():
+    from hamilton_core.session.claude_sdk_adapter import action
+    root = "/home/x/proj"
+    assert action(root, "Edit", {"file_path": "/home/x/proj/src/Http/EnforceHttps.php"}) \
+        == "editing src/Http/EnforceHttps.php"
+    assert action(root, "Bash", {"command": "tools/run-tests.sh\n  --filter x"}) \
+        == "running tools/run-tests.sh --filter x"
+    assert action(root, "Read") == "reading a file"            # no target known
+    assert action(root, "SomethingNew", {}) == "using SomethingNew"
+    long = action(root, "Bash", {"command": "x" * 200})
+    assert long.endswith("…") and len(long) < 80
+
+
+# --- which model, and what it used -------------------------------------------
+
+def test_tests_and_review_default_to_a_mid_tier_model():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert w._options("tests").model == "sonnet"
+    assert w._options("plan").model is None and w._options("code").model is None
+    assert ClaudeSdkJudge()._options("/tmp/e").model == "sonnet"
+
+
+def test_a_model_named_in_the_config_wins():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None,
+                        models={"tests": "opus", "code": "sonnet"})
+    assert w._options("tests").model == "opus"
+    assert w._options("code").model == "sonnet"
+    assert ClaudeSdkJudge("haiku")._options("/tmp/e").model == "haiku"
+
+
+def result_with(usage=None, model_usage=None):
+    return ResultMessage("success", 1, 1, False, 1, "s", usage=usage,
+                         model_usage=model_usage)
+
+
+def test_tokens_are_what_was_read_fresh_and_written():
+    assert _spent(result_with(usage={"input_tokens": 10, "output_tokens": 5,
+                                     "cache_creation_input_tokens": 100,
+                                     "cache_read_input_tokens": 9999})) == 115
+
+
+def test_tokens_include_every_model_a_query_used():
+    """A worker's subagents and helper calls run on other models."""
+    per_model = {"a": {"inputTokens": 10, "outputTokens": 5,
+                       "cacheCreationInputTokens": 100, "cacheReadInputTokens": 9999},
+                 "b": {"inputTokens": 1, "outputTokens": 2,
+                       "cacheCreationInputTokens": 0, "cacheReadInputTokens": 0}}
+    assert _spent(result_with(usage={"input_tokens": 10}, model_usage=per_model)) == 118

@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
-from typing import AsyncIterator, Callable, Protocol
+from typing import AsyncIterator, Awaitable, Callable, Protocol
 
 # The agent prints this literal line when its phase workflow is finished; the
-# skill (templates/prompts/hamilton.md) instructs it to. Hamilton watches for
+# skill (plugin/skills/hamilton/SKILL.md) instructs it to. Hamilton watches for
 # it and ends the session itself -- otherwise the session sits open after the
 # work is done and the engineer has to know to exit.
 SENTINEL = "HAMILTON_SESSION_DONE"
@@ -48,6 +48,11 @@ Answerer = Callable[[Question], str]
 # message. `hamilton_core.guard.decide` is the implementation.
 WritePolicy = Callable[[str], "str | None"]
 
+# What a running task is doing now, in words -- "editing src/x.php" -- for the
+# row the engineer watches. The adapter words it; nothing else knows a
+# vendor's tool names.
+OnAction = Callable[[str], None]
+
 
 # --- what comes back out of a turn --------------------------------------------
 
@@ -64,7 +69,8 @@ class ToolDenied:
 
 @dataclass(frozen=True)
 class PhaseDone:
-    """The agent emitted SENTINEL: this phase's workflow is finished."""
+    """The agent emitted SENTINEL: this phase's workflow is finished. Raised
+    by `agent.Agent` at the end of that turn, not by an adapter."""
     summary: str = ""
 
 
@@ -73,13 +79,77 @@ class SessionError:
     message: str
 
 
-Event = AgentText | ToolDenied | PhaseDone | SessionError
+@dataclass(frozen=True)
+class SubagentDone:
+    """A subagent the agent ran has finished."""
+    label: str
+    ok: bool
+    elapsed: float
+
+
+Event = AgentText | ToolDenied | PhaseDone | SessionError | SubagentDone
+
+
+# --- what an adapter reports besides that -------------------------------------
+
+@dataclass(frozen=True)
+class TurnEnded:
+    """A turn the agent ran is finished. `by_agent` marks one the agent
+    started itself -- a task reporting back, say -- rather than the turn the
+    engineer's message started. Which of them hands the engineer their prompt
+    back is `agent.Agent`'s decision, not an adapter's."""
+    by_agent: bool = False
+
+
+@dataclass(frozen=True)
+class TaskStarted:
+    """A subagent of the agent's is running. `id` is the adapter's own handle.
+
+    It is the *task* that started, not the tool call that asked for one: a
+    vendor may hand the agent its task back the moment it is launched, and a
+    row that closed there would report a subagent as done while it works.
+    """
+    id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class TaskProgress:
+    """What a running subagent is doing now, in words."""
+    id: str
+    doing: str
+
+
+@dataclass(frozen=True)
+class TaskEnded:
+    """A tool call of the agent's finished. Ids that were never started as a
+    task are ignored, so an adapter need not remember which ids were tasks."""
+    id: str
+    ok: bool
+
+
+StreamEvent = Event | TurnEnded | TaskStarted | TaskProgress | TaskEnded
+
+
+@dataclass(frozen=True)
+class Activity:
+    """A running subagent, as the engineer sees it. `started` is a
+    `time.monotonic()` reading."""
+    id: str
+    label: str
+    started: float
+    doing: str = ""                 # its latest action, in words
 
 
 # --- the adapter seam ---------------------------------------------------------
 
 class AgentAdapter(Protocol):
-    """One turn in, a stream of events out.
+    """A live agent session: messages in, one stream of events out.
+
+    The stream runs for the whole session, not per turn -- the agent can act
+    between the engineer's messages, and must be heard when it does. Turns,
+    subagent tracking and the completion sentinel are built on top of it in
+    `agent.Agent`, once for every vendor.
 
     Construction carries the rest (project root, answerer, write policy, and
     the session reference to resume from), so this interface stays small
@@ -89,10 +159,54 @@ class AgentAdapter(Protocol):
 
     session_ref: str | None
 
-    def run_turn(self, text: str) -> AsyncIterator[Event]:
+    async def connect(self) -> None:
+        ...
+
+    async def send(self, text: str) -> None:
+        ...
+
+    def events(self) -> AsyncIterator[StreamEvent]:
         ...
 
     async def close(self) -> None:
+        ...
+
+
+class Judge(Protocol):
+    """One prompt in, one answer out, from a fresh session with no tools, no
+    project settings and nothing to resume. `hamilton build`'s review step
+    asks it; what it can judge is exactly what the prompt holds.
+
+    `tokens` is what it has used so far, under the step `review`."""
+
+    tokens: dict
+
+    async def ask(self, prompt: str) -> str:
+        ...
+
+
+class Worker(Protocol):
+    """One piece of work, done by an agent with tools, in the project.
+
+    `hamilton build` drives the loop itself and calls a worker for the things
+    that need judgement -- planning a surface, writing a test, revising one,
+    writing the implementation, drafting a clarified criterion. Each call is
+    its own session: it starts from the prompt, does the work in the project
+    (with the project's own conventions), and returns what it has to say
+    about it. Nothing carries over, which is what makes the loop repeatable.
+    The independence that matters is the reviewer's (`Judge`), not the
+    worker's.
+
+    `on_action` is told each thing the worker does, in words, for the row
+    the engineer watches. `step` is the kind of work -- `plan`, `tests`,
+    `code`, `clarify` -- which an adapter may pick its model by. `tokens` is
+    what the worker has used so far, per step.
+    """
+
+    tokens: dict
+
+    async def run(self, prompt: str, on_action: OnAction | None = None,
+                  step: str = "") -> str:
         ...
 
 

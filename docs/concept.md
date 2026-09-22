@@ -163,10 +163,10 @@ rule: a root's criteria are usually observed through the actor's channel, a
 leaf's are often `unit`, but a leaf whose outcome the actor sees is verified
 where the actor sees it.
 
-`hamilton check` enforces the choice: a test counts for an AC only under the
+`hamilton verify` enforces the choice: a test counts for an AC only under the
 directories configured for its method (`paths.<method>`, §5.6). A `manual` AC
 needs no test and is listed as not machine-verified. Changing a method changes
-the AC, so it goes `stale` like a reworded one.
+what the AC's tests owe, so they go `unreviewed` like a reworded AC's (§5.3).
 
 ### 5.2 Test authoring: fresh subagent
 
@@ -180,33 +180,87 @@ and **not** the implementation body.
 
 Rationale: an agent that just wrote the implementation derives expected behavior from the code, including its bugs. The result is tautological tests that pass forever and catch nothing.
 
-### 5.3 Test quality is not verified
+This rule is an instruction: the subagent shares the repository. Every test it
+writes is then judged by a reviewer whose inputs *are* enforced (§5.3).
 
-The fresh-subagent rule (§5.2) is the only safeguard on test quality, and it is
-advisory — the subagent shares the repository. **Nothing proves a test can
-fail.** A green `hamilton check` proves only that a `@covers`-tagged test exists
-for every criterion and that the suite runs and passes.
+### 5.3 Test quality is reviewed, not proven
 
-An earlier draft put a hand-run falsification protocol here — mutate the
-implementation, confirm the named test goes red, record the mutant. It was
-removed: an adversarial pass showed a fabricated record cost almost nothing to
-produce and satisfied the checker completely. A self-reported, hand-run check of
-test quality is ceremony.
+Whether a test proves its AC is a judgement. Left to whoever wrote the tag, it
+is made once and never recorded or revisited. Hamilton instead has it made by a
+**reviewer it runs itself**, records it per test, and invalidates it when
+either side changes (D-020).
 
-The planned mechanism is per-language mutation testing driven by a
-`mutation_command` in `.hamilton/config` — empty by default; when set, surviving
-mutants fail the gate. Per-language by nature (`mutmut`, `Stryker`,
-`cargo-mutants`), so it is configuration rather than a built-in. Not yet
-implemented: a `mutation_command` that is set today prints a `hamilton check`
-notice every run and is not executed — config that looks active and does
-nothing is exactly the failure this section describes.
+**The reviewer.** `hamilton build`'s review step hands each unreviewed test to
+a fresh agent session with no tools. Hamilton builds the prompt: the
+requirement's id, title and Statement, the AC with its method marker, the
+definition of that method, the supporting spec files it references, and the
+test's text with its file path. No implementation, no file access.
+Unlike the writer rule (§5.2), this boundary is enforced — the session has
+nothing to read with. It judges each AC against five checks:
+
+1. **Clause coverage** — every clause of the expected outcome has an assertion.
+2. **Starting point** — the test starts from the AC's condition, not from a
+   lower layer's already-prepared inputs.
+3. **Can fail** — the assertion would fail if the behaviour were missing: no
+   tautologies, no assertions so loose that anything passes.
+4. **Independent expectation** — expected values come from the spec or the AC,
+   not from the implementation's own constants or files.
+5. **Scope** — "any" / "every" in the AC means the test covers the set, not a
+   sample.
+
+It also checks that the test verifies by the declared method. It answers
+**pass**, **reject** with reasons (the test is rewritten, §7.2), or
+**unclear**: the AC's own text cannot settle whether a test proves it. That is
+an ambiguous AC — a spec defect, and a hard stop (§7.4).
+
+**The record.** A pass writes a review suffix into the tag, `@covers
+R-0005/AC2 #3f9a2c.81d0e4`: two 6-hex-digit SHA-256 prefixes. The first covers
+the **obligation** — the AC id, its requirement's Statement, the AC text with
+its marker, the definitions of the methods the test counts toward, and the
+content of any supporting spec file the Statement or AC names as
+`spec/<file>` (a rule set, a legal text, a visual reference). The
+second covers the **test** — its *region*: the file's preamble (everything
+above the first tag) plus its own section (from its tags to the next tagged
+test or the end of the file), whitespace-normalised. Change either and the tag
+is `unreviewed`; `hamilton verify` fails and says which half changed, because
+an AC change means the test must be judged against the new wording — and
+rewritten only if it no longer proves it — and a test change only needs
+another review. Nothing else writes a suffix — in particular not a green
+`hamilton verify`, which writes nothing — so a review cannot clear itself.
+
+**Why this is not the removed falsification record.** An earlier draft put a
+hand-run falsification protocol here — mutate the implementation, confirm the
+named test goes red, record the mutant. It was removed: an adversarial pass
+showed a fabricated record cost almost nothing to produce and satisfied the
+checker completely. A suffix is just as cheap to compute. Two things differ:
+the judgement is made by a Hamilton-run agent with restricted inputs, not
+self-reported by the agent that wrote the code; and forging a suffix is a
+deliberate bypass of an enforced rule — the write gate refuses any file edit
+that introduces or changes one (§7.1), and every suffix change shows in the
+merge-request diff next to the test change it certifies — not a cheap way to
+satisfy the checker. A shell write gets around the gate, as it does every
+guard rule; CI and the diff are the backstop (§8.1).
+
+**Known blind spot.** Code in another file is in no region. A weakened shared
+helper — a `support.js` every browser test uses — invalidates no review, and
+the reviewer judges such helpers by their names alone.
+
+**Still not proven.** A review is a judgement, not a proof: nothing yet shows
+mechanically that a test can fail. The planned complement is per-language
+mutation testing driven by a `mutation_command` in `.hamilton/config` — empty
+by default; when set, surviving mutants fail the gate. Per-language by nature
+(`mutmut`, `Stryker`, `cargo-mutants`), so it is configuration rather than a
+built-in. Not yet implemented: a `mutation_command` that is set today prints a
+`hamilton verify` notice every run and is not executed — config that looks
+active and does nothing is exactly the failure the falsification record had.
 
 ### 5.4 Coverage policy
 
 **Gate — AC coverage, enforced.**
 - every AC maps to ≥1 test that names it (`@covers R-nnnn/ACn`) under the
   paths of each of its methods; `manual` ACs are listed instead
-- `hamilton check` runs `test_command` and requires exit 0
+- every such tag carries a current review suffix (§5.3)
+- `hamilton verify` runs `test_command` and requires exit 0
 
 Both are checkable at commit time — coverage from the `@covers` tags, the pass
 from actually running the suite. Neither needs the API to have been known when
@@ -227,7 +281,7 @@ A root requirement carries acceptance criteria like any other, and it is
 verified **through them**: at least one of them names an actor-facing method,
 so a test exercises the running product the way the actor reaches it. Green
 children do not verify their parent — the parts can each pass while the product
-that wires them together is broken. `hamilton check` warns (`root-unit-only`)
+that wires them together is broken. `hamilton verify` warns (`root-unit-only`)
 on a root whose criteria are all `unit`.
 
 There is **no separate acceptance mechanism** — no `accept` command, no stored
@@ -238,7 +292,8 @@ Rejection at the system level is always a defect *upstream of the code*:
 
 1. a criterion is missing — the spec did not say it;
 2. a criterion is wrong — the spec said the wrong thing;
-3. a criterion is untested in practice — a vacuous test passed it (§5.3).
+3. a criterion is untested in practice — a vacuous test passed it, and its
+   review (§5.3).
 
 Fix the spec or the test first; patching the code alone fixes the symptom and
 guarantees recurrence.
@@ -247,7 +302,7 @@ guarantees recurrence.
 that it is complete. A missing requirement produces no signal — absence is
 invisible — and emergent properties (latency, concurrency, cross-boundary error
 propagation) are covered only where a criterion names them. The cheap
-mitigation is a completeness read-through: render `hamilton tree` after the
+mitigation is a completeness read-through: render `hamilton show` after the
 root layer is ratified and read it upward, asking of each parent: *do these
 children add up to this?* That reading checks the spec; it does not verify the
 product.
@@ -277,6 +332,7 @@ keeps being run.
 | Framework and component-library choice — one-way doors | Human | Proposes; agent may advise |
 | Utility-library and test-framework choice — two-way doors | Claude Code | Owns |
 | Test implementation | Claude Code (fresh session, per 5.2) | Owns |
+| Test review | Hamilton (reviewer session, per 5.3) | Rewrites what the reviewer rejects |
 
 A technology choice is an architecture decision — record it in a decision note,
 not as a requirement: no observable acceptance criterion can be written for "use Angular"
@@ -309,8 +365,8 @@ At this scale there is no separate spec MR, and the engineer is the spec author 
 `.hamilton/`, `.claude/` and the agent-instruction files are read-only in
 `build` because they hold the tool's state, its hook/skill config, and the
 rules the agent is meant to follow — an agent must not relax what constrains it
-(`hamilton check` writes `.hamilton/verified` itself, as a subprocess, not
-through a hooked tool). The one exception is `.hamilton/config`: which test
+(Hamilton writes `.hamilton/phase` itself, as a subprocess, not through a
+hooked tool). The one exception is `.hamilton/config`: which test
 framework runs and where each method's tests live (`test_command`,
 `paths.<method>`) are build-time decisions, so the file is writable in `build`. A path hook cannot
 lock individual lines, so the whole file is writable there — and visible in the
@@ -328,9 +384,9 @@ the next launch. Self-switching is closed by an inherited marker:
 `HAMILTON_SESSION` is exported before the agent starts, every child process
 inherits it, and `design` / `build` refuse to run when it is set — so an agent
 that shells out to `hamilton build` from inside a `design` session is blocked.
-This scopes *which phase a session is in*; it does **not**, by itself, stop the
-agent writing to `spec/` during a build session — it only fixes what phase that
-session is.
+This scopes *which phase the work is in*; it does **not**, by itself, stop an
+agent writing to `spec/` while a build runs — it only fixes what phase that
+run is in.
 
 **2. The write gate.** Hamilton refuses the file-editing tools (`Write` /
 `Edit` / `MultiEdit` / `NotebookEdit`) on the read-only paths for the current
@@ -338,13 +394,16 @@ phase — this is what actually stops an in-session edit to `spec/` (in build) o
 to source (in spec). One policy (`hamilton guard`'s `decide`) backs both the
 in-process permission callback the session installs and the `.claude/`
 `PreToolUse` hook, so the two cannot disagree; in a Hamilton session both run.
-The hook is what still covers a `claude` session started outside Hamilton.
+The hook is what still covers a `claude` session started outside Hamilton. The
+same gate, in either phase, refuses a file edit that introduces or changes a
+review suffix (§5.3) — only the reviewer in `hamilton build` writes one, and
+Hamilton writes it itself, not through a hooked tool.
 
 **Neither layer is an unbypassable boundary.** An operator who unsets
 `HAMILTON_SESSION`, edits `.hamilton/phase` by hand, `chmod`s the paths back,
 or starts the agent directly is outside the gate. This prevents *drift* — a
 cooperating agent staying in its lane across a long session — not a determined
-one. The authoritative gate is `hamilton check` run in CI, outside the agent's
+one. The authoritative gate is `hamilton verify` run in CI, outside the agent's
 reach (§8).
 
 ### 7.2 The three steps
@@ -355,11 +414,13 @@ and the verification method of each criterion. Claude may propose; the engineer
 decides. No code is written.
 
 **Step 2 — Implementation**
-- *2a:* Claude implements against the ratified requirements.
-- *2b:* A **fresh subagent** writes tests from the AC and its method — the public signature for `unit`, a running instance otherwise — without the implementation body (see 5.2).
+- *2a:* A **fresh subagent** writes tests from the AC and its method — the public signature for `unit`, a running instance otherwise — without the implementation body (see 5.2). An AC whose wording changed keeps its test until the reviewer (*2b*) judges it against the new wording; only a reject sends it to a writer.
+- *2b:* The reviewer judges every unreviewed test (§5.3). A reject goes back to a fresh writer with the reviewer's reasons, then to review again — at most three rounds per test, then a hard stop. An `unclear` is a hard stop.
+- *2c:* The newly reviewed tests run *before* implementing. One that is already green for a new or changed obligation is named in the summary: the behaviour exists already, or the test cannot fail.
+- *2d:* Claude implements against the ratified requirements.
 
 **Step 3 — Verification**
-- `hamilton check` runs `test_command`; Claude repairs failures within the mutability rule below.
+- `hamilton verify` runs `test_command`; Claude repairs failures within the mutability rule below. A test it edits is `unreviewed` again and goes back through *2b*.
 - The AC coverage gate (§5.4) is the exit condition and the precondition for opening the MR.
 
 ### 7.3 Mutability rule during Step 3
@@ -369,16 +430,20 @@ Without an explicit rule, agents repair red suites by weakening assertions, dele
 | Artifact | During Step 3 |
 |---|---|
 | Implementation | Freely mutable — the intended repair surface |
-| Tests | Mutable **only** when the test misreads its AC; the change must be justified against the AC text |
+| Tests | Mutable **only** when the test misreads its AC; the change must be justified against the AC text, and the edited test is reviewed again |
 | Acceptance criteria | **Immutable.** Changing one means the spec was wrong → hard stop |
 
 > A test that is correct and failing is a bug in the implementation. It is never edited to pass.
+
+The review suffix makes this rule visible: an edited test loses its review, so
+an edit to make it pass shows up in `hamilton verify` and in the next review.
 
 ### 7.4 Loop-back edges
 
 A hard stop is a **full stop**: Claude reports and yields to the engineer. It never continues on a deviated specification.
 
 - **Step 2 → Step 1 (hard stop).** A ratified requirement or verification method proves wrong during implementation. Attempted spec write is denied; the agent stops. The engineer re-enters Step 1. Because both phases live in one branch and one MR, this costs a mode switch — no approval cycle.
+- **Step 2 → Step 1 (hard stop), from the reviewer.** The reviewer answers `unclear` — the AC is ambiguous — or rejects a test three rounds running. The agent stops with the reviewer's question or last reasons.
 - **Step 3 → Step 2.** Test failure caused by the implementation. Claude decides and proceeds.
 - **Step 3 → Step 1.** Test failure revealing that the specification is wrong. **Only the engineer may take this edge.**
 
@@ -395,11 +460,11 @@ Enforced from day one; advisory processes degrade as soon as a session gets long
 - **Fast feedback** — the `PreToolUse` phase hook, inside an agent session. It
   keeps a cooperating agent on-process. It covers only the file-editing tools
   and is defeatable from a shell (§7.1); it is not the guarantee.
-- **Authoritative** — `hamilton check` run in CI, outside the agent's reach, on
+- **Authoritative** — `hamilton verify` run in CI, outside the agent's reach, on
   every change. This is the tier that actually gates.
 
 The framework ships **no CI config** — a pipeline is host-specific (D-005). A
-project wires `hamilton check` into its own pipeline; the two lines that needs
+project wires `hamilton verify` into its own pipeline; the two lines that needs
 are in the README. The authoritative tier must not be left implicit just
 because it is unscaffolded.
 
@@ -410,6 +475,7 @@ Non-exhaustive; the full target set is `data-model.md` §5.
 - every requirement has ≥1 AC
 - every AC names a defined verification method
 - every AC has ≥1 traced test under its method's paths, and every test names an existing AC
+- every counting tag carries a current review suffix
 - the test suite runs and passes
 - no orphan requirements; references resolve; `Parent` graphs are acyclic
 - IDs unique, never reused (a counter, not a status lifecycle — no tombstones)
@@ -424,6 +490,6 @@ Periodic reconciliation: an agent diffs actual code behavior against the spec an
 
 - **Language-agnostic.** The process must not assume a stack. The coding agent selects test framework and tooling.
 - **Greenfield start, or brownfield adoption (D-018).** A new project writes its spec first. An existing codebase is adopted with `hamilton reverse`, which *derives* a first spec from the code and its git history — capturing intent and the load-bearing decisions, deliberately under-specified relative to the implementation, module by module. Ownership is unchanged (§6.1): the agent proposes, the engineer ratifies. The first `hamilton build` after it binds the existing tests to the derived criteria.
-- **One agent, behind a seam.** Hamilton drives the session itself — `hamilton design` / `hamilton build` / `hamilton reverse` run the agent in process rather than handing over the terminal, which is what lets Hamilton own the question flow (so a mis-picked option can be taken back), end the session when the phase's work is done, and checkpoint every turn so an interrupted session resumes. That control is only purchasable by speaking a specific agent's protocol, so the earlier agent-agnostic launcher (`agent_command`, any CLI as a child process) was **retired**: it could set the phase but could see nothing inside the session. The dependency is contained rather than diffused — a single `AgentAdapter` (today `claude_agent_sdk`) is the only thing that knows which model is answering; the session driver, the write gate and the question flow are written against Hamilton's own event vocabulary. A second model is a second adapter. None exists yet, and the honest statement of today's position is: Hamilton runs on Claude.
+- **One agent, behind a seam.** Hamilton drives the session itself — `hamilton design` / `hamilton build` / `hamilton reverse` run the agent in process rather than handing over the terminal, which is what lets Hamilton own the question flow (so a mis-picked option can be taken back), end the session when the phase's work is done, and checkpoint every turn so an interrupted session resumes. That control is only purchasable by speaking a specific agent's protocol, so the earlier agent-agnostic launcher (`agent_command`, any CLI as a child process) was **retired**: it could set the phase but could see nothing inside the session. The dependency is contained rather than diffused — a single `AgentAdapter` (today `claude_agent_sdk`) is the only thing that knows which model is answering; the session driver, the write gate and the question flow are written against Hamilton's own event vocabulary. The adapter only translates the vendor's stream; what a turn is, which subagents are running and when a phase is done are decided once, above it, in Hamilton's own session layer — which keeps reading that stream between turns too, so work the agent does while the engineer is typing is never left waiting for an answer. A second model is a second adapter. None exists yet, and the honest statement of today's position is: Hamilton runs on Claude.
 - **Team collaboration via Git / GitLab.**
 - **Enforced gating** rather than advisory.

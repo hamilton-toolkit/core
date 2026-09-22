@@ -1,4 +1,4 @@
-"""`hamilton check` advisory warnings: `long-statement`, `long-description`
+"""`hamilton verify` advisory warnings: `long-statement`, `long-description`
 and `root-unit-only`.
 
 Warnings never change the exit code and never turn an existing project red --
@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from conftest import copy_fixture, run_check, run_fixture, run_json
+from conftest import copy_fixture, run_verify, run_fixture, run_json
 
 
 def warnings_of(payload):
@@ -22,10 +22,10 @@ def warnings_of(payload):
 def test_collect_warnings_parses_the_spec_files_when_not_given_them(tmp_path):
     """`run()` passes the actors it already parsed; a standalone caller can
     still omit them and `collect_warnings` reads `spec/actors.md` itself."""
-    from hamilton_core import check, model
+    from hamilton_core import verify, model
     d = copy_fixture("warnings", tmp_path)
     reqs, _dups, _mal = model.extract(os.path.join(d, "spec", "requirements.md"))
-    got = {w["rule"] for w in check.collect_warnings(d, reqs)}
+    got = {w["rule"] for w in verify.collect_warnings(d, reqs)}
     assert got == {"long-statement", "long-description"}
 
 
@@ -65,7 +65,7 @@ def test_statement_word_limit_boundary(tmp_path):
         "Criteria:\n- AC1: x -> y\n")
     open(os.path.join(d, "tests", "covers.js"), "w").write(
         "// @covers R-0001/AC1\n// @covers R-0002/AC1\n")
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     payload = json.loads(proc.stdout)
     long_stmts = {w["message"].split("'s")[0].split()[-1]
                   for w in payload["warnings"] if w["rule"] == "long-statement"}
@@ -79,7 +79,7 @@ def test_single_sentence_description_with_and_does_not_warn(tmp_path):
         "# Actors\n\n## A-0001\nName: Account Holder\n"
         "Description: Signs in and expects the session to persist and to end "
         "on logout (e.g. after seven days).\n")
-    payload = json.loads(run_check(d, "--json").stdout)
+    payload = json.loads(run_verify(d, "--json").stdout)
     assert "long-description" not in {w["rule"] for w in payload["warnings"]}
 
 
@@ -91,7 +91,7 @@ def test_root_unit_only_fires_for_a_root_verified_only_by_unit(tmp_path):
     body = open(path).read().replace(
         "the home page renders [http]", "the home page renders [unit]")
     open(path, "w").write(body)
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     payload = json.loads(proc.stdout)
     w = [w for w in payload["warnings"] if w["rule"] == "root-unit-only"]
     assert len(w) == 1 and "R-0100" in w[0]["message"]
@@ -105,7 +105,7 @@ def test_root_unit_only_spares_a_root_with_one_actor_facing_criterion(tmp_path):
     body = open(path).read().replace("the home page renders [http]\n",
                         "the home page renders [http]\n- AC2: x -> y [unit]\n")
     open(path, "w").write(body)
-    payload = json.loads(run_check(d, "--json").stdout)
+    payload = json.loads(run_verify(d, "--json").stdout)
     assert "root-unit-only" not in warnings_of(payload)
 
 
@@ -119,7 +119,7 @@ def test_warnings_do_not_change_a_failing_exit_code(tmp_path):
     d = copy_fixture("warnings", tmp_path)
     # break coverage: drop the tag file -> `uncovered` findings, exit 1
     os.remove(os.path.join(d, "tests", "covers.js"))
-    proc = run_check(d, "--json")
+    proc = run_verify(d, "--json")
     payload = json.loads(proc.stdout)
     assert proc.returncode == 1
     assert "uncovered" in {f["rule"] for f in payload["findings"]}
@@ -133,7 +133,7 @@ def test_warnings_are_not_findings(tmp_path):
                                  "root-unit-only")
 
 
-@pytest.mark.parametrize("name", ["clean", "tree", "model", "stale", "uncovered"])
+@pytest.mark.parametrize("name", ["clean", "tree", "model", "unreviewed", "uncovered"])
 def test_conforming_fixtures_emit_no_warnings(name, tmp_path):
     _, payload = run_json(name, tmp_path)
     assert payload["warnings"] == [], name

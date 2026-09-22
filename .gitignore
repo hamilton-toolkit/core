@@ -9,3 +9,8 @@ dist/
 
 # Local agent pointer: each developer decides (see AGENTS.md)
 CLAUDE.md
+
+# Claude Code: .claude/settings.json is shared; these are each developer's own
+.claude/settings.local.json
+.claude/worktrees/
+CLAUDE.local.md

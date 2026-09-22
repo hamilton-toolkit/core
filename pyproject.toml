@@ -40,10 +40,13 @@ packages = ["hamilton_core", "hamilton_core.session"]
 
 [tool.setuptools.package-data]
 hamilton_core = [
+    "prompts/*",
     "templates/*",
     "templates/*/*",
     "templates/*/*/*",
     "templates/*/*/*/*",
+    "plugin/.claude-plugin/plugin.json",
+    "plugin/skills/*/SKILL.md",
 ]
 
 [tool.pytest.ini_options]

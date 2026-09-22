@@ -11,12 +11,12 @@ outcome> [method]` when that shape fits.
   One bullet per method, `- **name** — description`, above the first
   requirement. The description says what is real and what is stubbed. The
   tool that runs it (Playwright, pytest, ...) is not part of it. `manual` is
-  reserved: a person judges it, and `hamilton check` lists it but never
+  reserved: a person judges it, and `hamilton verify` lists it but never
   enforces it.
 - **Every criterion ends in its method marker**, e.g. `[browser]`. Two methods
   (`[unit, http]`) are allowed but rare; usually that is two criteria.
 - **`Statement:` is one sentence, under 20 words, one behaviour.** Detail goes
-  into the acceptance criteria, where `hamilton check` can act on it.
+  into the acceptance criteria, where `hamilton verify` can act on it.
 - **`Parent:` makes the tree.** A requirement with no `Parent:` is a *root* — a
   system-level goal — and must name the `Actor:` whose goal it is. Everything
   else has a `Parent:`. Write and ratify the root layer first.
@@ -25,13 +25,13 @@ outcome> [method]` when that shape fits.
   `unit`.
 
 `hamilton show R-nnnn` prints one requirement with its full path, statement,
-criteria, methods and coverage; `hamilton tree` prints the whole outline — read
-it upward to check each parent's children add up to it.
+criteria, methods and coverage; `hamilton show` alone shows the whole outline —
+read it upward to check each parent's children add up to it.
 
-The worked example below sits in a fenced code block, so `hamilton check`
+The worked example below sits in a fenced code block, so `hamilton verify`
 ignores it. Write your own methods and requirements **below** the fence, not
 inside it. A freshly initialised project has zero real requirements and
-`hamilton check` will say so until you add one.
+`hamilton verify` will say so until you add one.
 
 ```markdown
 ## Verification methods

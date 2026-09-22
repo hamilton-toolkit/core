@@ -93,7 +93,7 @@ def test_build_phase_denies_writing_the_phase_file(tmp_path):
 
 def test_build_phase_denies_hamilton_state_and_claude(tmp_path):
     make_project(tmp_path, "build")
-    for rel in (".hamilton/verified", ".claude/settings.json",
+    for rel in (".hamilton/session", ".claude/settings.json",
                 ".claude/skills/hamilton/SKILL.md"):
         proc = run_guard(tmp_path, payload(str(tmp_path / rel)))
         assert proc.returncode != 0, rel
@@ -266,7 +266,7 @@ POLICY_CASES = [
     ("build", "tests/test_x.py"),
     ("build", "spec/requirements.md"),
     ("build", ".hamilton/config"),
-    ("build", ".hamilton/verified"),
+    ("build", ".hamilton/session"),
     ("build", ".claude/settings.json"),
     ("build", "AGENTS.md"),
     ("build", "CLAUDE.md"),
@@ -307,3 +307,115 @@ def test_the_write_target_comes_from_either_path_field():
     assert target_of({"file_path": "spec/r.md"}) == "spec/r.md"
     assert target_of({"notebook_path": "n.ipynb"}) == "n.ipynb"
     assert target_of({"command": "ls"}) is None
+
+
+# --- review suffixes (D-020) ---------------------------------------------------
+# Only the reviewer in `hamilton build` writes a suffix. A write tool may carry one through
+# unchanged, or drop it, but never introduce or change one.
+
+TAGGED = "// @covers R-0001/AC1 #aaaaaa.bbbbbb\nit('x', ...)\n"
+
+
+def _tagged(tmp_path):
+    make_project(tmp_path, "build")
+    (tmp_path / "tests" / "a.js").write_text(TAGGED)
+    return str(tmp_path)
+
+
+def _edit(old, new):
+    return {"file_path": "tests/a.js", "old_string": old, "new_string": new}
+
+
+def test_an_edit_that_adds_a_suffix_is_denied(tmp_path):
+    root = _tagged(tmp_path)
+    msg = _guard.suffix_denial("Edit", _edit("// @covers R-0001/AC2",
+                                             "// @covers R-0001/AC2 #cccccc.dddddd"), root)
+    assert msg and "hamilton build" in msg and "R-0001/AC2 #cccccc.dddddd" in msg
+
+
+def test_an_edit_that_changes_a_suffix_is_denied(tmp_path):
+    root = _tagged(tmp_path)
+    assert _guard.suffix_denial("Edit", _edit("#aaaaaa.bbbbbb", "#aaaaaa.000000"), root)
+    assert _guard.suffix_denial("Edit", _edit("@covers R-0001/AC1 #aaaaaa.bbbbbb",
+                                              "@covers R-0001/AC1 #eeeeee.bbbbbb"), root)
+
+
+def test_an_edit_that_keeps_or_drops_a_suffix_is_allowed(tmp_path):
+    root = _tagged(tmp_path)
+    tag = "// @covers R-0001/AC1 #aaaaaa.bbbbbb"
+    assert _guard.suffix_denial("Edit", _edit(f"{tag}\nit('x'", f"{tag}\nit('y'"), root) is None
+    assert _guard.suffix_denial("Edit", _edit(tag, "// @covers R-0001/AC1"), root) is None
+
+
+def test_multi_edit_is_checked_edit_by_edit(tmp_path):
+    root = _tagged(tmp_path)
+    edits = [{"old_string": "it('x'", "new_string": "it('y'"},
+             {"old_string": "// @covers R-0001/AC1 #aaaaaa.bbbbbb",
+              "new_string": "// @covers R-0001/AC1 #ffffff.ffffff"}]
+    assert _guard.suffix_denial("MultiEdit", {"file_path": "tests/a.js",
+                                              "edits": edits}, root)
+    assert _guard.suffix_denial("MultiEdit", {"file_path": "tests/a.js",
+                                              "edits": edits[:1]}, root) is None
+
+
+def test_a_whole_file_write_may_carry_unchanged_suffixes(tmp_path):
+    root = _tagged(tmp_path)
+    write = {"file_path": "tests/a.js", "content": TAGGED + "it('more', ...)\n"}
+    assert _guard.suffix_denial("Write", write, root) is None
+
+
+def test_a_write_that_adds_or_changes_a_suffix_is_denied(tmp_path):
+    root = _tagged(tmp_path)
+    changed = {"file_path": "tests/a.js",
+               "content": TAGGED.replace("bbbbbb", "000000")}
+    new_file = {"file_path": "tests/b.js", "content": TAGGED}
+    assert _guard.suffix_denial("Write", changed, root)
+    assert _guard.suffix_denial("Write", new_file, root)
+
+
+def test_a_write_that_drops_a_suffix_is_allowed(tmp_path):
+    root = _tagged(tmp_path)
+    write = {"file_path": "tests/a.js", "content": "// @covers R-0001/AC1\n"}
+    assert _guard.suffix_denial("Write", write, root) is None
+
+
+def test_suffix_rule_applies_only_in_a_hamilton_project(tmp_path):
+    (tmp_path / "a.js").write_text("")
+    write = {"file_path": "a.js", "content": TAGGED}
+    assert _guard.suffix_denial("Write", write, str(tmp_path)) is None
+
+
+def test_the_hook_backend_denies_a_forged_suffix(tmp_path):
+    root = _tagged(tmp_path)
+    forged = {"session_id": "t", "tool_name": "Edit",
+              "tool_input": _edit("#aaaaaa.bbbbbb", "#aaaaaa.000000")}
+    proc = run_guard(root, forged)
+    assert proc.returncode == 2 and "hamilton build" in proc.stderr
+    kept = {"session_id": "t", "tool_name": "Edit",
+            "tool_input": _edit("it('x'", "it('y'")}
+    assert run_guard(root, kept).returncode == 0
+
+
+def test_an_edit_that_does_not_apply_is_judged_on_its_own_strings(tmp_path):
+    root = _tagged(tmp_path)
+    missing = _edit("// @covers R-0009/AC1", "// @covers R-0009/AC1 #cccccc.dddddd")
+    assert _guard.suffix_denial("Edit", missing, root)
+
+
+def test_a_line_starting_with_a_hash_after_a_tag_is_no_suffix(tmp_path):
+    """`#include` or a shebang on the line after a tag is the next line, not a
+    review suffix -- the tag is read line by line, as `hamilton verify` reads it."""
+    root = _tagged(tmp_path)
+    for after in ("#include <stdio.h>", "#!/bin/sh"):
+        write = {"file_path": "tests/c.c",
+                 "content": f"// @covers R-0001/AC1\n{after}\nint main() {{}}\n"}
+        assert _guard.suffix_denial("Write", write, root) is None, after
+
+
+def test_guard_is_not_offered_to_the_engineer():
+    """The hook runs it; nobody should have to."""
+    proc = subprocess.run([sys.executable, "-m", "hamilton_core", "--help"],
+                          capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": REPO})
+    assert proc.returncode == 0 and "check" in proc.stdout
+    assert "guard" not in proc.stdout

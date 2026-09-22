@@ -105,7 +105,7 @@ def test_colour_is_off_without_a_tty_or_under_no_color(monkeypatch):
 def test_inline_markdown_becomes_ansi():
     paint = C.Paint(True)
     assert "\x1b[1m" in C.markdown("a **bold** word", paint)
-    assert "\x1b[36m" in C.markdown("run `hamilton check`", paint)
+    assert "\x1b[36m" in C.markdown("run `hamilton verify`", paint)
     assert C.markdown("## Heading", paint) == paint.bold("Heading")
 
 
@@ -142,7 +142,7 @@ def test_the_indicator_is_suspended_around_anything_that_reads():
     c, _ = console("1\n")
     seen = []
     c._interactive = lambda: False
-    original = c._paused
+    original = c.paused
 
     import contextlib
 
@@ -152,9 +152,72 @@ def test_the_indicator_is_suspended_around_anything_that_reads():
         with original():
             yield
 
-    c._paused = watched
+    c.paused = watched
     c.ask(QUESTION)
     assert seen == [True]
+
+
+def row(label, started=0.0, doing=""):
+    return P.Activity(label, label, started, doing)
+
+
+def test_a_running_row_reads_as_what_how_long_and_what_it_is_doing():
+    assert C.activity_lines([row("R-0001/AC1", 0, "editing tests/r-0001-ac1.test.js")],
+                            134, "⠹") == [
+        "  ⠹ R-0001/AC1  2m14s · editing tests/r-0001-ac1.test.js"]
+    assert C.activity_lines([row("Just started")], 0, "⠹") == ["  ⠹ Just started  0s"]
+
+
+def test_at_most_five_rows_are_drawn():
+    lines = C.activity_lines([row(f"r{i}") for i in range(8)], 1, "⠹")
+    assert len(lines) == 6 and lines[-1] == "  … and 3 more"
+
+
+def test_the_frame_is_erased_by_exactly_the_lines_it_drew():
+    c, out = console()
+    c._shown = 1
+    assert c._erase() == "\r\x1b[J"
+    c._shown = 3
+    assert c._erase() == "\r\x1b[2A\x1b[J"
+    c._clear_frame()
+    assert c._shown == 0 and c._erase() == ""
+
+
+def test_the_indicator_draws_the_rows_under_it():
+    c, out = console()
+    c.follow(lambda: (row("Write test R-0001/AC1", time.monotonic(), "running npm test"),))
+    stop = threading.Event()
+    threading.Timer(0.25, stop.set).start()
+    c._animate(stop)
+    frames = out.getvalue()
+    assert "Engineering…" in frames and "Write test R-0001/AC1  0s · running npm test" in frames
+    assert c._shown == 2
+
+
+def test_the_indicator_says_what_is_being_worked_on_now():
+    """A step change relabels the running indicator; it does not restart it."""
+    c, out = console()
+    stop = threading.Event()
+    threading.Timer(0.15, lambda: c.working_on("Reviewing tests")).start()
+    threading.Timer(0.35, stop.set).start()
+    c._animate(stop)
+    frames = out.getvalue()
+    assert frames.index("Engineering…") < frames.index("Reviewing tests…")
+
+
+def test_a_step_stays_in_the_scrollback():
+    c, out = console()
+    c.step("Writing tests", "3 criteria")
+    c.step("Coding")
+    assert out.getvalue() == "\n▸ Writing tests — 3 criteria\n\n▸ Coding\n"
+
+
+def test_a_finished_subagent_leaves_a_line_even_without_a_terminal():
+    c, out = console()
+    c.subagent_done("Write test R-0001/AC1", True, 134)
+    c.subagent_done("Write test R-0001/AC2", False, 3)
+    assert out.getvalue() == ("  ✓ Write test R-0001/AC1 (2m14s)\n"
+                              "  ✗ Write test R-0001/AC2 failed (3s)\n")
 
 
 # --- finishing gracefully ----------------------------------------------------
@@ -173,12 +236,16 @@ def test_the_fixed_rows_carry_no_icons():
     assert C.FINISH_ROW == "Finish this session"
 
 
-def test_finishing_a_question_reads_as_an_interruption_not_completion():
-    # mid-question the engineer is leaving mid-thought: the driver treats
-    # `aborted` as resumable, which is what we want here
+def test_finishing_at_a_question_is_a_chosen_finish():
     c, _ = console("3\n")
     c.ask(QUESTION)
-    assert c.aborted is True
+    assert c.aborted is True and c.finished is True
+
+
+def test_leaving_a_question_without_choosing_to_finish_is_an_interruption():
+    c, _ = console("")               # EOF
+    c.ask(QUESTION)
+    assert c.aborted is True and c.finished is False
 
 
 def test_choose_returns_none_when_the_engineer_finishes():
@@ -351,3 +418,45 @@ def test_an_empty_text_answer_goes_back_without_ending_the_session():
     c, _ = console("\n")
     assert c.ask_text("What should change?") is None
     assert c.aborted is False
+
+
+# --- the fold-out list ---------------------------------------------------------
+
+ITEMS = [("✗ R-0001/AC1", ["    why one"]),
+         ("✗ R-0001/AC2", ["    why two", "    and more"]),
+         ("? R-0001/AC3", ["    a question"])]
+
+
+def test_without_a_tty_the_list_prints_unfolded():
+    out = io.StringIO()
+    C.Console(out=out, inp=io.StringIO(), color=False).browse(ITEMS)
+    assert out.getvalue() == ("  ✗ R-0001/AC1\n    why one\n"
+                              "  ✗ R-0001/AC2\n    why two\n    and more\n"
+                              "  ? R-0001/AC3\n    a question\n")
+
+
+def test_what_was_unfolded_on_leaving_stays_behind(tty):
+    c, out = tty("\x1b[B\r\x1b[B \rq")         # open 2, open and close 3, leave
+    c.browse(ITEMS)
+    assert out.getvalue() == ("  ✗ R-0001/AC1\n"
+                              "  ✗ R-0001/AC2\n    why two\n    and more\n"
+                              "  ? R-0001/AC3\n")
+
+
+def test_a_confirmation_pauses_the_indicator():
+    """Otherwise the animation draws over the question while it waits."""
+    c, _ = console("y\n")
+    seen = []
+    original = c.paused
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def watched():
+        seen.append(True)
+        with original():
+            yield
+
+    c.paused = watched
+    assert c.confirm("Write this to the spec?") is True
+    assert seen == [True]

@@ -1,10 +1,10 @@
-"""Read-only readers for the spec model, shared by the view commands
-(`hamilton tree`, `hamilton show`). Nothing here writes, and none of it feeds
-`hamilton check`.
+"""Read-only readers for the spec model, shared by the view command
+`hamilton show`. Nothing here writes, and none of it feeds
+`hamilton verify`.
 
 The model is one tree (D-014): `spec/requirements.md`, whose criteria each name
 their verification method (D-019). `spec/actors.md` is a flat supporting list.
-`hamilton check` owns the requirement extractor; this module reuses it, adds
+`hamilton verify` owns the requirement extractor; this module reuses it, adds
 the actor reader, and the derived views the data model calls for:
 computed dotted paths, rolled-up coverage, reverse links.
 """
@@ -14,9 +14,10 @@ from __future__ import annotations
 import os
 import re
 
-from hamilton_core.check import (MANUAL, REQ_REL, UsageError, extract,
+from hamilton_core.verify import (MANUAL, REQ_REL, REVIEWED, UsageError,
+                                 counted, extract, extract_methods,
                                  method_paths, missing_methods, read_config,
-                                 read_verified, scan, sha, spec_lines)
+                                 scan, spec_lines)
 
 ACTORS_REL = "spec/actors.md"
 
@@ -131,8 +132,8 @@ def actor_label(aid: str, actors: dict) -> str:
     return f'{aid} "{name}"' if name else f"{aid} (unnamed)"
 
 
-# priority order for the rolled-up requirement mark in `hamilton tree`
-_STATUS_ORDER = ["unknown", "no ACs", "no method", "uncovered", "stale",
+# priority order for the rolled-up requirement mark in `hamilton show`
+_STATUS_ORDER = ["unknown", "no ACs", "no method", "uncovered", "unreviewed",
                  "covered", "manual"]
 
 
@@ -145,8 +146,10 @@ class Model:
         req_path = os.path.join(root, REQ_REL)
         if os.path.isfile(req_path):
             self.reqs, self.duplicates, self.malformed = extract(req_path)
+            defined = extract_methods(req_path)
         else:
             self.reqs, self.duplicates, self.malformed = {}, [], []
+            defined = {}
         self.actors = parse_actors(root)
         try:
             self.paths = method_paths(read_config(root))
@@ -154,17 +157,21 @@ class Model:
         except UsageError:
             self.paths = {}
             self.coverage_known = False
+        scanned = scan(root, [d for ds in self.paths.values() for d in ds])
         self.tags: dict = {}
-        for q, a, f, ln in scan(root, [d for ds in self.paths.values() for d in ds]):
-            self.tags.setdefault((q, a), []).append((f, ln))
-        self.verified = read_verified(root)
+        for t in scanned:
+            self.tags.setdefault((t.rid, t.acid), []).append((t.file, t.line))
+        # {(file, line): review state} for every tag that counts (D-020)
+        self.reviews = {(c.tag.file, c.tag.line): c.state
+                        for c in counted(root, self.reqs, defined, self.paths, scanned)}
 
     # -- coverage ---------------------------------------------------------- #
 
     def ac_status(self, rid: str, acid: str) -> str:
         """The gate's view of one AC: `no method` without a marker, `uncovered`
-        while a method has no tag under its paths, then `stale`, `manual` when
-        a person verifies it, else `covered`."""
+        while a method has no tag under its paths, `unreviewed` while any tag
+        that counts lacks a current review, `manual` when a person verifies
+        it, else `covered`."""
         if not self.coverage_known:
             return "unknown"
         ac = self.reqs[rid]["acs"][acid]
@@ -173,9 +180,9 @@ class Model:
         files = [f for f, _ in self.tags.get((rid, acid), [])]
         if missing_methods(ac["methods"], self.paths, files):
             return "uncovered"
-        seen = self.verified.get(f"{rid}/{acid}")
-        if seen is not None and seen != sha(ac["text"]):
-            return "stale"
+        if any(self.reviews.get(t, REVIEWED) != REVIEWED
+               for t in self.tags.get((rid, acid), [])):
+            return "unreviewed"
         if set(ac["methods"]) == {MANUAL}:
             return "manual"
         return "covered"

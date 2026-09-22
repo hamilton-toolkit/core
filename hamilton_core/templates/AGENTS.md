@@ -15,10 +15,13 @@ the workflows.
 - Every test carries `@covers R-nnnn/ACn`, and every AC has a passing test
   **under the paths of its verification method** that carries its tag. `manual`
   criteria are the exception: a person verifies them.
+- Every such tag carries a review suffix, `@covers R-nnnn/ACn #xxxxxx.yyyyyy`,
+  which only the reviewer in `hamilton build` writes, when it passes the test. A
+  change to the AC or to the test clears it. Never write or edit a suffix.
 - `.hamilton/` is read-only in build phase, except `.hamilton/config`: choosing
   the test framework and layout (`test_command`, `paths.<method>`) is a
   build-time call and yours to make. Do not touch any other key there.
-- `hamilton check` passes before a merge request opens.
+- `hamilton verify` passes before a merge request opens.
 - A correct failing test is never edited to pass.
 - An existing codebase gets its first spec with `hamilton reverse`: derive
   intent and the load-bearing decisions from the code and its history — do not

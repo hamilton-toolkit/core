@@ -4,6 +4,10 @@ Copies the tree under ``templates/`` into the target directory (dot-prefixing
 the names that cannot be package directory entries). Refuses if ``.hamilton/``
 already exists -- that directory is the initialised-project sentinel. Exit: 0
 scaffolded, 1 refused.
+
+What it writes is the project's from then on, to edit as it sees fit. The
+workflows are not among it: the `hamilton` skill ships in the package and each
+session loads it from there, so a newer Hamilton needs nothing re-copied.
 """
 
 from __future__ import annotations
@@ -24,39 +28,7 @@ LAYOUT = {
     "AGENTS.md": "AGENTS.md",
     "CLAUDE.md": "CLAUDE.md",
     "claude/settings.json": ".claude/settings.json",
-    # Workflow prompt: neutral Markdown in prompts/, copied into the skill dir.
-    "prompts/hamilton.md": ".claude/skills/hamilton/SKILL.md",
 }
-
-# Framework-owned files `hamilton upgrade` brings up to date: everything init
-# writes except the project's own files (spec/, the phase file, the config) and
-# the verified ledger, which the project owns outright.
-MANAGED = tuple(
-    dst for dst in LAYOUT.values()
-    if not dst.startswith("spec/")
-    and dst not in (".hamilton/phase", ".hamilton/config", ".hamilton/verified")
-)
-SRC_FOR = {dst: src for src, dst in LAYOUT.items()}
-
-# Scaffold paths a past `init` wrote and this one no longer does; `hamilton
-# upgrade` deletes them from an older project. Only framework-authored files
-# with no project value once retired belong here -- the `/spec` and `/build`
-# slash commands, replaced by `hamilton design` / `hamilton build`.
-#
-# NOT here: `.gitlab-ci.yml` (an older `init` wrote a placeholder pipeline).
-# A pipeline is the project's own (D-005); by now it may be a real one, so
-# `upgrade` leaves it -- it is simply no longer a managed file. A pre-D-005
-# project should delete the placeholder by hand.
-#
-# NOT here either: `spec/components.md` and `spec/modules.md`, which a pre-D-014
-# `init` wrote. Those live under spec/, which the project owns and `upgrade`
-# never touches; `hamilton check` ignores them. Delete them by hand once their
-# content has moved into the requirement tree.
-RETIRED = (
-    ".claude/commands/spec.md",
-    ".claude/commands/build.md",
-)
-
 
 def main(path: str | None = None) -> int:
     root = os.path.abspath(path or ".")
