@@ -25,8 +25,8 @@ outcome> [method]` when that shape fits.
   `unit`.
 
 `hamilton show R-nnnn` prints one requirement with its full path, statement,
-criteria, methods and coverage; `hamilton tree` prints the whole outline — read
-it upward to check each parent's children add up to it.
+criteria, methods and coverage; `hamilton show` alone shows the whole outline —
+read it upward to check each parent's children add up to it.
 
 The worked example below sits in a fenced code block, so `hamilton verify`
 ignores it. Write your own methods and requirements **below** the fence, not

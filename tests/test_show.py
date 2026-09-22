@@ -1,4 +1,5 @@
-"""`hamilton show <ID>` -- the per-entity view. Two id types (D-014):
+"""`hamilton show <ID>` -- the per-entity view (without an id it is the tree:
+test_show_tree.py). Two id types (D-014):
 `R-nnnn` requirement, `A-nnnn` actor.
 
 `tree` fixture: a 3-level requirement Parent chain (R-0001 -> R-0007 -> R-0042),
@@ -186,8 +187,8 @@ def test_unknown_id_exits_2(tmp_path):
     assert "not declared" in p.stderr
 
 
-def test_missing_id_argument_exits_2(tmp_path):
-    p = show("tree", tmp_path)
+def test_bad_id_names_the_id_shape(tmp_path):
+    p = show("tree", tmp_path, "X-0001")
     assert p.returncode == 2
     assert "entity id" in p.stderr
 

@@ -74,11 +74,11 @@ is writable now; source and tests are not.
 
 `hamilton design` has already printed a status banner (phase, requirement and
 coverage counts, the last three `spec/` changes). Do not repeat it. Open with
-one or two lines: greet the engineer, and — reading `hamilton tree` if you need
+one or two lines: greet the engineer, and — reading `hamilton show` if you need
 the shape — say in a sentence where the spec stands (e.g. "12 requirements, 3
 ACs still uncovered" or "the spec is empty").
 
-**If `hamilton tree` shows no requirements and `spec/vision.md` is still the
+**If `hamilton show` shows no requirements and `spec/vision.md` is still the
 scaffolded stub** (its `<…>` placeholders unfilled), this is a new project:
 offer to draft the vision first — see **Drafting the vision** below. If the
 engineer declines, write nothing to `spec/vision.md` and go straight to the one
@@ -140,8 +140,8 @@ in review, in the summary, anywhere. Not just in review.
    - `hamilton show <ID>` — one entity, `R-nnnn` or `A-nnnn`: its fields, its
      coverage, and what refers to it (a requirement's children; an actor's
      requirements).
-   - `hamilton tree` — the requirement outline with computed dotted paths and
-     a coverage mark per requirement.
+   - `hamilton show` with no id — the requirement outline with computed
+     dotted paths and a coverage mark per requirement.
 2. **Show the path, not the parent.** Walk the `Parent:` chain to the root and
    render it by title:
    `Authentication › Sessions › Reject expired tokens`.
@@ -174,7 +174,7 @@ another requirement. `hamilton verify` fails a root with no `Actor:`
 (`orphan-requirement`) and a `Parent` or `Actor` that names nothing
 (`dangling-ref`).
 
-**Completeness review.** After the root layer is ratified, run `hamilton tree`
+**Completeness review.** After the root layer is ratified, run `hamilton show`
 and read it **upward**: for each parent, ask *do these children add up to
 this?* Nothing else performs this check — a missing child requirement produces
 no finding, because absence is invisible.
@@ -474,7 +474,7 @@ approval, write on approval) and every rule in **How to show a requirement** and
 
 ### Phase E — completeness and over-specification review
 
-1. Render `hamilton tree` and read it **upward**: for each parent, *do these
+1. Render `hamilton show` and read it **upward**: for each parent, *do these
    children add up to this?* (the only check for a missing requirement,
    because absence is invisible).
 2. **Brownfield pass — code with no requirement.** Is there significant code

@@ -2,7 +2,7 @@
 banner `hamilton design` / `hamilton build` print before they launch the agent.
 
 `render(root, phase)` is pure: it parses the spec and scans for `@covers` tags
-(the same readers `hamilton tree` uses) but never runs the test suite and never
+(the same readers `hamilton show` uses) but never runs the test suite and never
 writes. It reports the phase, the requirement / acceptance-criterion counts,
 coverage and review, and the last three `spec/` commits.
 For a `build` banner it also shows `git diff --stat spec/` -- the uncommitted

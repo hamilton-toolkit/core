@@ -10,13 +10,12 @@ from hamilton_core import guard as _guard
 from hamilton_core import init as _init
 from hamilton_core import show as _show
 from hamilton_core import status as _status
-from hamilton_core import tree as _tree
 from hamilton_core.session.modes import MODES
 
 
 def _session():
     """Imported on demand: it pulls in the agent SDK, which the read-only
-    commands (`verify`, `tree`, `show`, `status`, `guard`) have no use for."""
+    commands (`verify`, `show`, `status`, `guard`) have no use for."""
     from hamilton_core.session import loop
     return loop
 
@@ -48,11 +47,10 @@ def main(argv=None) -> int:
     sub.add_parser("status", help="print a read-only project snapshot (phase, "
                    "counts, coverage, recent spec changes)")
 
-    p_tree = sub.add_parser("tree", help="print the requirement tree (dotted paths, coverage)")
-    p_tree.add_argument("--json", action="store_true", help="machine-readable output")
-
-    p_show = sub.add_parser("show", help="print one entity (R or A) and what refers to it")
-    p_show.add_argument("id", nargs="?", help="entity id: R-nnnn or A-nnnn")
+    p_show = sub.add_parser("show", help="browse the requirement tree, or print "
+                            "one entity (R or A) and what refers to it")
+    p_show.add_argument("id", nargs="?",
+                        help="entity id: R-nnnn or A-nnnn (default: the tree)")
     p_show.add_argument("--json", action="store_true", help="machine-readable output")
 
 
@@ -72,8 +70,6 @@ def main(argv=None) -> int:
         return _session().main(MODES[args.cmd])
     if args.cmd == "status":
         return _status.main()
-    if args.cmd == "tree":
-        return _tree.main(as_json=args.json)
     if args.cmd == "show":
         return _show.main(args.id, as_json=args.json)
     parser.print_help(sys.stderr)

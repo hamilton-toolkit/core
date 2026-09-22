@@ -298,7 +298,7 @@ guarantees recurrence.
 that it is complete. A missing requirement produces no signal — absence is
 invisible — and emergent properties (latency, concurrency, cross-boundary error
 propagation) are covered only where a criterion names them. The cheap
-mitigation is a completeness read-through: render `hamilton tree` after the
+mitigation is a completeness read-through: render `hamilton show` after the
 root layer is ratified and read it upward, asking of each parent: *do these
 children add up to this?* That reading checks the spec; it does not verify the
 product.

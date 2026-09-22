@@ -287,7 +287,7 @@ Advisory (warn, do not fail):
 18. A root requirement whose ACs are all `unit` — warning `root-unit-only`.
     **[check]**
 19. A parent's children do not add up to it — **not checkable**; absence is
-    invisible (concept §5.5). Mitigated by reading `hamilton tree` upward.
+    invisible (concept §5.5). Mitigated by reading `hamilton show` upward.
 
 *(Gone with D-014: `component-tree`, `module-marker`, `tree-consistency`,
 `unmarked-module`, and the `malformed` "no Component" manifestations. Gone with
@@ -309,9 +309,9 @@ Computed, never stored:
   matches.
 - **Reverse links** — a requirement's children; an actor's requirements.
 
-In the PoC these are surfaced by the read-only commands `hamilton tree` (the
-outline) and `hamilton show <ID>` (one entity — `R-nnnn` or `A-nnnn` — and what
-refers to it). Each recomputes from `spec/` on every call
+In the PoC these are surfaced by the read-only command `hamilton show`: with no
+id the outline, with `<ID>` one entity — `R-nnnn` or `A-nnnn` — and what
+refers to it. It recomputes from `spec/` on every call
 and writes nothing. There is no `hamilton graph`: a tree needs no tool to read.
 
 ---

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from hamilton_core import tree
+from hamilton_core import show
 
 
 @dataclass(frozen=True)
@@ -56,10 +56,10 @@ _SPEC_STEPS: tuple[Step, ...] = (
          picks_requirements=True),
     Step("Decompose a requirement further",
          "The engineer wants to decompose an existing requirement into "
-         "children. Render `hamilton tree`, ask which requirement to take, "
+         "children. Render `hamilton show`, ask which requirement to take, "
          "then run the review protocol for the new children."),
     Step("Check the tree adds up",
-         "Render `hamilton tree` and read it upward: for each parent, ask "
+         "Render `hamilton show` and read it upward: for each parent, ask "
          "whether its children add up to it. Report any gap you find, then "
          "run the review protocol for whatever the engineer decides to fix."),
 )
@@ -67,7 +67,7 @@ _SPEC_STEPS: tuple[Step, ...] = (
 
 def _spec_is_empty(root: str) -> str | None:
     """`reverse` derives a *first* spec, so it refuses a spec with content."""
-    n = len(tree.rows(root))
+    n = len(show.rows(root))
     if not n:
         return None
     return (f"spec/requirements.md already has {n} requirement(s). `hamilton "

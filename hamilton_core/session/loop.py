@@ -37,8 +37,8 @@ import os
 
 from hamilton_core import guard as _guard
 from hamilton_core import phase as _phase
+from hamilton_core import show as _show
 from hamilton_core import status as _status
-from hamilton_core import tree as _tree
 from hamilton_core.session import protocol as P
 from hamilton_core.session.agent import Agent
 from hamilton_core.session.claude_sdk_adapter import ClaudeSdkAdapter
@@ -51,7 +51,7 @@ NEXT_PROMPT = "That iteration is done. What next? Pick a step, or finish the ses
 
 RESUME_KICKOFF = (
     "Resuming this Hamilton session after an interruption. Re-read the state "
-    "you need (`hamilton status`, `hamilton tree`, `git diff spec/`), say in "
+    "you need (`hamilton status`, `hamilton show`, `git diff spec/`), say in "
     "one or two lines where we had got to, and carry on from there -- do not "
     "restart the workflow from the top."
 )
@@ -81,7 +81,7 @@ def next_step(console: Console, mode: Mode, root: str) -> str | None:
 def _change_picked_requirements(console: Console, step: Step, root: str) -> str | None:
     """Let the engineer pick requirements from the tree and say what should
     change. None if the tree is empty or they back out."""
-    rows = _tree.rows(root)
+    rows = _show.rows(root)
     if not rows:
         console.note("The spec has no requirements yet -- nothing to pick.")
         return None

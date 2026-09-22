@@ -1,5 +1,5 @@
-"""Read-only readers for the spec model, shared by the view commands
-(`hamilton tree`, `hamilton show`). Nothing here writes, and none of it feeds
+"""Read-only readers for the spec model, shared by the view command
+`hamilton show`. Nothing here writes, and none of it feeds
 `hamilton verify`.
 
 The model is one tree (D-014): `spec/requirements.md`, whose criteria each name
@@ -132,7 +132,7 @@ def actor_label(aid: str, actors: dict) -> str:
     return f'{aid} "{name}"' if name else f"{aid} (unnamed)"
 
 
-# priority order for the rolled-up requirement mark in `hamilton tree`
+# priority order for the rolled-up requirement mark in `hamilton show`
 _STATUS_ORDER = ["unknown", "no ACs", "no method", "uncovered", "unreviewed",
                  "covered", "manual"]
 
