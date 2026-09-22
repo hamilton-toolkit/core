@@ -342,18 +342,25 @@ def test_prompt(qual: str, reqs: dict, defined: dict, brief: str,
 
 
 def rejected_by_criterion(results: list, skipped) -> dict:
-    """{qual: its review} for each criterion whose tests did not pass."""
+    """{qual: its review} for each criterion whose tests were rejected. An
+    error is not among them: there is nothing in it for a writer to solve."""
     return {r["ac"]: r for r in results
-            if r["verdict"] in ("reject", "error") and r["ac"] not in skipped}
+            if r["verdict"] == "reject" and r["ac"] not in skipped}
+
+
+def tagged_files(root: str, quals) -> dict:
+    """{qual: the files holding a `@covers` tag for it}."""
+    paths = _check.method_paths(_check.read_config(root))
+    out: dict = {q: set() for q in quals}
+    for t in _check.scan(root, [d for ds in paths.values() for d in ds]):
+        out.get(f"{t.rid}/{t.acid}", set()).add(t.file)
+    return out
 
 
 def test_files(root: str, quals) -> list:
     """The files holding a `@covers` tag for any of these criteria -- what a
     step working on them runs, instead of the whole suite."""
-    paths = _check.method_paths(_check.read_config(root))
-    want = set(quals)
-    return sorted({t.file for t in _check.scan(root, [d for ds in paths.values() for d in ds])
-                   if f"{t.rid}/{t.acid}" in want})
+    return sorted(set().union(*tagged_files(root, quals).values()))
 
 
 def code_prompt(work: Work, reqs: dict, defined: dict, quals: list,
@@ -519,16 +526,18 @@ class Run:
     async def tests(self, quals: list, reqs: dict, defined: dict, plans: dict,
                     paths: dict, rejected: dict) -> None:
         """One writer per criterion, a few at a time. Two criteria whose
-        tests still share a file take turns on it -- until each has moved
-        into a file of its own."""
+        tests still share a file take turns on it -- from the first round,
+        until each has moved into a file of its own."""
         again = any(rejected.get(q) for q in quals)
         self.step("retests" if again else "tests",
                   _count(len(quals), "criterion", "criteria"))
         slots = asyncio.Semaphore(WRITERS)
         files: dict = {}
+        tagged = tagged_files(self.root, quals)
 
         async def write(qual: str) -> None:
-            mine = sorted({t["file"] for t in (rejected.get(qual) or {}).get("tests", ())})
+            mine = sorted(tagged[qual] | {t["file"] for t in
+                                          (rejected.get(qual) or {}).get("tests", ())})
             locks = [files.setdefault(f, asyncio.Lock()) for f in mine]
             async with slots, contextlib.AsyncExitStack() as held:
                 for lock in locks:          # sorted: no two wait on each other
@@ -591,7 +600,8 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
     # The full suite runs only when nothing else is left: every step works on
     # its own tests, and this is the one run that checks them all together.
     suite = False
-    for _ in range(PASSES):
+    passes = 0
+    while True:
         try:
             findings = run.check(suite)
         except UsageError as exc:
@@ -604,8 +614,13 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
                             f"({elapsed(time.monotonic() - started)}).")
                 State.clear(root)
                 return 0
-            suite = True        # the shape is clean; confirm with the suite
+            # The shape is clean; confirm with the suite. That check is no
+            # pass of its own, so it happens however many were spent.
+            suite = True
             continue
+        if passes == PASSES:
+            break
+        passes += 1
 
         reqs, defined, paths = _model(root)
         work = route(findings, state.skipped)
@@ -651,6 +666,9 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     plans, infeasible = {}, {}
     if work.config or work.cover:
         plans, infeasible = await run.plan(work, reqs, defined)
+    # The planner's JSON names criteria in its own words: only one the spec
+    # declares can be clarified.
+    infeasible = {q: why for q, why in infeasible.items() if _declared(reqs, q)}
     if infeasible:
         await _spec_gaps(run, infeasible, reqs)
 
@@ -676,6 +694,12 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
         elif quals:
             break                           # nothing left that may be written
         results = await run.review()
+        errors = [r for r in results if r["verdict"] == "error"]
+        if errors:
+            # The reviewer failed, or its answer did not parse: no review
+            # happened, so no writer is sent to solve it and no round is spent.
+            raise Failed(f"Review {', '.join(r['ac'] for r in errors)}",
+                         RuntimeError(errors[0]["comments"][0]["text"]))
         unclear = {r["ac"]: r["question"] for r in results
                    if r["verdict"] == "unclear"}
         if unclear:
@@ -688,6 +712,13 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     covered = [q for q in work.to_write if q not in state.skipped]
     if covered or work.suite or work.config:
         await run.code(work, reqs, defined, covered)
+
+
+def _declared(reqs: dict, qual: str) -> bool:
+    if not _QUAL_RE.fullmatch(qual):
+        return False
+    rid, acid = qual.split("/")
+    return acid in reqs.get(rid, {}).get("acs", {})
 
 
 def _model(root: str):
@@ -813,7 +844,11 @@ async def _clarified(run: "Run", reqs: dict, qual: str, question: str) -> bool:
         if not change:
             return False
         draft = amendment.draft
-    touched = _clarify.write(run.root, amendment)
+    try:
+        touched = _clarify.write(run.root, amendment)
+    except ValueError as exc:       # the spec changed while they were answering
+        console.say(f"  {console.paint.red('!')} {exc}")
+        return False
     run.state.reviews = _review.forget(run.state.reviews, touched)
     for q in touched:
         run.state.rounds.pop(q, None)

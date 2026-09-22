@@ -811,3 +811,113 @@ def test_the_suite_can_be_followed_in_its_log_not_on_the_screen(tmp_path):
     log = text.split("follow it: tail -f ")[1].split()[0]
     assert "expected 1, got 2" in open(log).read()
     assert "expected 1, got 2" not in text and "PHP unit tests" not in text
+
+
+# --- the loop's edges -----------------------------------------------------------
+
+def test_the_confirming_suite_run_is_no_pass_of_its_own(tmp_path, monkeypatch):
+    """A gate that first comes out clean on the last pass still gets its suite
+    run -- and goes green, not "still not green"."""
+    monkeypatch.setattr(B, "PASSES", 1)
+    d = project(tmp_path, "uncovered")
+    c, out = console()
+    assert run(d, FakeWorker(writes_a_test(d)), FakeJudge(passes), c) == 0
+    assert "the gate is green" in out.getvalue()
+
+
+class Garbled:
+    """A reviewer whose first answer does not parse; after that, `then`."""
+
+    def __init__(self, then):
+        self.then = FakeJudge(then)
+        self.asked = []
+
+    async def ask(self, prompt):
+        self.asked.append(prompt)
+        if len(self.asked) == 1:
+            return "I could not decide."
+        return await self.then.ask(prompt)
+
+
+def test_a_reviewer_error_is_a_failed_step_not_a_reject(tmp_path):
+    """No writer is sent to "solve" the error, and no round is spent on it."""
+    d = project(tmp_path, "uncovered")
+    worker, state = FakeWorker(writes_a_test(d)), B.State()
+    c, out = console()              # nobody to ask: reported, then ended
+    assert run(d, worker, Garbled(passes), c, state) == 1
+    assert "That step did not come back" in out.getvalue()
+    assert "Review R-0001/AC2" in out.getvalue()
+    assert len(worker.of("write_test")) == 1
+    assert state.round_of("R-0001/AC2") == 1
+
+
+def test_a_failed_review_can_be_tried_again(tmp_path):
+    d = project(tmp_path, "uncovered")
+    worker = FakeWorker(writes_a_test(d))
+    c, _out = answering("1\n")      # the first row: try that step again
+    assert run(d, worker, Garbled(passes), c) == 0
+    assert len(worker.of("write_test")) == 1
+
+
+def test_the_planner_naming_no_criterion_of_the_spec_is_ignored(tmp_path):
+    d = project(tmp_path, "uncovered")
+
+    def plans(prompt):
+        if "into a contract a test can be written" in prompt:
+            return json.dumps({"briefs": {}, "infeasible": {
+                "R-0003": "a requirement, not a criterion",
+                "R-0009/AC1": "no such requirement",
+                "R-0001/AC9": "no such criterion"}})
+        return writes_a_test(d)(prompt)
+
+    c, out = console()
+    assert run(d, FakeWorker(plans), FakeJudge(passes), c) == 0
+    assert "cannot settle" not in out.getvalue()
+
+
+def test_first_round_writers_whose_tests_share_a_file_take_turns_on_it(tmp_path):
+    """Before any review there is no list of a criterion's files but the
+    tags: two writers still must not edit the same file at once."""
+    d = project(tmp_path)
+    stamp(d)
+    with open(f"{d}/tests/shared.js", "w") as fh:
+        fh.write("// @covers R-0001/AC1\nit('a', () => {});\n\n"
+                 "// @covers R-0001/AC2\nit('b', () => {});\n")
+    busy, overlaps = [], []
+
+    class Watching(FakeWorker):
+        async def run(self, prompt, on_action=None):
+            if busy:
+                overlaps.append(prompt)
+            busy.append(prompt)
+            await asyncio.sleep(0.02)
+            busy.remove(prompt)
+            return await super().run(prompt, on_action)
+
+    r = B.Run(d, Watching(), FakeJudge(passes), console()[0], B.State())
+    reqs, defined, paths = B._model(d)
+    asyncio.run(r.tests(["R-0001/AC1", "R-0001/AC2"], reqs, defined, {}, paths, {}))
+    assert overlaps == []
+
+
+def test_a_spec_that_changed_while_the_engineer_answered_is_not_overwritten(tmp_path):
+    """The amendment was drafted against a line that is no longer there: it
+    is reported, and the engineer is back at the choice."""
+    d = project(tmp_path, "uncovered")
+    req = os.path.join(d, "spec", "requirements.md")
+
+    class EditedMeanwhile(Answering):
+        def choose(self, q, finish):
+            if q.prompt == "Write this to the spec?":
+                # someone edits the criterion while the draft is on screen
+                text = open(req).read().replace("clock-skew window", "skew window")
+                open(req, "w").write(text)
+            return super().choose(q, finish)
+
+    out = io.StringIO()
+    # clarify, answer, 1) write it -- refused -- then 2) skip it
+    c = EditedMeanwhile(out=out, inp=io.StringIO("1\nyes, inclusive\n1\n2\n"),
+                        color=False)
+    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 1
+    assert "changed while the run was waiting" in out.getvalue()
+    assert REWORDED not in spec(d)

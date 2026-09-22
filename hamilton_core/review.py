@@ -272,21 +272,26 @@ def settle(earlier: dict, answer: dict) -> dict:
             covered.append(str(a.get("covers") or text))
         else:
             comments.append(dict(c, why=str(a.get("why") or "")))
+    # Only the engineer's answer settles a question, and that answer changes
+    # the criterion, which forgets this review. Until then it stays unclear.
+    question = answer["question"] or earlier.get("question", "")
     return {"covered": covered, "comments": comments, "resolved": resolved,
-            "question": answer["question"],
-            "verdict": verdict(comments, answer["question"])}
+            "question": question, "verdict": verdict(comments, question)}
 
 
 def remember(memory: dict, results: list) -> dict:
     """The memory after `results`, one entry per criterion: a criterion that
-    passed is forgotten, one that did not keeps what its tests cover and what
-    is still open. An error changes nothing -- it is not a review."""
+    passed is forgotten, one that did not keeps what its tests cover, what is
+    still open and the question it raised. An error changes nothing -- it is
+    not a review."""
     out = dict(memory)
     for r in results:
         if r["verdict"] == "pass":
             out.pop(r["ac"], None)
         elif r["verdict"] != "error":
             out[r["ac"]] = {"covered": r["covered"], "comments": r["comments"]}
+            if r["question"]:
+                out[r["ac"]]["question"] = r["question"]
     return out
 
 
@@ -343,6 +348,9 @@ async def review(root: str, judge, only: str | None = None,
     async def judged(key, group) -> dict:
         qual = _qual(group[0])
         earlier = memory.get(qual)
+        if earlier and not (earlier["covered"] or earlier["comments"]
+                            or earlier.get("question")):
+            earlier = None      # nothing to settle: a re-review would pass it unseen
         async with slots:
             files = sorted({os.path.basename(c.tag.file) for c in group})
             watch.started(key, f"{qual} · {', '.join(files)}")

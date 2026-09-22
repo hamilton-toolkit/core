@@ -531,3 +531,33 @@ def test_adding_a_test_keeps_the_criterion_s_review(tmp_path, monkeypatch):
     [again] = rounds
     assert "C2: only one expired token is tried" in again
     assert "it('a new case', ...)" in again
+
+
+def test_an_unclear_criterion_stays_unclear_until_its_question_is_answered(
+        tmp_path, monkeypatch):
+    """A run that ends at the question leaves nothing to settle. The next
+    re-review must not read that empty list as a pass and write the suffix."""
+    import asyncio
+    d = project(tmp_path, monkeypatch)
+    before = read(d)
+    asking = FakeJudge(verdicts("unclear", question="Is a 30s skew inclusive?"))
+    memory = R.remember({}, asyncio.run(R.review(d, asking)))
+    assert memory["R-0001/AC2"]["question"] == "Is a 30s skew inclusive?"
+
+    settling_nothing = FakeJudge(lambda prompt: json.dumps(
+        [{"ac": "R-0001/AC2", "kept": {}, "resolved": {}, "question": ""}]))
+    [again] = asyncio.run(R.review(d, settling_nothing, memory=memory))
+    assert again["verdict"] == "unclear"
+    assert again["question"] == "Is a 30s skew inclusive?"
+    assert read(d) == before
+
+
+def test_a_remembered_review_with_nothing_to_settle_is_reviewed_afresh(
+        tmp_path, monkeypatch):
+    import asyncio
+    d = project(tmp_path, monkeypatch)
+    judge = FakeJudge(verdicts("reject", ["the body is never checked"]))
+    [r] = asyncio.run(R.review(d, judge, memory={
+        "R-0001/AC2": {"covered": [], "comments": []}}))
+    assert "Comments to settle" not in judge.prompts[0]
+    assert r["verdict"] == "reject"

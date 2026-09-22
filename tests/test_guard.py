@@ -400,3 +400,13 @@ def test_an_edit_that_does_not_apply_is_judged_on_its_own_strings(tmp_path):
     root = _tagged(tmp_path)
     missing = _edit("// @covers R-0009/AC1", "// @covers R-0009/AC1 #cccccc.dddddd")
     assert _guard.suffix_denial("Edit", missing, root)
+
+
+def test_a_line_starting_with_a_hash_after_a_tag_is_no_suffix(tmp_path):
+    """`#include` or a shebang on the line after a tag is the next line, not a
+    review suffix -- the tag is read line by line, as `hamilton check` reads it."""
+    root = _tagged(tmp_path)
+    for after in ("#include <stdio.h>", "#!/bin/sh"):
+        write = {"file_path": "tests/c.c",
+                 "content": f"// @covers R-0001/AC1\n{after}\nint main() {{}}\n"}
+        assert _guard.suffix_denial("Write", write, root) is None, after

@@ -94,8 +94,11 @@ def target_of(tool_input: dict) -> str | None:
 
 
 def _suffixed(text: str) -> Counter:
-    """(R-id, AC-id, suffix) for each tag in ``text`` that carries a suffix."""
-    return Counter(m.groups() for m in TAG_RE.finditer(text or "") if m.group(3))
+    """(R-id, AC-id, suffix) for each tag in ``text`` that carries a suffix.
+    Line by line, as `check.scan` reads them: a suffix never spans a line
+    break, so a tag followed by a line starting `#include` has none."""
+    return Counter(m.groups() for line in (text or "").splitlines()
+                   for m in TAG_RE.finditer(line) if m.group(3))
 
 
 def _on_disk(root: str, target: str) -> str:
