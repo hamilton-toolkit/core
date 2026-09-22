@@ -187,7 +187,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 455 passing
+$ python -m pytest -q          # expects 447 passing
 ```
 
 ### 2. Link it into a separate test project
@@ -234,9 +234,10 @@ what it should contain.
 
 `init` writes `spec/` (`vision.md`, `actors.md`, `requirements.md` — each with
 a fenced example to replace), `.hamilton/` (`phase`, `config`), `AGENTS.md`
-with `CLAUDE.md` pointing at it, and `.claude/` (the phase-guard hook settings
-and the `hamilton` skill). `AGENTS.md` and `.claude/` belong to the framework
-and stay as written.
+with `CLAUDE.md` pointing at it, and `.claude/settings.json` (the phase-guard
+hook). From then on they are your project's files. The workflows the agent
+follows — the `hamilton` skill — are not copied in: each session loads them
+from the installed Hamilton.
 
 ### 4. Specify, build, check
 
@@ -311,8 +312,6 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. |
 | `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
-| `hamilton upgrade [path]` | — | Bring the framework-managed files up to date after installing a newer Hamilton — `AGENTS.md`, `CLAUDE.md`, the `.claude/` tree. Prints a diff, then overwrites. Never touches `spec/`, `.hamilton/phase`, `.hamilton/config`. |
-| `hamilton guard` | — | Internal: the `PreToolUse` hook backend that blocks read-only-path edits, and edits that add or change a review suffix, during a session. Not run by hand. |
 
 `hamilton check`, `hamilton tree`, `hamilton show` and `hamilton status` write
 nothing. `check`, `tree` and `show` take `--json` for tooling.
@@ -458,22 +457,18 @@ Related limits, stated plainly:
 - **The agent's tool surface is not narrowed.** The phase gate governs what can
   be written, not what can be run or read.
 
-## Upgrading the scaffold
+## Upgrading Hamilton
 
-After installing a newer Hamilton, `hamilton upgrade` brings the
-framework-managed files up to date — `AGENTS.md`, `CLAUDE.md` (a pointer at
-it), and the `.claude/` tree (the phase-guard hook settings and the `hamilton`
-skill). It never touches your own work: `spec/` (including `spec/vision.md`),
-`.hamilton/phase`, `.hamilton/config`.
+Install the newer Hamilton; there is nothing to run in the project. Every
+session loads the workflows from the installed package, so the next `hamilton
+design` or `hamilton build` uses them. What `hamilton init` wrote —
+`AGENTS.md`, `CLAUDE.md`, `.claude/settings.json` — is yours and stays as it
+is.
 
-```
-$ hamilton upgrade
-```
-
-It prints a diff of everything it changes, then overwrites those files with the
-current templates, recreates any you deleted, and deletes any it has since
-retired. They belong to the framework, so it does not ask before replacing them
-— keep local changes out of them.
+**A project created before the workflows moved into the package** still has
+`.claude/skills/hamilton/SKILL.md` (and perhaps `.claude/commands/spec.md` and
+`build.md`). Nothing reads them any more; `hamilton check` prints a notice
+until you delete them.
 
 **A project created before verification methods** goes red after upgrading,
 on purpose: `retired-config` for its `test_paths` and `no-method` for every
@@ -491,8 +486,8 @@ your existing suite. `.hamilton/verified` is no longer used: `hamilton check`
 prints a notice until you delete it.
 
 **A project created before sessions moved in-process** still has an
-`agent_command` line in `.hamilton/config` (that file is yours, so `upgrade`
-won't touch it). Nothing reads it any more — delete it at your leisure.
+`agent_command` line in `.hamilton/config`. Nothing reads it any more —
+delete it at your leisure.
 
 ## The rationale
 

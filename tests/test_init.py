@@ -24,7 +24,6 @@ SCAFFOLD = [
     "AGENTS.md",
     "CLAUDE.md",
     ".claude/settings.json",
-    ".claude/skills/hamilton/SKILL.md",
 ]
 
 
@@ -158,3 +157,14 @@ def test_no_scaffold_file_matches_the_covers_tag_regex(tmp_path):
             full = os.path.join(dirpath, name)
             text = open(full, encoding="utf-8").read()
             assert not COVERS_TAG_RE.search(text), f"live @covers tag in {full}"
+
+
+def test_init_copies_no_workflows_into_the_project(tmp_path):
+    """The skill loads from the installed package, so a newer Hamilton needs
+    nothing re-copied -- and there is no `upgrade` to do it."""
+    run_init(tmp_path)
+    assert not (tmp_path / ".claude" / "skills").exists()
+    env = {**os.environ, "PYTHONPATH": REPO}
+    proc = subprocess.run([sys.executable, "-m", "hamilton_core", "upgrade"],
+                          cwd=str(tmp_path), capture_output=True, text=True, env=env)
+    assert proc.returncode == 2 and "invalid choice" in proc.stderr

@@ -685,3 +685,15 @@ def test_a_running_suite_can_be_followed_from_check_too(tmp_path):
     human = run_check(d)
     assert "follow it: tail -f /" in human.stderr
     assert "follow it" not in run_check(d, "--suite-output").stderr   # it streams
+
+
+def test_a_leftover_skill_copy_gets_a_notice(tmp_path):
+    """An older `init` copied the workflows into the project; nothing reads
+    that copy now."""
+    d = copy_fixture("clean", tmp_path)
+    os.makedirs(f"{d}/.claude/skills/hamilton")
+    open(f"{d}/.claude/skills/hamilton/SKILL.md", "w").write("old\n")
+    code, payload = _json(d)
+    assert code == 0 and payload["findings"] == []
+    assert any(n.startswith(".claude/skills/hamilton/SKILL.md is a leftover")
+               for n in payload["notices"])

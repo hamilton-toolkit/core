@@ -13,8 +13,8 @@ vendor-specific things are contained here on purpose:
   * **Writes.** The phase gate and the review-suffix rule run as a
     `can_use_tool` callback over `hamilton_core.guard.decide` and
     `guard.suffix_denial`. The project's `.claude/settings.json`
-    PreToolUse hook also fires (project settings are loaded so the `hamilton`
-    skill is available), so a write is checked twice by the same policy --
+    PreToolUse hook also fires (project settings are loaded so its
+    conventions apply), so a write is checked twice by the same policy --
     harmless, and it keeps the hook meaningful for anything else that reads it.
   * **Foreground subagents.** An in-process PreToolUse hook refuses a subagent
     the agent asks to run in the background. (`can_use_tool` is not asked
@@ -34,6 +34,7 @@ Anything a future non-SDK harness would do differently belongs in this file.
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 from typing import AsyncIterator
 
@@ -59,6 +60,14 @@ from claude_agent_sdk import (
 
 from hamilton_core import guard
 from hamilton_core.session import protocol as P
+
+# The `hamilton` skill ships in the package as a Claude Code plugin, so every
+# session runs the workflows of the Hamilton that is installed -- nothing is
+# copied into the project to go stale. The plugin path must be absolute, and a
+# plugin's skills are named "<plugin>:<skill>".
+PLUGIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "plugin")
+SKILL = "hamilton:hamilton"
 
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 SUBAGENT_TOOLS = ("Agent", "Task")      # "Task" is the tool's older name
@@ -173,14 +182,15 @@ class ClaudeSdkAdapter:
         self._ask_tool = ask_engineer  # the SDK/Hamilton question bridge
         self._options = ClaudeAgentOptions(
             cwd=root,
-            # Load the project's .claude/ so the `hamilton` skill and the
-            # phase-guard hook settings apply.
+            # Load the project's .claude/ so its settings and the phase-guard
+            # hook apply.
             setting_sources=["project"],
+            plugins=[{"type": "local", "path": PLUGIN}],
             # Named, not "all": `skills="all"` appends a bare `Skill` to the
             # effective allowed-tools, which auto-approves the tool ahead of
             # `can_use_tool` and makes the SDK warn about a shadowed callback.
             # A session is scoped to a phase, so it wants its own skill anyway.
-            skills=["hamilton"],
+            skills=[SKILL],
             mcp_servers={"hamilton": create_sdk_mcp_server(
                 "hamilton", tools=[ask_engineer])},
             can_use_tool=self._can_use_tool,

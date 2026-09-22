@@ -89,6 +89,12 @@ REQ_REL = "spec/requirements.md"
 CONFIG_REL = ".hamilton/config"
 # retired by D-020; a leftover file only earns a notice
 RETIRED_VERIFIED_REL = ".hamilton/verified"
+# Files a past `hamilton init` copied in that nothing reads any more: the
+# `hamilton` skill now loads from the installed package, and `/spec` and
+# `/build` became `hamilton design` and `hamilton build`.
+RETIRED_SCAFFOLD = (".claude/skills/hamilton/SKILL.md",
+                    ".claude/commands/spec.md",
+                    ".claude/commands/build.md")
 KNOWN_FIELDS = {"Parent", "Actor", "Statement", "Criteria"}
 # Fields a past model used; recognised and ignored so an older `requirements.md`
 # still parses (D-014, D-019). Not stored, not flagged.
@@ -587,6 +593,11 @@ def _notices(root: str, cfg: dict) -> list:
             f"{RETIRED_VERIFIED_REL} is no longer used -- reviews are recorded "
             f"in the '@covers' tags' suffixes now (D-020), and hamilton check "
             f"neither reads nor writes it. Delete it.")
+    for rel in RETIRED_SCAFFOLD:
+        if os.path.exists(os.path.join(root, rel)):
+            out.append(f"{rel} is a leftover of an older Hamilton -- the "
+                       f"workflows now load from the installed package, and "
+                       f"nothing reads this copy. Delete it.")
     mc = cfg.get("mutation_command")
     if mc is not None and mc[0].strip():
         out.append(

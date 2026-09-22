@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from typing import AsyncIterator, Awaitable, Callable, Protocol
 
 # The agent prints this literal line when its phase workflow is finished; the
-# skill (templates/prompts/hamilton.md) instructs it to. Hamilton watches for
+# skill (plugin/skills/hamilton/SKILL.md) instructs it to. Hamilton watches for
 # it and ends the session itself -- otherwise the session sits open after the
 # work is done and the engineer has to know to exit.
 SENTINEL = "HAMILTON_SESSION_DONE"

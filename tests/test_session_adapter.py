@@ -29,11 +29,25 @@ def adapter(answerer=None, write_policy=None, **kw):
 
 # --- session options ---------------------------------------------------------
 
-def test_project_settings_are_loaded_so_the_hamilton_skill_applies():
+def test_the_hamilton_skill_loads_from_the_installed_package():
+    """Not from a copy in the project, which would go stale on the next
+    Hamilton: the package ships it as a plugin."""
+    import json
+    import os
+
+    from hamilton_core.session.claude_sdk_adapter import PLUGIN, SKILL
     o = adapter()._options
     assert o.setting_sources == ["project"]
-    assert o.skills == ["hamilton"]
+    assert o.plugins == [{"type": "local", "path": PLUGIN}]
+    assert os.path.isabs(PLUGIN)                  # a relative one is not loaded
+    assert o.skills == [SKILL]
     assert "hamilton" in o.mcp_servers
+    # a plugin's skill is named "<plugin>:<skill>"
+    plugin, skill = SKILL.split(":")
+    with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json")) as fh:
+        assert json.load(fh)["name"] == plugin
+    with open(os.path.join(PLUGIN, "skills", skill, "SKILL.md")) as fh:
+        assert f"\nname: {skill}\n" in fh.read()
 
 
 def test_the_permission_callback_is_not_shadowed():

@@ -11,7 +11,6 @@ from hamilton_core import init as _init
 from hamilton_core import show as _show
 from hamilton_core import status as _status
 from hamilton_core import tree as _tree
-from hamilton_core import upgrade as _upgrade
 from hamilton_core.session.modes import MODES
 
 
@@ -24,7 +23,9 @@ def _session():
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="hamilton", description="Hamilton PoC")
-    sub = parser.add_subparsers(dest="cmd")
+    # Only commands with help are listed; `guard` is the hook backend, not
+    # something an engineer runs.
+    sub = parser.add_subparsers(dest="cmd", metavar="<command>")
 
     p_check = sub.add_parser("check", help="run the verification gate")
     p_check.add_argument("ac", nargs="?", default=None,
@@ -37,7 +38,7 @@ def main(argv=None) -> int:
     p_init = sub.add_parser("init", help="scaffold a project")
     p_init.add_argument("path", nargs="?", default=None,
                         help="target directory (default: current directory)")
-    sub.add_parser("guard", help="phase-gate PreToolUse hook backend")
+    sub.add_parser("guard")
     sub.add_parser("build", help="get the gate green: check, plan, write the "
                    "tests, have them reviewed, implement -- a loop Hamilton "
                    "drives, asking only where it cannot proceed")
@@ -54,9 +55,6 @@ def main(argv=None) -> int:
     p_show.add_argument("id", nargs="?", help="entity id: R-nnnn or A-nnnn")
     p_show.add_argument("--json", action="store_true", help="machine-readable output")
 
-    p_upgrade = sub.add_parser("upgrade", help="bring framework-managed scaffold files up to date")
-    p_upgrade.add_argument("path", nargs="?", default=None,
-                           help="target directory (default: current directory)")
 
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -78,8 +76,6 @@ def main(argv=None) -> int:
         return _tree.main(as_json=args.json)
     if args.cmd == "show":
         return _show.main(args.id, as_json=args.json)
-    if args.cmd == "upgrade":
-        return _upgrade.main(args.path)
     parser.print_help(sys.stderr)
     return 2
 

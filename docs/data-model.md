@@ -196,8 +196,7 @@ writes it, and `hamilton check` prints a notice while it still exists.
 
 `vision.md` holds prose rather than entities and is not read by `hamilton check`.
 It is phase-gated like the rest of `spec/`. A pre-D-014 project may still have
-`spec/components.md` / `spec/modules.md` on disk; they are simply unread, and
-`hamilton upgrade` does not touch `spec/`.
+`spec/components.md` / `spec/modules.md` on disk; they are simply unread.
 
 **PoC note.** ID-allocation tooling is out of scope for the PoC: IDs are
 written by hand and `hamilton init` does not create a `.hamilton/counters`

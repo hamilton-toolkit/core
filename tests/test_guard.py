@@ -410,3 +410,12 @@ def test_a_line_starting_with_a_hash_after_a_tag_is_no_suffix(tmp_path):
         write = {"file_path": "tests/c.c",
                  "content": f"// @covers R-0001/AC1\n{after}\nint main() {{}}\n"}
         assert _guard.suffix_denial("Write", write, root) is None, after
+
+
+def test_guard_is_not_offered_to_the_engineer():
+    """The hook runs it; nobody should have to."""
+    proc = subprocess.run([sys.executable, "-m", "hamilton_core", "--help"],
+                          capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": REPO})
+    assert proc.returncode == 0 and "check" in proc.stdout
+    assert "guard" not in proc.stdout
