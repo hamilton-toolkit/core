@@ -23,7 +23,7 @@ retired — see `concept.md` §5.3.
 | **Requirement** | What shall be true, plus its acceptance criteria. The requirements form one `Parent` tree, which is the whole model. |
 | **Verification method** | How an acceptance criterion is proven: what a test observes, what is real and what is stubbed. Defined once per project; named by every AC. Not an entity with an id. |
 | **Region** | What counts as "the test" for a `@covers` tag: the file's preamble (every line above its first tag block) plus the tag's own section (its tag block down to the next tag block, or the end of the file). A layout rule, not a parser. |
-| **Review suffix** | `#<obligation>.<test>` after a `@covers` tag: the record that a reviewer passed this test for this AC, as both stood then. Written only by `hamilton review`. |
+| **Review suffix** | `#<obligation>.<test>` after a `@covers` tag: the record that a reviewer passed this test for this AC, as both stood then. Written only by the reviewer in `hamilton build`. |
 
 There is no **Component** and no **Module** entity (D-014), and no
 **Interface** (D-019). The tree holds requirements and criteria; the
@@ -131,7 +131,7 @@ text:
   and lies under the paths of one of the AC's methods. Another reviewed tag for
   the same AC does not excuse an unreviewed one. `wrong-method` and
   `orphan-tag` tags are not reviewed.
-- **Only `hamilton review` writes it**, when its reviewer passes the test; the
+- **Only the reviewer in `hamilton build` writes it**, when it passes the test; the
   write gate refuses a file edit that introduces or changes one. A green
   `hamilton check` writes nothing.
 - **Cross-file code is in no region.** A shared helper in another file can

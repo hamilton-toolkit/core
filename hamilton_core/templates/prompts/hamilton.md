@@ -14,7 +14,7 @@ methods, e.g. `[browser]`. `spec/actors.md` is a flat supporting list.
 checks that every acceptance criterion has a `@covers`-tagged test under the
 paths of its method (`paths.<method>` in `.hamilton/config`), and that every
 such tag carries a current **review suffix** — `@covers R-nnnn/ACn
-#xxxxxx.yyyyyy`. Only `hamilton review` writes a suffix, when its reviewer
+#xxxxxx.yyyyyy`. Only the reviewer in `hamilton build` writes a suffix, when it
 passes the test; a change to the AC, its requirement's Statement, its method's
 definition, or the test itself leaves the tag `unreviewed`. `hamilton check`
 never writes anything. It prints the spec with a mark per criterion; `hamilton check --json`

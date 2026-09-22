@@ -1,10 +1,12 @@
-"""`hamilton review` -- the test reviewer (D-020), driven by a fake `Judge`.
+"""The test reviewer (D-020) -- `hamilton build`'s review step, driven by a
+fake `Judge`.
 
 Nothing here reaches a model: the judge is scripted, and what is pinned is
 what Hamilton does around it -- which tags it sends, what the prompt holds
 (and does not), how verdicts land in the files, and how they are reported.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -14,6 +16,7 @@ import pytest
 from conftest import copy_fixture, run_check, stamp
 
 from hamilton_core import review as R
+from hamilton_core.session.console import Paint
 
 WEB_TEST = """import { get } from './support.js';
 
@@ -54,28 +57,34 @@ def verdicts(verdict, reasons=(), question=""):
     return reply
 
 
-def project(tmp_path, monkeypatch, phase="build"):
+def project(tmp_path):
     """The clean fixture with a two-test file, AC1 reviewed and AC2 not."""
     d = copy_fixture("clean", tmp_path)
-    open(f"{d}/.hamilton/phase", "w").write(phase)
+    open(f"{d}/.hamilton/phase", "w").write("build")
     open(f"{d}/tests/covers.js", "w").write(WEB_TEST)
     stamp(d)
     body = open(f"{d}/tests/covers.js").read()
     ac2 = next(ln for ln in body.splitlines() if "R-0001/AC2" in ln)
     open(f"{d}/tests/covers.js", "w").write(body.replace(ac2, "// @covers R-0001/AC2"))
-    monkeypatch.chdir(d)
     return d
+
+
+def reviewed(d, judge, **kw):
+    return asyncio.run(R.review(d, judge, **kw))
 
 
 def read(d, rel="tests/covers.js"):
     return open(os.path.join(d, rel)).read()
 
 
-def test_a_pass_writes_exactly_that_tags_suffix(tmp_path, monkeypatch, capsys):
-    d = project(tmp_path, monkeypatch)
+PAINT = Paint(False)
+
+
+def test_a_pass_writes_exactly_that_tags_suffix(tmp_path):
+    d = project(tmp_path)
     before = read(d)
     judge = FakeJudge(verdicts("pass"))
-    assert R.main(judge=judge) == 0
+    [r] = reviewed(d, judge)
     after = read(d)
     changed = [(a, b) for a, b in zip(before.splitlines(), after.splitlines()) if a != b]
     assert len(changed) == 1 and len(judge.prompts) == 1
@@ -83,34 +92,30 @@ def test_a_pass_writes_exactly_that_tags_suffix(tmp_path, monkeypatch, capsys):
     assert old == "// @covers R-0001/AC2"
     assert new.startswith("// @covers R-0001/AC2 #") and len(new) == len(old) + 15
     assert run_check(d).returncode == 0
-    out = capsys.readouterr().out
-    assert "  ✓ R-0001/AC2  tests/covers.js:7\n" in out
-    assert "1 reviewed · 1 passed. Suffixes written for the 1 that passed." in out
+    assert R.line(r, PAINT) == "✓ R-0001/AC2  tests/covers.js:7"
+    assert R.summary([r]) == "1 reviewed · 1 passed. Suffixes written for the 1 that passed."
 
 
-def test_a_reject_leaves_the_file_and_reports_the_reasons(tmp_path, monkeypatch, capsys):
-    d = project(tmp_path, monkeypatch)
+def test_a_reject_leaves_the_file_and_reports_the_reasons(tmp_path):
+    d = project(tmp_path)
     before = read(d)
-    judge = FakeJudge(verdicts("reject", ["asserts the status but not the body"]))
-    assert R.main(judge=judge) == 1
+    [r] = reviewed(d, FakeJudge(verdicts("reject", ["asserts the status but not the body"])))
     assert read(d) == before
-    out = capsys.readouterr().out
-    assert "  ✗ R-0001/AC2  tests/covers.js:7  rejected\n" in out
-    assert "1 reviewed · 1 rejected." in out and "1 need attention:" in out
-    assert "    Criterion  token inside the 30s clock-skew window -> accepted" in out
-    assert "    Review     (no review yet)" in out
-    assert "      • asserts the status but not the body" in out
+    assert R.line(r, PAINT) == "✗ R-0001/AC2  tests/covers.js:7  rejected"
+    assert R.summary([r]) == "1 reviewed · 1 rejected."
+    assert R.details(r, 100, PAINT) == [
+        "    Criterion  token inside the 30s clock-skew window -> accepted [http]",
+        "    Review     (no review yet)",
+        "      • asserts the status but not the body"]
 
 
-def test_unclear_leaves_the_file_and_reports_the_question(tmp_path, monkeypatch, capsys):
-    d = project(tmp_path, monkeypatch)
+def test_unclear_leaves_the_file_and_reports_the_question(tmp_path):
+    d = project(tmp_path)
     before = read(d)
-    judge = FakeJudge(verdicts("unclear", question="Is a 30s skew inclusive?"))
-    assert R.main(judge=judge) == 1
+    [r] = reviewed(d, FakeJudge(verdicts("unclear", question="Is a 30s skew inclusive?")))
     assert read(d) == before
-    out = capsys.readouterr().out
-    assert "  ? R-0001/AC2  tests/covers.js:7  unclear\n" in out
-    assert "    Question   Is a 30s skew inclusive?" in out
+    assert R.line(r, PAINT) == "? R-0001/AC2  tests/covers.js:7  unclear"
+    assert "    Question   Is a 30s skew inclusive?" in R.details(r, 100, PAINT)
 
 
 @pytest.mark.parametrize("reply", [
@@ -119,21 +124,21 @@ def test_unclear_leaves_the_file_and_reports_the_question(tmp_path, monkeypatch,
     "[{\"ac\": \"R-0009/AC1\", \"covered\": [], \"comments\": []}]",
     "[not json]",
 ])
-def test_an_answer_that_does_not_parse_is_an_error(tmp_path, monkeypatch, capsys, reply):
-    d = project(tmp_path, monkeypatch)
+def test_an_answer_that_does_not_parse_is_an_error(tmp_path, reply):
+    d = project(tmp_path)
     before = read(d)
-    assert R.main(judge=FakeJudge(lambda p: reply)) == 1
+    [r] = reviewed(d, FakeJudge(lambda p: reply))
     assert read(d) == before
-    assert "  ! R-0001/AC2  tests/covers.js:7  error\n" in capsys.readouterr().out
+    assert R.line(r, PAINT) == "! R-0001/AC2  tests/covers.js:7  error"
 
 
-def test_a_failing_judge_is_an_error(tmp_path, monkeypatch, capsys):
-    project(tmp_path, monkeypatch)
+def test_a_failing_judge_is_an_error(tmp_path):
+    d = project(tmp_path)
 
     def boom(prompt):
         raise RuntimeError("no credentials")
-    assert R.main(judge=FakeJudge(boom)) == 1
-    assert "no credentials" in capsys.readouterr().out
+    [r] = reviewed(d, FakeJudge(boom))
+    assert r["verdict"] == "error" and "no credentials" in r["comments"][0]["text"]
 
 
 def test_a_fenced_json_answer_parses():
@@ -143,63 +148,41 @@ def test_a_fenced_json_answer_parses():
         "R-0001/AC1": {"covered": ["a 401"], "comments": [], "question": ""}}
 
 
-def test_the_ac_filter_reviews_only_that_criterion(tmp_path, monkeypatch):
-    d = project(tmp_path, monkeypatch)
-    open(f"{d}/tests/other.js", "w").write("// @covers R-0001/AC1\nit('x', ...)\n")
-    judge = FakeJudge(verdicts("pass"))
-    assert R.main("R-0001/AC1", judge=judge) == 0
-    assert len(judge.prompts) == 1 and "tests/other.js" in judge.prompts[0]
-    assert "// @covers R-0001/AC2\n" in read(d)             # left for later
-
-
-@pytest.mark.parametrize("only", ["R-0001", "R-0001/AC9"])
-def test_a_bad_ac_filter_is_a_usage_error(tmp_path, monkeypatch, only):
-    project(tmp_path, monkeypatch)
-    assert R.main(only, judge=FakeJudge(verdicts("pass"))) == 2
-
-
-def test_nothing_to_review_exits_zero_without_asking(tmp_path, monkeypatch, capsys):
-    d = project(tmp_path, monkeypatch)
+def test_nothing_to_review_asks_nobody(tmp_path):
+    d = project(tmp_path)
     stamp(d)
     judge = FakeJudge(verdicts("pass"))
-    assert R.main(judge=judge) == 0
+    assert reviewed(d, judge) == []
     assert judge.prompts == []
-    assert "nothing needed review" in capsys.readouterr().out
+    assert R.summary([]) == "nothing needed review"
 
 
-def test_spec_phase_exits_2(tmp_path, monkeypatch, capsys):
-    project(tmp_path, monkeypatch, phase="spec")
-    judge = FakeJudge(verdicts("pass"))
-    assert R.main(judge=judge) == 2
-    assert judge.prompts == [] and "not 'build'" in capsys.readouterr().err
-
-
-def test_json_output(tmp_path, monkeypatch, capsys):
-    project(tmp_path, monkeypatch)
-    assert R.main(as_json=True, judge=FakeJudge(verdicts("reject", ["weak"]))) == 1
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == {"ok": False, "results": [
+def test_a_result_holds_the_criterion_its_tests_and_the_review(tmp_path):
+    d = project(tmp_path)
+    assert reviewed(d, FakeJudge(verdicts("reject", ["weak"]))) == [
         {"ac": "R-0001/AC2",
          "criterion": "token inside the 30s clock-skew window -> accepted [http]",
          "tests": [{"file": "tests/covers.js", "line": 7, "state": "no review yet"}],
          "file": "tests/covers.js", "line": 7,
          "state": "no review yet", "verdict": "reject", "covered": [],
          "comments": [{"check": "clause-coverage", "text": "weak"}],
-         "resolved": [], "question": ""}]}
+         "resolved": [], "question": ""}]
 
 
-def test_json_usage_error(tmp_path, monkeypatch, capsys):
-    project(tmp_path, monkeypatch, phase="spec")
-    assert R.main(as_json=True, judge=FakeJudge(verdicts("pass"))) == 2
-    assert "error" in json.loads(capsys.readouterr().out)
+def test_there_is_no_review_command():
+    """Build drives the review until its tests converge: run on its own, it
+    would only ever find nothing to review."""
+    from hamilton_core import cli
+    with pytest.raises(SystemExit):
+        cli.main(["review"])
 
 
-def test_the_prompt_holds_the_spec_and_the_test_but_no_implementation(tmp_path, monkeypatch):
-    d = project(tmp_path, monkeypatch)
+def test_the_prompt_holds_the_spec_and_the_test_but_no_implementation(tmp_path):
+    d = project(tmp_path)
     os.makedirs(f"{d}/src")
     open(f"{d}/src/validator.js", "w").write("const SKEW = 30; // IMPLEMENTATION\n")
     judge = FakeJudge(verdicts("pass"))
-    R.main(judge=judge)
+    reviewed(d, judge)
     [prompt] = judge.prompts
     assert "The token validator rejects a request whose exp claim is in the past." in prompt
     assert "AC2: token inside the 30s clock-skew window -> accepted [http]" in prompt
@@ -211,28 +194,28 @@ def test_the_prompt_holds_the_spec_and_the_test_but_no_implementation(tmp_path, 
     assert "IMPLEMENTATION" not in prompt
 
 
-def test_a_test_tagged_for_two_criteria_is_judged_with_each(tmp_path, monkeypatch):
+def test_a_test_tagged_for_two_criteria_is_judged_with_each(tmp_path):
     """The criterion is the unit: a test that proves two is part of both sets."""
-    d = project(tmp_path, monkeypatch)
+    d = project(tmp_path)
     open(f"{d}/tests/covers.js", "w").write(
         "// @covers R-0001/AC1\n// @covers R-0001/AC2\nit('both', ...)\n")
     judge = FakeJudge(verdicts("pass"))
-    assert R.main(judge=judge) == 0
+    assert {r["verdict"] for r in reviewed(d, judge)} == {"pass"}
     assert len(judge.prompts) == 2
     assert all("it('both', ...)" in p for p in judge.prompts)
     assert run_check(d).returncode == 0
 
 
-def test_a_criterion_s_tests_are_judged_together_wherever_they_lie(tmp_path, monkeypatch):
+def test_a_criterion_s_tests_are_judged_together_wherever_they_lie(tmp_path):
     """Several tests can share a criterion's cases. Judged one by one, each
     would be faulted for the cases the others cover."""
-    d = project(tmp_path, monkeypatch)
+    d = project(tmp_path)
     open(f"{d}/tests/more.js", "w").write(
         "import { skew } from './support.js';\n\n"
         "// @covers R-0001/AC2\nit('accepts 29s of skew', ...)\n\n"
         "// @covers R-0001/AC2\nit('accepts exactly 30s of skew', ...)\n")
     judge = FakeJudge(verdicts("pass"))
-    assert R.main(judge=judge) == 0
+    assert [r["verdict"] for r in reviewed(d, judge)] == ["pass"]
     [prompt] = judge.prompts
     for text in ("accepts a token inside the skew window",   # tests/covers.js
                  "accepts 29s of skew", "accepts exactly 30s of skew"):
@@ -255,15 +238,8 @@ def test_writing_a_suffix_keeps_line_endings_and_replaces_an_old_one(tmp_path):
         b"// @covers R-0001/AC2 #cccccc.dddddd\r\n")
 
 
-def test_the_cli_routes_review(tmp_path, monkeypatch):
-    project(tmp_path, monkeypatch, phase="spec")
-    from hamilton_core import cli
-    assert cli.main(["review", "--json"]) == 2
-
-
-def test_reviewers_run_side_by_side_up_to_the_cap_and_results_keep_file_order(
-        tmp_path, monkeypatch, capsys):
-    d = project(tmp_path, monkeypatch)
+def test_reviewers_run_side_by_side_up_to_the_cap_and_results_keep_file_order(tmp_path):
+    d = project(tmp_path)
     with open(f"{d}/spec/requirements.md", "a") as fh:
         fh.write("\n## R-0002\nActor: A-0001\nStatement: The service answers health "
                  "checks.\nCriteria:\n"
@@ -274,23 +250,21 @@ def test_reviewers_run_side_by_side_up_to_the_cap_and_results_keep_file_order(
 
     class SlowJudge(FakeJudge):
         async def ask(self, prompt):
-            import asyncio
             running[0] += 1
             peak[0] = max(peak[0], running[0])
             await asyncio.sleep(0.01)
             running[0] -= 1
             return await super().ask(prompt)
 
-    assert R.main(as_json=True, judge=SlowJudge(verdicts("pass"))) == 0
+    results = reviewed(d, SlowJudge(verdicts("pass")))
     assert peak[0] == R.PARALLEL
-    files = [r["file"] for r in json.loads(capsys.readouterr().out)["results"]]
-    assert files == ["tests/covers.js"] + [f"tests/t{i}.js" for i in range(6)]
+    assert [r["file"] for r in results] == \
+        ["tests/covers.js"] + [f"tests/t{i}.js" for i in range(6)]
     assert run_check(d).returncode == 0
 
 
-def test_the_watcher_hears_each_criterion_start_and_finish(tmp_path, monkeypatch):
-    import asyncio
-    d = project(tmp_path, monkeypatch)
+def test_the_watcher_hears_each_criterion_start_and_finish(tmp_path):
+    d = project(tmp_path)
     open(f"{d}/tests/other.js", "w").write("// @covers R-0001/AC1\nit('x', ...)\n")
     heard = []
 
@@ -301,18 +275,10 @@ def test_the_watcher_hears_each_criterion_start_and_finish(tmp_path, monkeypatch
         def finished(self, key, results):
             heard.append(("finished", [r["ac"] for r in results]))
 
-    asyncio.run(R.review(d, FakeJudge(verdicts("pass")), watch=Watch()))
+    reviewed(d, FakeJudge(verdicts("pass")), watch=Watch())
     assert sorted(heard) == [("finished", ["R-0001/AC1"]), ("finished", ["R-0001/AC2"]),
                              ("started", "R-0001/AC1 · covers.js, other.js"),
                              ("started", "R-0001/AC2 · covers.js")]
-
-
-def test_json_keeps_stdout_to_the_json(tmp_path, monkeypatch, capsys):
-    project(tmp_path, monkeypatch)
-    assert R.main(as_json=True, judge=FakeJudge(verdicts("pass"))) == 0
-    out, err = capsys.readouterr()
-    assert json.loads(out)["ok"] is True
-    assert "✓ R-0001/AC2" in err and "hamilton review: 1 reviewed" in err
 
 
 def test_a_long_reason_wraps_under_its_bullet():
@@ -332,14 +298,13 @@ def test_a_long_reason_wraps_under_its_bullet():
 
 # --- a review inside `hamilton build` ----------------------------------------
 
-def shown(lines=False):
-    """A `Shown` over a console that captures what it prints. `lines=False`
-    is how a session uses it: grouped at the end, not a line per tag."""
+def shown():
+    """A `Shown` over a console that captures what it prints."""
     import io
 
     from hamilton_core.session.console import Console
     out = io.StringIO()
-    return R.Shown(Console(out=out, inp=io.StringIO(), color=False), lines), out
+    return R.Shown(Console(out=out, inp=io.StringIO(), color=False)), out
 
 
 def results(*specs):
@@ -486,18 +451,17 @@ def settling(verdict_of):
     return reply, rounds
 
 
-def test_the_memory_turns_the_next_review_into_a_re_review(tmp_path, monkeypatch):
-    import asyncio
-    d = project(tmp_path, monkeypatch)
+def test_the_memory_turns_the_next_review_into_a_re_review(tmp_path):
+    d = project(tmp_path)
     reply, rounds = settling(lambda n: settled(c2=False))
     judge = FakeJudge(reply)
-    first = asyncio.run(R.review(d, judge))
+    first = reviewed(d, judge)
     assert first[0]["verdict"] == "reject" and rounds == []
     memory = R.remember({}, first)
     assert memory == {"R-0001/AC2": {
         "covered": EARLIER["covered"], "comments": EARLIER["comments"]}}
 
-    again = asyncio.run(R.review(d, judge, memory=memory))
+    again = reviewed(d, judge, memory=memory)
     assert len(rounds) == 1
     # the re-review holds the numbered points, and still no implementation
     assert "K1: asserts a 401 for an expired token" in rounds[0]
@@ -515,49 +479,46 @@ def test_a_criterion_that_passes_is_forgotten_and_a_changed_one_too():
     assert R.forget(memory, ["R-0001/AC2"]) == {"R-0001/AC1": EARLIER}
 
 
-def test_adding_a_test_keeps_the_criterion_s_review(tmp_path, monkeypatch):
+def test_adding_a_test_keeps_the_criterion_s_review(tmp_path):
     """The memory belongs to the criterion, not to a position in a file: a
     revision that adds or moves a test is settled against the same list."""
-    import asyncio
-    d = project(tmp_path, monkeypatch)
+    d = project(tmp_path)
     reply, rounds = settling(lambda n: settled(c2=False))
     judge = FakeJudge(reply)
-    memory = R.remember({}, asyncio.run(R.review(d, judge)))
+    memory = R.remember({}, reviewed(d, judge))
     body = read(d)
     open(f"{d}/tests/covers.js", "w").write(      # a new test, above the old one
         body.replace("// @covers R-0001/AC2",
                      "// @covers R-0001/AC2\nit('a new case', ...)\n\n// @covers R-0001/AC2"))
-    asyncio.run(R.review(d, judge, memory=memory))
+    reviewed(d, judge, memory=memory)
     [again] = rounds
     assert "C2: only one expired token is tried" in again
     assert "it('a new case', ...)" in again
 
 
 def test_an_unclear_criterion_stays_unclear_until_its_question_is_answered(
-        tmp_path, monkeypatch):
+        tmp_path):
     """A run that ends at the question leaves nothing to settle. The next
     re-review must not read that empty list as a pass and write the suffix."""
-    import asyncio
-    d = project(tmp_path, monkeypatch)
+    d = project(tmp_path)
     before = read(d)
     asking = FakeJudge(verdicts("unclear", question="Is a 30s skew inclusive?"))
-    memory = R.remember({}, asyncio.run(R.review(d, asking)))
+    memory = R.remember({}, reviewed(d, asking))
     assert memory["R-0001/AC2"]["question"] == "Is a 30s skew inclusive?"
 
     settling_nothing = FakeJudge(lambda prompt: json.dumps(
         [{"ac": "R-0001/AC2", "kept": {}, "resolved": {}, "question": ""}]))
-    [again] = asyncio.run(R.review(d, settling_nothing, memory=memory))
+    [again] = reviewed(d, settling_nothing, memory=memory)
     assert again["verdict"] == "unclear"
     assert again["question"] == "Is a 30s skew inclusive?"
     assert read(d) == before
 
 
 def test_a_remembered_review_with_nothing_to_settle_is_reviewed_afresh(
-        tmp_path, monkeypatch):
-    import asyncio
-    d = project(tmp_path, monkeypatch)
+        tmp_path):
+    d = project(tmp_path)
     judge = FakeJudge(verdicts("reject", ["the body is never checked"]))
-    [r] = asyncio.run(R.review(d, judge, memory={
-        "R-0001/AC2": {"covered": [], "comments": []}}))
+    [r] = reviewed(d, judge, memory={
+        "R-0001/AC2": {"covered": [], "comments": []}})
     assert "Comments to settle" not in judge.prompts[0]
     assert r["verdict"] == "reject"

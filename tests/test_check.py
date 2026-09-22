@@ -482,7 +482,7 @@ def test_unreviewed_points_at_the_tag_and_says_why(tmp_path):
     f = payload["findings"][0]
     assert (f["rule"], f["file"], f["line"]) == ("unreviewed", "tests/covers.py", 1)
     assert (f["req"], f["ac"], f["methods"]) == ("R-0001", "AC1", ["http"])
-    assert "(no review yet)" in f["message"] and "hamilton review R-0001/AC1" in f["message"]
+    assert "(no review yet)" in f["message"] and "run 'hamilton build'" in f["message"]
 
 
 def test_a_stamped_file_is_clean(tmp_path):

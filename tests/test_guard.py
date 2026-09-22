@@ -310,7 +310,7 @@ def test_the_write_target_comes_from_either_path_field():
 
 
 # --- review suffixes (D-020) ---------------------------------------------------
-# Only `hamilton review` writes a suffix. A write tool may carry one through
+# Only the reviewer in `hamilton build` writes a suffix. A write tool may carry one through
 # unchanged, or drop it, but never introduce or change one.
 
 TAGGED = "// @covers R-0001/AC1 #aaaaaa.bbbbbb\nit('x', ...)\n"
@@ -330,7 +330,7 @@ def test_an_edit_that_adds_a_suffix_is_denied(tmp_path):
     root = _tagged(tmp_path)
     msg = _guard.suffix_denial("Edit", _edit("// @covers R-0001/AC2",
                                              "// @covers R-0001/AC2 #cccccc.dddddd"), root)
-    assert msg and "hamilton review" in msg and "R-0001/AC2 #cccccc.dddddd" in msg
+    assert msg and "hamilton build" in msg and "R-0001/AC2 #cccccc.dddddd" in msg
 
 
 def test_an_edit_that_changes_a_suffix_is_denied(tmp_path):
@@ -390,7 +390,7 @@ def test_the_hook_backend_denies_a_forged_suffix(tmp_path):
     forged = {"session_id": "t", "tool_name": "Edit",
               "tool_input": _edit("#aaaaaa.bbbbbb", "#aaaaaa.000000")}
     proc = run_guard(root, forged)
-    assert proc.returncode == 2 and "hamilton review" in proc.stderr
+    assert proc.returncode == 2 and "hamilton build" in proc.stderr
     kept = {"session_id": "t", "tool_name": "Edit",
             "tool_input": _edit("it('x'", "it('y'")}
     assert run_guard(root, kept).returncode == 0

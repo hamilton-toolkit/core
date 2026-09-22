@@ -110,7 +110,7 @@ def test_a_forged_review_suffix_is_denied(tmp_path):
     forged = {"file_path": "tests/a.js",
               "content": "// @covers R-0001/AC1 #aaaaaa.bbbbbb\n"}
     r = asyncio.run(a._can_use_tool("Write", forged, None))
-    assert r.behavior == "deny" and "hamilton review" in r.message
+    assert r.behavior == "deny" and "hamilton build" in r.message
 
 
 # --- the reviewer ------------------------------------------------------------

@@ -30,13 +30,13 @@ No phase file -> not a Hamilton project -> allow. Any other phase value ->
 fail closed.
 
 `suffix_denial(tool_name, tool_input, root)` is the second rule, in either
-phase: only `hamilton review` writes a review suffix (D-020). A Write / Edit /
-MultiEdit that introduces or changes one is refused. An unchanged suffix
-passes, so rewriting a file whole still works, and removing one is allowed --
-that only makes the test unreviewed. `hamilton review` writes files itself,
-not through an agent's tool call, so the rule never sees it. A shell write
-gets around it, as it gets around every guard rule; CI and the PR diff are the
-backstop.
+phase: only the reviewer in `hamilton build` writes a review suffix (D-020). A
+Write / Edit / MultiEdit that introduces or changes one is refused. An
+unchanged suffix passes, so rewriting a file whole still works, and removing
+one is allowed -- that only makes the test unreviewed. Hamilton writes the
+reviewer's suffix itself, not through an agent's tool call, so the rule never
+sees it. A shell write gets around it, as it gets around every guard rule; CI
+and the PR diff are the backstop.
 """
 import os
 import sys
@@ -144,9 +144,9 @@ def suffix_denial(tool_name: str, tool_input: dict, root: str) -> str | None:
         return None
     tags = ", ".join(f"'@covers {r}/{a} #{s}'" for r, a, s in sorted(forged))
     return (f"this write adds or changes a review suffix ({tags}). Only "
-            f"`hamilton review` writes a suffix, when its reviewer passes the "
-            f"test. Leave the suffix as it was, or drop it, and run `hamilton "
-            f"review` to have the test reviewed.")
+            f"the reviewer in `hamilton build` writes a suffix, when it passes "
+            f"the test. Leave the suffix as it was, or drop it: the build has "
+            f"the test reviewed.")
 
 
 def main(argv=None) -> int:

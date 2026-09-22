@@ -174,8 +174,8 @@ class AgentAdapter(Protocol):
 
 class Judge(Protocol):
     """One prompt in, one answer out, from a fresh session with no tools, no
-    project settings and nothing to resume. `hamilton review` asks it; what it
-    can judge is exactly what the prompt holds."""
+    project settings and nothing to resume. `hamilton build`'s review step
+    asks it; what it can judge is exactly what the prompt holds."""
 
     async def ask(self, prompt: str) -> str:
         ...

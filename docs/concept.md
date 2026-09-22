@@ -190,10 +190,10 @@ is made once and never recorded or revisited. Hamilton instead has it made by a
 **reviewer it runs itself**, records it per test, and invalidates it when
 either side changes (D-020).
 
-**The reviewer.** `hamilton review` hands each unreviewed test to a fresh agent
-session with no tools. Hamilton builds the prompt: the requirement's id, title
-and Statement, the AC with its method marker, the definition of that method,
-and the test's text with its file path. No implementation, no file access.
+**The reviewer.** `hamilton build`'s review step hands each unreviewed test to
+a fresh agent session with no tools. Hamilton builds the prompt: the
+requirement's id, title and Statement, the AC with its method marker, the
+definition of that method, and the test's text with its file path. No implementation, no file access.
 Unlike the writer rule (§5.2), this boundary is enforced — the session has
 nothing to read with. It judges each AC against five checks:
 
@@ -392,8 +392,8 @@ in-process permission callback the session installs and the `.claude/`
 `PreToolUse` hook, so the two cannot disagree; in a Hamilton session both run.
 The hook is what still covers a `claude` session started outside Hamilton. The
 same gate, in either phase, refuses a file edit that introduces or changes a
-review suffix (§5.3) — only `hamilton review` writes one, and it writes files
-itself, not through a hooked tool.
+review suffix (§5.3) — only the reviewer in `hamilton build` writes one, and
+Hamilton writes it itself, not through a hooked tool.
 
 **Neither layer is an unbypassable boundary.** An operator who unsets
 `HAMILTON_SESSION`, edits `.hamilton/phase` by hand, `chmod`s the paths back,
@@ -411,7 +411,7 @@ decides. No code is written.
 
 **Step 2 — Implementation**
 - *2a:* A **fresh subagent** writes tests from the AC and its method — the public signature for `unit`, a running instance otherwise — without the implementation body (see 5.2). An AC whose wording changed gets its test rewritten the same way.
-- *2b:* `hamilton review` judges every unreviewed test (§5.3). A reject goes back to a fresh writer with the reviewer's reasons, then to review again — at most three rounds per test, then a hard stop. An `unclear` is a hard stop.
+- *2b:* The reviewer judges every unreviewed test (§5.3). A reject goes back to a fresh writer with the reviewer's reasons, then to review again — at most three rounds per test, then a hard stop. An `unclear` is a hard stop.
 - *2c:* The newly reviewed tests run *before* implementing. One that is already green for a new or changed obligation is named in the summary: the behaviour exists already, or the test cannot fail.
 - *2d:* Claude implements against the ratified requirements.
 

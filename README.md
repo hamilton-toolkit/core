@@ -39,7 +39,7 @@ point that it deserved to be taken as seriously as any other kind.
 2. **The agent implements.** It writes the tests first, then the code. Each
    test carries a one-line comment naming the single criterion it covers —
    `@covers R-0001/AC1`.
-3. **`hamilton review` judges the tests.** A separate agent session, with no
+3. **A reviewer judges the tests.** A separate agent session, with no
    tools and no sight of the implementation, checks each criterion's tests
    against it — all of them together, since between them they prove it. When
    it passes them, each tag gets a review suffix —
@@ -187,7 +187,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 461 passing
+$ python -m pytest -q          # expects 455 passing
 ```
 
 ### 2. Link it into a separate test project
@@ -254,18 +254,15 @@ agent, is the real gate.
 ### Following along without an agent
 
 Every step `hamilton design` / `hamilton build` drive can be done by hand to
-see the mechanism:
+see the mechanism — except the review, which only `hamilton build` runs. With
+the tests already written, that is all it has left to do:
 
 ```
 $ printf spec  > .hamilton/phase      # (what `hamilton design` does)
 #   ... edit spec/requirements.md and spec/actors.md ...
 $ printf build > .hamilton/phase      # (what `hamilton build` does)
 #   ... write tests/ with @covers tags, then the implementation ...
-$ hamilton review      # a reviewer session per test; needs Claude credentials
-  ✓ R-0001/AC1  tests/unit/test_initials.py:3
-  ✓ R-0001/AC2  tests/unit/test_initials.py:8
-
-2 reviewed · 2 passed. Suffixes written for the 2 that passed.
+$ hamilton build       # a reviewer session per criterion; needs Claude credentials
 $ hamilton check
 hamilton check: running test_command: python -m pytest -q
 2 passed in 0.01s
@@ -273,7 +270,7 @@ hamilton check: 1 requirement(s), 2 acceptance criteria
 hamilton check: ok
 ```
 
-The review suffixes `hamilton review` writes into the tags are the record that
+The review suffixes the reviewer writes into the tags are the record that
 each test was judged against its criterion. Commit them with the tests; the
 merge-request diff shows every suffix next to the test change it certifies.
 
@@ -311,7 +308,6 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton build` | sets **build** | Get the gate green, as a loop Hamilton drives rather than a session an agent drives: `hamilton check` is the work list; a planner scaffolds each new surface as a contract; a writer per criterion writes its tests against it, in a file of their own (and may read the code); a reviewer that sees only the spec and the criterion's tests, judged together, lists what they cover and what is wrong; revisions are re-reviewed against that list only, until it is settled; then the implementation is written against the tests. Each step names itself and shows what is running. The one question it asks is a clarification: a criterion the spec cannot settle, answered by you and written into the spec on your approval. Without a terminal it reports and exits non-zero. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
 | `hamilton check [R-nnnn/ACn] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton check R-nnnn/ACn` shows one criterion's status in a second, without running the suite. Writes nothing to the project. This is the gate — run it in CI. |
-| `hamilton review [R-nnnn/ACn] [--json]` | build only | Have every unreviewed tagged test — or only one criterion's — judged by a reviewer session that sees the spec and the test but no implementation and has no tools. A pass writes the tag's review suffix; a reject or `unclear` leaves the file alone and reports why. The only thing that writes a suffix. One model call per test, a few at once. On a terminal it shows the running reviews live and ends with the tests that did not pass as a list you unfold one at a time: the criterion, then the review. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton tree [--json]` | read-only | Print the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. |
 | `hamilton show <ID> [--json]` | read-only | Print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
@@ -319,7 +315,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton guard` | — | Internal: the `PreToolUse` hook backend that blocks read-only-path edits, and edits that add or change a review suffix, during a session. Not run by hand. |
 
 `hamilton check`, `hamilton tree`, `hamilton show` and `hamilton status` write
-nothing. `check`, `review`, `tree` and `show` take `--json` for tooling.
+nothing. `check`, `tree` and `show` take `--json` for tooling.
 
 ### When `hamilton check` fails
 
@@ -337,7 +333,7 @@ nothing. `check`, `review`, `tree` and `show` take `--json` for tooling.
 | `orphan-requirement` | A requirement with no `Parent:` does not name an `Actor:`. Add the `Actor:`, or give it a `Parent:`. |
 | `dangling-ref` | A `Parent:` or `Actor:` value names an entity that isn't declared. Fix the reference, or add the entity. |
 | `cyclic-parent` | Following `Parent:` links from some requirement loops back on itself. Re-point one `Parent:`. |
-| `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:` and method definition) or its test changed since the review — the message says which. If the criterion changed, rewrite the test against the new wording; then run `hamilton review`. Never write a suffix by hand. |
+| `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:` and method definition) or its test changed since the review — the message says which. Run `hamilton build`: it rewrites the test if the criterion changed, and has it reviewed. Never write a suffix by hand. |
 | `malformed` | A requirement is missing its `Statement`, has no criteria, repeats an id, or has a line that doesn't parse — or the file has no real requirements at all. The message names the line. |
 
 It also prints **advisory warnings** — never fail the run, never change the

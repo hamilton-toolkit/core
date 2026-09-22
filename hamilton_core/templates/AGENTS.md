@@ -16,7 +16,7 @@ the workflows.
   **under the paths of its verification method** that carries its tag. `manual`
   criteria are the exception: a person verifies them.
 - Every such tag carries a review suffix, `@covers R-nnnn/ACn #xxxxxx.yyyyyy`,
-  which only `hamilton review` writes, when its reviewer passes the test. A
+  which only the reviewer in `hamilton build` writes, when it passes the test. A
   change to the AC or to the test clears it. Never write or edit a suffix.
 - `.hamilton/` is read-only in build phase, except `.hamilton/config`: choosing
   the test framework and layout (`test_command`, `paths.<method>`) is a

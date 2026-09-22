@@ -1,8 +1,10 @@
-"""`hamilton review [R-nnnn/ACn] [--json]` -- the test reviewer (D-020).
+"""The test reviewer (D-020): the review step of `hamilton build`.
 
 Every tag that counts toward coverage needs a current review suffix (see
-`check`). This command reviews each tag whose suffix is missing or out of
-date -- or only those for one AC -- and is the only thing that writes one.
+`check`). `review` reviews each tag whose suffix is missing or out of date,
+and is the only thing that writes one. There is no command of its own: build
+drives it until the tests converge, so a separate run would only ever find
+nothing to review.
 
 The unit of review is the acceptance criterion. When any of a criterion's
 tags needs a review, all of its tests are judged together, wherever they lie:
@@ -29,24 +31,15 @@ or not). A lost point reopens as a comment, a resolved comment becomes a
 covered point, so a test's coverage only grows and the list only shrinks.
 
 Up to `PARALLEL` reviewers run at once; the suffixes are written after all
-of them have answered.
+of them have answered. The running reviews show as rows under the build's
+indicator (`Shown`), and what did not pass ends up in a list the engineer
+unfolds one criterion at a time: the criterion's text, then the review.
 
-On a terminal the running reviews show live, each finished one leaves a line,
-and what did not pass ends up in a list the engineer unfolds one test at a
-time: the criterion's text, then the review. Elsewhere the same text prints
-unfolded.
-
-`hamilton build` does not run this command either: it drives the same
-`review` and `Shown` in-process, as its review step.
-
-An answer that does not parse is an error: no suffix is written. Runs only in
-build phase, because it writes test files. Exit 0 when every reviewed test
-passed (or nothing needed review), 1 on any reject, unclear or error, 2 on a
-usage error. `--json` emits {"ok": bool, "results": [...]} or {"error": "..."};
-each result is one criterion: {"ac", "criterion", "tests", "file", "line",
-"state", "verdict", "covered", "comments", "resolved", "question"}, where
-`criterion` is the AC's text, `tests` lists every test judged ({"file",
-"line", "state"}), `file`/`line` is the first of them and `state` says why the
+An answer that does not parse is an error: no suffix is written. Each result
+is one criterion: {"ac", "criterion", "tests", "file", "line", "state",
+"verdict", "covered", "comments", "resolved", "question"}, where `criterion`
+is the AC's text, `tests` lists every test judged ({"file", "line",
+"state"}), `file`/`line` is the first of them and `state` says why the
 criterion was up for review, and `comments` are the open points as
 {"check", "text", "why"}.
 """
@@ -58,12 +51,10 @@ import json
 import os
 import re
 import shutil
-import sys
 import textwrap
 from importlib import resources
 from string import Template
 
-from hamilton_core import phase as _phase
 from hamilton_core.check import (REQ_REL, REVIEWED, TAG_RE, UsageError,
                                  counted, extract, extract_methods,
                                  method_paths, read_config, scan)
@@ -77,37 +68,25 @@ DONE = {"pass": "passed", "reject": "rejected", "unclear": "unclear",
 INDENT = "    "
 LABEL = 11              # width of the label column in an unfolded result
 MAX_WIDTH = 100         # longer lines are hard to read, however wide the terminal
-_QUAL_RE = re.compile(r"(R-\d{4})/(AC\d+)")
-
-
-def targets(root: str, only: str | None = None) -> tuple[dict, dict, list]:
+def targets(root: str) -> tuple[dict, dict, list]:
     """(reqs, defined, groups): one group per acceptance criterion that needs
     a review -- every counting tag of it, wherever it lies, as soon as one of
     them is not reviewed. The criterion is the unit: its tests are judged
     together, because together is how they prove it. Groups come in the
-    order of their first test. ``only`` limits them to one "R-nnnn/ACn".
-    Raises UsageError when the spec or config is missing, or ``only`` names
-    no AC."""
+    order of their first test. Raises UsageError when the spec or config is
+    missing."""
     if not os.path.isfile(os.path.join(root, REQ_REL)):
         raise UsageError(f"{REQ_REL}: not found (run from the project root)")
     paths = method_paths(read_config(root))
     reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
     defined = extract_methods(os.path.join(root, REQ_REL))
-    if only is not None:
-        m = _QUAL_RE.fullmatch(only)
-        if not m:
-            raise UsageError(f"{only!r} is not an acceptance criterion id; "
-                             f"give it as R-nnnn/ACn, e.g. R-0001/AC2")
-        if m.group(2) not in reqs.get(m.group(1), {}).get("acs", {}):
-            raise UsageError(f"{only} is not declared in {REQ_REL}")
     tags = scan(root, [d for ds in paths.values() for d in ds])
     by_ac: dict = {}
     for c in counted(root, reqs, defined, paths, tags):
         by_ac.setdefault(_qual(c), []).append(c)
     groups = [sorted(g, key=lambda c: (c.tag.file, c.tag.line))
-              for qual, g in by_ac.items()
-              if (only is None or qual == only)
-              and any(c.state != REVIEWED for c in g)]
+              for g in by_ac.values()
+              if any(c.state != REVIEWED for c in g)]
     groups.sort(key=lambda g: (g[0].tag.file, g[0].tag.line))
     return reqs, defined, groups
 
@@ -331,8 +310,8 @@ class Watch:
         pass
 
 
-async def review(root: str, judge, only: str | None = None,
-                 watch: Watch | None = None, memory: dict | None = None) -> list:
+async def review(root: str, judge, watch: Watch | None = None,
+                 memory: dict | None = None) -> list:
     """Review every criterion that needs it, `PARALLEL` at a time. Returns
     one result per criterion, in the order of their first test.
 
@@ -340,7 +319,7 @@ async def review(root: str, judge, only: str | None = None,
     criterion it knows is re-reviewed: its points are settled, and nothing
     new is raised. One it does not know gets a first review against the
     spec. A pass writes the suffix of every one of the criterion's tags."""
-    reqs, defined, groups = targets(root, only)
+    reqs, defined, groups = targets(root)
     memory = memory or {}
     watch = watch or Watch()
     slots = asyncio.Semaphore(PARALLEL)
@@ -472,18 +451,12 @@ def summary(results: list) -> str:
 
 
 class Shown(Watch):
-    """The running reviews as rows under the console's indicator, and what
-    each finished one leaves behind.
+    """The running reviews as rows under the console's indicator. They are
+    one step of a longer run, so they report as a few grouped lines at the
+    end rather than one line per criterion as they land."""
 
-    `lines=False` for a review inside a session: there the reviews are one
-    step of a longer turn, so they report as a few grouped lines at the end
-    rather than one line per tag as they land.
-    """
-
-    def __init__(self, console: Console, lines: bool = True,
-                 rows: Rows | None = None) -> None:
+    def __init__(self, console: Console, rows: Rows | None = None) -> None:
         self._console = console
-        self._lines = lines
         self._open: list = []           # what has not passed, to unfold later
         # `hamilton build` draws its own steps and the reviews in one place,
         # so it hands its rows in rather than keeping a second set.
@@ -494,9 +467,6 @@ class Shown(Watch):
 
     def finished(self, key, results: list) -> None:
         self.rows.stop(key)
-        if self._lines:
-            for r in results:
-                self._console.say("  " + line(r, self._console.paint))
 
     def report(self, results: list) -> None:
         """The review as the engineer reads it: the files with something open,
@@ -518,7 +488,7 @@ class Shown(Watch):
         self._open = [r for r in results if r["verdict"] != "pass"]
 
     def browse(self) -> None:
-        """The open results, once the agent hands control back. Shown once:
+        """The open results, once the run is over. Shown once:
         after that they are in the scrollback as the engineer left them."""
         open_, self._open = self._open, []
         browse(self._console, open_)
@@ -526,44 +496,3 @@ class Shown(Watch):
     def failed(self, message: str) -> None:
         self._console.say("  " + self._console.paint.red(f"review: {message}"))
 
-
-def main(only: str | None = None, as_json: bool = False, judge=None) -> int:
-    root = os.getcwd()
-
-    def usage(msg: str) -> int:
-        if as_json:
-            print(json.dumps({"error": msg}))
-        else:
-            print(f"hamilton review: {msg}", file=sys.stderr)
-        return 2
-
-    phase = _phase.read(root)
-    if phase != "build":
-        return usage(f"phase is {phase or 'unset'!r}, not 'build'. Review "
-                     f"writes suffixes into test files, which only build phase "
-                     f"may write. Run it inside `hamilton build`.")
-    if judge is None:
-        from hamilton_core.session.claude_sdk_adapter import ClaudeSdkJudge
-        judge = ClaudeSdkJudge()
-    # Under --json, stdout is the JSON alone; what a person reads goes to stderr.
-    console = Console(out=sys.stderr if as_json else sys.stdout)
-    shown = Shown(console)
-    console.follow(shown.rows)
-    if not as_json:
-        console.start_working("Reviewing")
-    try:
-        results = asyncio.run(review(root, judge, only, watch=shown))
-    except UsageError as exc:
-        return usage(str(exc))
-    finally:
-        console.stop_working()
-
-    ok = all(r["verdict"] == "pass" for r in results)
-    if as_json:
-        print(json.dumps({"ok": ok, "results": results}))
-        console.say(f"hamilton review: {summary(results)}")
-        return 0 if ok else 1
-    console.say()
-    console.say(summary(results))
-    browse(console, results)
-    return 0 if ok else 1

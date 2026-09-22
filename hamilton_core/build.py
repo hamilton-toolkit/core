@@ -421,7 +421,7 @@ class Run:
         self.console = console
         self.state = state
         self.rows = Rows()
-        self.shown = _review.Shown(console, lines=False, rows=self.rows)
+        self.shown = _review.Shown(console, rows=self.rows)
         console.follow(self.rows)
         self.began = time.monotonic()
         self.spent: dict = {}           # SPENT key -> seconds

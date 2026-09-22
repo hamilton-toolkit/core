@@ -6,7 +6,7 @@ R-nnnn/ACn` tags, and checks that every tag that counts carries a current
 review suffix (D-020). `check` is read-only: it never writes a file.
 
 A review suffix -- `@covers R-0005/AC2 #3f9a2c.81d0e4` -- is written only by
-`hamilton review` when its reviewer passes the test. It is two 6-hex-digit
+the reviewer in `hamilton build` when it passes the test. It is two 6-hex-digit
 SHA-256 prefixes: the *obligation* (the AC id, its requirement's Statement,
 the AC text with marker, and the definitions of the methods under whose paths
 the test lies) and the *test* (the tag's region: the file's preamble plus the
@@ -903,22 +903,22 @@ _UNREVIEWED = {
     NEVER_REVIEWED: (
         "the tag has no review suffix, so no reviewer has judged that this "
         "test proves the criterion",
-        "run 'hamilton review {qual}'"),
+        "run 'hamilton build', which has it reviewed"),
     AC_CHANGED: (
         "the criterion, its requirement's Statement or its method's "
         "definition changed since the review, so the test may no longer "
         "prove what the criterion now says",
-        "rewrite the test against the current wording (a fresh subagent, "
-        "SKILL.md Test authoring), then run 'hamilton review {qual}'"),
+        "run 'hamilton build', which rewrites the test against the current "
+        "wording and has it reviewed"),
     TEST_CHANGED: (
         "the test changed since the review -- its section, or the preamble "
         "of its file",
-        "run 'hamilton review {qual}' to have the changed test judged again"),
+        "run 'hamilton build' to have the changed test judged again"),
     BOTH_CHANGED: (
         "both the criterion (or its Statement or method definition) and the "
         "test changed since the review",
-        "check the test against the current wording, rewrite it if it no "
-        "longer fits, then run 'hamilton review {qual}'"),
+        "run 'hamilton build', which rewrites the test against the current "
+        "wording and has it reviewed"),
 }
 
 
@@ -928,8 +928,8 @@ def _unreviewed(c: Counted, ac: dict):
     found, fix = _UNREVIEWED[state]
     return _finding("unreviewed",
         f"the '@covers {qual}' test is unreviewed ({state}). Expected: a "
-        f"current review suffix, which 'hamilton review' writes when its "
-        f"reviewer passes the test. Found: "
+        f"current review suffix, which the reviewer in 'hamilton build' "
+        f"writes when it passes the test. Found: "
         f"{'#' + t.suffix if t.suffix else 'no suffix'} -- {found}. Fix: "
         f"{fix.format(qual=qual)}. Never write or edit a suffix yourself.",
         t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"], state=state)
