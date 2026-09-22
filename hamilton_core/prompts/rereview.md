@@ -44,8 +44,9 @@ once, and it is what the tests are held to.
 - **`question`**: set it only when the **specification** is at fault -- the
   criterion's text cannot settle whether a test proves it, or no test by the
   declared method could satisfy it at all (the method rules out what the
-  outcome needs to observe, or the criterion names an open-ended set). Justify
-  it from the criterion, its referenced files and the method definition alone; never use it for a
+  outcome needs to observe, or the criterion names an open-ended set).
+  Justify it from the criterion, its referenced files and the method
+  definition alone; never use it for a
   test that is merely hard to fix.
 
 The verdict is not yours: the tests pass when every covered point is kept

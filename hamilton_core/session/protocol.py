@@ -175,7 +175,11 @@ class AgentAdapter(Protocol):
 class Judge(Protocol):
     """One prompt in, one answer out, from a fresh session with no tools, no
     project settings and nothing to resume. `hamilton build`'s review step
-    asks it; what it can judge is exactly what the prompt holds."""
+    asks it; what it can judge is exactly what the prompt holds.
+
+    `tokens` is what it has used so far, under the step `review`."""
+
+    tokens: dict
 
     async def ask(self, prompt: str) -> str:
         ...
@@ -194,10 +198,15 @@ class Worker(Protocol):
     worker's.
 
     `on_action` is told each thing the worker does, in words, for the row
-    the engineer watches.
+    the engineer watches. `step` is the kind of work -- `plan`, `tests`,
+    `code`, `clarify` -- which an adapter may pick its model by. `tokens` is
+    what the worker has used so far, per step.
     """
 
-    async def run(self, prompt: str, on_action: OnAction | None = None) -> str:
+    tokens: dict
+
+    async def run(self, prompt: str, on_action: OnAction | None = None,
+                  step: str = "") -> str:
         ...
 
 

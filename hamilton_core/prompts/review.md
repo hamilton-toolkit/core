@@ -37,11 +37,16 @@ Apply every check to the tests together:
    tautologies (asserting what the platform or the test itself guarantees),
    no assertions so loose that anything passes.
 4. **Independent expectation.** Expected values come from the specification
-   or the criterion -- including the spec files it references -- not from the implementation's own constants or files.
+   or the criterion -- including the spec files it references -- not from
+   the implementation's own constants or files.
 5. **Scope.** "Any", "every" or "all" in the criterion means the tests cover
-   the set, not a sample. Where the criterion incorporates a referenced file
-   ("priced per spec/price_model.md"), the rules, values or text of that file
-   it incorporates are part of the outcome, and the tests cover them.
+   the set the criterion names, not a sample of it. Where the criterion
+   incorporates a referenced file ("priced per spec/price_model.md"), the
+   rules, values or text of that file it incorporates are part of the
+   outcome, and the tests cover them. Scope is the set the specification
+   **names**, never one you can imagine: elements the product might add
+   later, limits no criterion sets, cases beyond the ones named are not in
+   it.
 
 Also check that the tests verify by the declared method: it exercises what
 the method definition says is real, and stubs only what it says is stubbed
@@ -49,7 +54,7 @@ the method definition says is real, and stubs only what it says is stubbed
 
 # What to answer
 
-Two lists, and possibly a question:
+Three lists, and possibly a question:
 
 - `covered` -- what the test does prove of the criterion, one short positive
   statement each ("asserts a 401 for a token whose exp is in the past"). These
@@ -57,9 +62,14 @@ Two lists, and possibly a question:
 - `comments` -- each check that fails, one short sentence each, precise
   enough for someone to fix the test from it, with the check it belongs to
   (`clause-coverage`, `starting-point`, `can-fail`, `independent-expectation`,
-  `scope`, `method`). Everything you would want changed goes here now: this
-  list is what the test is judged against from here on, and nothing can be
-  added to it later.
+  `scope`, `method`). A comment **blocks**: the tests are rewritten until it
+  is solved, and nothing can be added to this list later. So each one must
+  **name the clause of the criterion, or of a file it references, that the
+  tests fail to prove**. If you cannot name one, it is not a comment.
+- `advice` -- what would make the tests better but that the criterion does
+  not require: robustness against markup or content the specification does
+  not name, a loop limit, an extra case, readability. One short sentence
+  each. It is shown to the engineer and never blocks.
 - `question` -- set it only when the **specification** is at fault, not the
   test. That is the case when
   - the criterion's own text cannot settle whether a test proves it: it is
@@ -69,13 +79,16 @@ Two lists, and possibly a question:
   - no test by the declared method could satisfy the criterion at all: the
     method's definition rules out what the outcome needs to observe (a
     repository property under a method that allows no I/O, say), or the
-    criterion names an open-ended set ("… etc.") that no test can cover.
+    criterion ranges over an open-ended set ("… etc.", "any page matches the
+    reference") that tests could only ever sample. Ask this on the first
+    review, rather than rejecting sample after sample.
 
   Put the one question the engineer has to answer. Justify it from the
-  criterion, its referenced files and the method definition alone. Never use it for a test that is
-  merely hard to write or hard to read -- that is a comment.
+  criterion, its referenced files and the method definition alone. Never use
+  it for a test that is merely hard to write or hard to read -- that is a
+  comment, or advice.
 
-A test with no comments and no question passes. You do not give a verdict;
+A test with no comments and no question passes, whatever its advice. You do not give a verdict;
 it follows from your lists.
 
 # Answer
@@ -89,6 +102,7 @@ else.
    "covered": ["asserts a 401 for a token whose exp is in the past"],
    "comments": [{"check": "clause-coverage",
                  "text": "asserts the status but not that the body holds no user data"}],
+   "advice": ["a token that expired exactly now would pin the boundary"],
    "question": ""}
 ]
 ```

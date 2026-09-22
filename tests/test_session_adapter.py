@@ -17,7 +17,7 @@ from claude_agent_sdk import (
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import (
     FOREGROUND, ClaudeSdkAdapter, ClaudeSdkJudge, ClaudeSdkWorker, Tasks,
-    _as_question, _foreground_only, _translate,
+    _as_question, _foreground_only, _spent, _translate,
 )
 
 
@@ -330,3 +330,40 @@ def test_a_tool_call_reads_as_what_it_does_to_what():
     assert action(root, "SomethingNew", {}) == "using SomethingNew"
     long = action(root, "Bash", {"command": "x" * 200})
     assert long.endswith("…") and len(long) < 80
+
+
+# --- which model, and what it used -------------------------------------------
+
+def test_tests_and_review_default_to_a_mid_tier_model():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert w._options("tests").model == "sonnet"
+    assert w._options("plan").model is None and w._options("code").model is None
+    assert ClaudeSdkJudge()._options("/tmp/e").model == "sonnet"
+
+
+def test_a_model_named_in_the_config_wins():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None,
+                        models={"tests": "opus", "code": "sonnet"})
+    assert w._options("tests").model == "opus"
+    assert w._options("code").model == "sonnet"
+    assert ClaudeSdkJudge("haiku")._options("/tmp/e").model == "haiku"
+
+
+def result_with(usage=None, model_usage=None):
+    return ResultMessage("success", 1, 1, False, 1, "s", usage=usage,
+                         model_usage=model_usage)
+
+
+def test_tokens_are_what_was_read_fresh_and_written():
+    assert _spent(result_with(usage={"input_tokens": 10, "output_tokens": 5,
+                                     "cache_creation_input_tokens": 100,
+                                     "cache_read_input_tokens": 9999})) == 115
+
+
+def test_tokens_include_every_model_a_query_used():
+    """A worker's subagents and helper calls run on other models."""
+    per_model = {"a": {"inputTokens": 10, "outputTokens": 5,
+                       "cacheCreationInputTokens": 100, "cacheReadInputTokens": 9999},
+                 "b": {"inputTokens": 1, "outputTokens": 2,
+                       "cacheCreationInputTokens": 0, "cacheReadInputTokens": 0}}
+    assert _spent(result_with(usage={"input_tokens": 10}, model_usage=per_model)) == 118

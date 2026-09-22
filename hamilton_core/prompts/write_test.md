@@ -69,7 +69,11 @@ Also:
 - The reviewer sees the file's preamble (everything above the first `@covers`)
   and your test's own section. It cannot open other files, and judges helpers
   by their names — so name them for what they do.
-- Keep it to what the criterion says -- no more tests than its cases need.
+- **Small and plain.** Prove the criterion as written with the fewest,
+  plainest tests that do it: one per case it names. No generic discovery,
+  crawling or comparison frameworks, no guarding against markup or content
+  the specification does not name. A long test is not a thorough one -- it is
+  one the reviewer has more to find in.
 - Write only test files. Do not touch the implementation, and do not make
   the test pass by changing what it tests.
 - **Run it -- and only it.** Run this criterion's test file(s) and nothing

@@ -145,7 +145,8 @@ def test_a_fenced_json_answer_parses():
     reply = ("```json\n[{\"ac\": \"R-0001/AC1\", \"covered\": [\"a 401\"], "
              "\"comments\": []}]\n```")
     assert R.parse_first(reply, ["R-0001/AC1"]) == {
-        "R-0001/AC1": {"covered": ["a 401"], "comments": [], "question": ""}}
+        "R-0001/AC1": {"covered": ["a 401"], "comments": [], "advice": [],
+                       "question": ""}}
 
 
 def test_nothing_to_review_asks_nobody(tmp_path):
@@ -166,7 +167,7 @@ def test_a_result_holds_the_criterion_its_tests_and_the_review(tmp_path):
          "file": "tests/covers.js", "line": 7,
          "state": "no review yet", "verdict": "reject", "covered": [],
          "comments": [{"check": "clause-coverage", "text": "weak"}],
-         "resolved": [], "question": ""}]
+         "advice": [], "resolved": [], "question": ""}]
 
 
 def test_there_is_no_review_command():
@@ -459,7 +460,7 @@ def test_the_memory_turns_the_next_review_into_a_re_review(tmp_path):
     assert first[0]["verdict"] == "reject" and rounds == []
     memory = R.remember({}, first)
     assert memory == {"R-0001/AC2": {
-        "covered": EARLIER["covered"], "comments": EARLIER["comments"]}}
+        "covered": EARLIER["covered"], "comments": EARLIER["comments"], "advice": []}}
 
     again = reviewed(d, judge, memory=memory)
     assert len(rounds) == 1
@@ -539,3 +540,45 @@ def test_the_prompt_holds_the_spec_files_the_criterion_references(tmp_path):
     assert "### `spec/skew.md`" in prompt
     assert "Clock skew of up to 30 seconds is tolerated." in prompt
     assert "### `spec/skew.png`\n\n(not text, not shown)" in prompt
+
+
+# --- advice never blocks ------------------------------------------------------
+
+def advises(prompt):
+    return json.dumps([{"ac": ac, "covered": ["asserts the outcome"], "comments": [],
+                        "advice": ["a boundary case would pin it down"], "question": ""}
+                       for ac in re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M)])
+
+
+def test_advice_alone_passes_and_writes_the_suffix(tmp_path):
+    d = project(tmp_path)
+    [r] = reviewed(d, FakeJudge(advises))
+    assert r["verdict"] == "pass"
+    assert r["advice"] == ["a boundary case would pin it down"]
+    assert run_verify(d).returncode == 0
+
+
+def test_advice_is_shown_but_never_settled(tmp_path):
+    """A re-review settles the blocking comments only: advice cannot keep a
+    criterion in rewrites."""
+    earlier = dict(EARLIER, advice=["name the helper for what it checks"])
+    d = project(tmp_path)
+    judge = FakeJudge(lambda p: json.dumps([{"ac": "R-0001/AC2", **settled()}]))
+    [r] = reviewed(d, judge, memory={"R-0001/AC2": earlier})
+    [prompt] = judge.prompts
+    assert "name the helper" not in prompt
+    assert r["verdict"] == "pass" and r["advice"] == earlier["advice"]
+    shown = "\n".join(R.details(r, 100, PAINT))
+    assert "advice, not required: name the helper for what it checks" in shown
+
+
+def test_a_writer_is_not_sent_to_act_on_advice():
+    from hamilton_core import build as B
+    reqs = {"R-0001": {"title": "", "statement": "s.",
+                       "acs": {"AC1": {"text": "a -> b [unit]", "methods": ["unit"]}}}}
+    review = {"tests": [{"file": "t.js", "line": 1}], "covered": [],
+              "comments": [{"check": "can-fail", "text": "loose assertion"}],
+              "advice": ["rename the helper"]}
+    text = B.test_prompt("R-0001/AC1", reqs, {"unit": {"description": "x"}}, "",
+                         {"unit": ["tests"]}, review)
+    assert "loose assertion" in text and "rename the helper" not in text

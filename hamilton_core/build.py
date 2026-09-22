@@ -59,6 +59,7 @@ from hamilton_core.session import protocol as P
 from hamilton_core.session.console import Console, Rows, elapsed
 
 STATE_REL = os.path.join(".hamilton", "build")
+MODEL_PREFIX = "model."
 _QUAL_RE = re.compile(r"R-\d{4}/AC\d+")
 SESSION_ENV = "HAMILTON_SESSION"
 
@@ -88,9 +89,10 @@ SPEC_RULES = frozenset({"malformed", "dangling-ref", "orphan-requirement",
 CONFIG_RULES = frozenset({"no-test-command", "no-method-paths", "retired-config"})
 COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
 SUITE_RULES = frozenset({"tests-failed"})
-# `unreviewed` is routed by its state: a criterion that changed needs the test
-# written again, anything else only needs reviewing.
-REWRITE_STATES = frozenset({_verify.AC_CHANGED, _verify.BOTH_CHANGED})
+# The states of an `unreviewed` tag whose criterion changed. Its tests are
+# still reviewed first -- most still prove the new wording, and a review is
+# far cheaper than a rewrite -- but not against what was said of them before.
+CHANGED_STATES = frozenset({_verify.AC_CHANGED, _verify.BOTH_CHANGED})
 
 
 def qual_of(finding: dict) -> str:
@@ -134,10 +136,7 @@ def route(findings: list, skipped) -> Work:
             work.cover.append(f)
         elif f["rule"] in SUITE_RULES:
             work.suite.append(f)
-        elif f["rule"] == "unreviewed":
-            (work.cover if f.get("state") in REWRITE_STATES
-             else work.review).append(f)
-        else:                                       # a rule added since
+        else:           # `unreviewed`, and any rule added since: judge first
             work.review.append(f)
     return work
 
@@ -188,10 +187,13 @@ class State:
             return cls()
         known = {f for f in cls.__dataclass_fields__}
         state = cls(**{k: v for k, v in data.items() if k in known})
-        # Reviews are kept per criterion; an entry under any other key comes
-        # from an earlier layout and would never be settled again.
+        # Reviews are kept per criterion, with their advice apart from the
+        # blocking comments. An entry under any other key, or one without
+        # advice, comes from an earlier layout: its comments were all
+        # blocking, and are judged again rather than settled.
         state.reviews = {q: v for q, v in (state.reviews or {}).items()
-                         if _QUAL_RE.fullmatch(q)}
+                         if _QUAL_RE.fullmatch(q) and isinstance(v, dict)
+                         and "advice" in v}
         return state
 
     @classmethod
@@ -337,7 +339,8 @@ def test_prompt(qual: str, reqs: dict, defined: dict, brief: str,
         said += ("\n\nThe next review checks only these points, across all of "
                  "the criterion's tests together: that each comment is solved, "
                  "and that nothing already covered was lost. You may add, split "
-                 "or merge tests to get there.")
+                 "or merge tests to get there. Change nothing the comments do "
+                 "not ask for.")
     return _template("write_test").substitute(
         qual=qual, name=qual.replace("/", "-"), command=command or "the full suite",
         criterion=spec_of(reqs, defined, qual),
@@ -391,6 +394,15 @@ def _config_text(root: str) -> str:
             return fh.read().strip() or "(empty)"
     except OSError:
         return "(no .hamilton/config)"
+
+
+def models(cfg: dict) -> dict:
+    """{step: model} from the `model.<step>` keys of `.hamilton/config`, as
+    the engineer wrote them: which model a name means is the adapter's
+    business, and so is the default for a step left unset."""
+    return {key[len(MODEL_PREFIX):]: value.strip()
+            for key, (value, _line) in cfg.items()
+            if key.startswith(MODEL_PREFIX) and value.strip()}
 
 
 def plan_answer(answer: str) -> tuple[dict, dict]:
@@ -461,8 +473,22 @@ class Run:
                 part += (f" ({self.checks}×, {self.suites} with the suite)"
                          if self.suites else f" ({self.checks}×)")
             parts.append(part)
-        return (f"Time {elapsed(time.monotonic() - self.began)} · "
+        line = (f"Time {elapsed(time.monotonic() - self.began)} · "
                 + " · ".join(parts))
+        used = self.tokens()
+        return f"{line}\n{used}" if used else line
+
+    def tokens(self) -> str:
+        """What the run's agents used, per kind of work, one line -- or
+        nothing, when no agent ran."""
+        used = {k: n for k, n in {**self.worker.tokens, **self.judge.tokens}.items()
+                if n}
+        if not used:
+            return ""
+        names = {**SPENT, "clarify": "clarifying"}
+        return (f"Tokens {_tokens(sum(used.values()))} · "
+                + " · ".join(f"{names.get(k, k)} {_tokens(n)}"
+                             for k, n in sorted(used.items(), key=lambda kv: -kv[1])))
 
     # -- rendering --
 
@@ -506,14 +532,16 @@ class Run:
         entry = _verify.read_config(self.root).get("test_command")
         return entry[0].strip() if entry else "(no test_command set)"
 
-    async def task(self, key, label: str, prompt: str) -> str:
+    async def task(self, key, label: str, prompt: str, step: str) -> str:
         """One AI task, as a row while it runs and a line when it is done. A
-        task that does not come back is the step's failure, not the run's."""
+        task that does not come back is the step's failure, not the run's.
+        `step` is the kind of work, which the worker may pick its model by."""
         self.rows.start(key, label)
         try:
             try:
                 answer = await self.worker.run(
-                    prompt, on_action=lambda action: self.rows.doing(key, action))
+                    prompt, on_action=lambda action: self.rows.doing(key, action),
+                    step=step)
             except Exception as exc:
                 raise Failed(label, exc) from exc
         finally:
@@ -525,7 +553,7 @@ class Run:
     async def plan(self, work: Work, reqs: dict, defined: dict) -> tuple[dict, dict]:
         self.step("plan", _count(len(work.to_write), "criterion", "criteria"))
         answer = await self.task("plan", "Plan the surfaces",
-                                 plan_prompt(self.root, work, reqs, defined))
+                                 plan_prompt(self.root, work, reqs, defined), "plan")
         return plan_answer(answer)
 
     async def tests(self, quals: list, reqs: dict, defined: dict, plans: dict,
@@ -550,7 +578,7 @@ class Run:
                 await self.task(
                     qual, f"{qual}{' again' if rejected.get(qual) else ''}",
                     test_prompt(qual, reqs, defined, plans.get(qual, ""), paths,
-                                rejected.get(qual), self.command))
+                                rejected.get(qual), self.command), "tests")
 
         await asyncio.gather(*(write(q) for q in quals))
 
@@ -576,7 +604,16 @@ class Run:
         self.step("code", " · ".join(why))
         await self.task("code", "Write the implementation",
                         code_prompt(work, reqs, defined, quals,
-                                    test_files(self.root, quals), self.command))
+                                    test_files(self.root, quals), self.command),
+                        "code")
+
+
+def _tokens(n: int) -> str:
+    """1234 -> 1.2k, 2345678 -> 2.3M."""
+    for size, unit in ((1_000_000, "M"), (1_000, "k")):
+        if n >= size:
+            return f"{n / size:.1f}{unit}"
+    return str(n)
 
 
 def _count(n: int, one: str, many: str) -> str:
@@ -665,7 +702,7 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     """One time round: plan what is open, write and review until the tests
     pass or the engineer says otherwise, then implement."""
     # A criterion whose wording changed makes what was said of its tests moot.
-    changed = [qual_of(f) for f in work.cover if f.get("state") in REWRITE_STATES]
+    changed = [qual_of(f) for f in work.review if f.get("state") in CHANGED_STATES]
     state.reviews = _review.forget(state.reviews, changed)
 
     plans, infeasible = {}, {}
@@ -714,7 +751,10 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
         if not quals:
             break
 
-    covered = [q for q in work.to_write if q not in state.skipped]
+    # A changed criterion is implemented too: its wording may ask for more
+    # than the code does, whether or not its tests had to change.
+    covered = [q for q in dict.fromkeys(work.to_write + changed)
+               if q not in state.skipped]
     if covered or work.suite or work.config:
         await run.code(work, reqs, defined, covered)
 
@@ -826,7 +866,7 @@ async def _clarified(run: "Run", reqs: dict, qual: str, question: str) -> bool:
         try:
             reply = await run.task(f"clarify {qual}", f"Draft the change to {qual}",
                                    _clarify.prompt(run.root, qual, question, said,
-                                                   draft, change))
+                                                   draft, change), "clarify")
             amendment = _clarify.parse(run.root, qual, reply)
         except (Failed, ValueError) as exc:
             console.say(f"  {console.paint.red('!')} {exc}")
@@ -914,10 +954,16 @@ def main() -> int:
 
     from hamilton_core.session.claude_sdk_adapter import (ClaudeSdkJudge,
                                                           ClaudeSdkWorker)
-    worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target))
+    try:
+        chosen = models(_verify.read_config(root))
+    except UsageError as exc:
+        return refuse(str(exc), 2)
+    worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target),
+                             chosen)
+    judge = ClaudeSdkJudge(chosen.get("review"))
     console.start_working(STEPS["check"])
     try:
-        return asyncio.run(build(root, worker, ClaudeSdkJudge(), console, state))
+        return asyncio.run(build(root, worker, judge, console, state))
     except KeyboardInterrupt:
         console.error("interrupted -- run `hamilton build` again to carry on "
                       "from wherever `hamilton verify` now stands.")

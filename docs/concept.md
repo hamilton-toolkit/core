@@ -223,8 +223,9 @@ second covers the **test** — its *region*: the file's preamble (everything
 above the first tag) plus its own section (from its tags to the next tagged
 test or the end of the file), whitespace-normalised. Change either and the tag
 is `unreviewed`; `hamilton verify` fails and says which half changed, because
-an AC change means the test probably needs rewriting and a test change only
-needs another review. Nothing else writes a suffix — in particular not a green
+an AC change means the test must be judged against the new wording — and
+rewritten only if it no longer proves it — and a test change only needs
+another review. Nothing else writes a suffix — in particular not a green
 `hamilton verify`, which writes nothing — so a review cannot clear itself.
 
 **Why this is not the removed falsification record.** An earlier draft put a
@@ -413,7 +414,7 @@ and the verification method of each criterion. Claude may propose; the engineer
 decides. No code is written.
 
 **Step 2 — Implementation**
-- *2a:* A **fresh subagent** writes tests from the AC and its method — the public signature for `unit`, a running instance otherwise — without the implementation body (see 5.2). An AC whose wording changed gets its test rewritten the same way.
+- *2a:* A **fresh subagent** writes tests from the AC and its method — the public signature for `unit`, a running instance otherwise — without the implementation body (see 5.2). An AC whose wording changed keeps its test until the reviewer (*2b*) judges it against the new wording; only a reject sends it to a writer.
 - *2b:* The reviewer judges every unreviewed test (§5.3). A reject goes back to a fresh writer with the reviewer's reasons, then to review again — at most three rounds per test, then a hard stop. An `unclear` is a hard stop.
 - *2c:* The newly reviewed tests run *before* implementing. One that is already green for a new or changed obligation is named in the summary: the behaviour exists already, or the test cannot fail.
 - *2d:* Claude implements against the ratified requirements.

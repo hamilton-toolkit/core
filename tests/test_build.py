@@ -27,10 +27,13 @@ class FakeWorker:
 
     def __init__(self, act=None):
         self.prompts = []
+        self.steps = []
+        self.tokens = {}
         self._act = act
 
-    async def run(self, prompt, on_action=None):
+    async def run(self, prompt, on_action=None, step=""):
         self.prompts.append(prompt)
+        self.steps.append(step)
         if on_action:
             on_action("editing a file")
         return (self._act(prompt) if self._act else "") or ""
@@ -53,6 +56,7 @@ class FakeJudge:
         self._verdict = verdict
         self.asked = []
         self.settles = []
+        self.tokens = {}
 
     async def ask(self, prompt):
         self.asked.append(prompt)
@@ -159,11 +163,10 @@ def test_every_rule_reaches_exactly_one_step():
     assert [f["rule"] for f in work.spec] == ["malformed"]
     assert [f["rule"] for f in work.config] == ["no-test-command"]
     assert [f["rule"] for f in work.suite] == ["tests-failed"]
-    # a criterion that changed needs the test written again; the rest only
-    # need judging
-    assert work.to_write == ["R-0001/AC1", "R-0001/AC2", "R-0002/AC1",
-                             "R-0002/AC4"]
-    assert [f["ac"] for f in work.review] == ["AC2", "AC3"]
+    # every unreviewed test is judged first, a changed criterion's too: a
+    # review is far cheaper than a rewrite, and most still prove it
+    assert work.to_write == ["R-0001/AC1", "R-0001/AC2"]
+    assert [f["ac"] for f in work.review] == ["AC1", "AC2", "AC3", "AC4"]
 
 
 def test_a_missing_reference_goes_back_to_the_spec():
@@ -357,7 +360,7 @@ def test_what_did_not_pass_is_left_for_the_engineer_to_unfold(tmp_path):
 def test_a_task_that_does_not_come_back_is_the_steps_failure_not_the_runs(tmp_path):
     """A model error ends up as a choice, not a traceback."""
     class Broken(FakeWorker):
-        async def run(self, prompt, on_action=None):
+        async def run(self, prompt, on_action=None, step=""):
             self.prompts.append(prompt)
             raise RuntimeError("the agent session failed: out of budget")
 
@@ -373,11 +376,11 @@ def test_a_failed_step_can_be_tried_again(tmp_path):
     once = {"failed": False}
 
     class Flaky(FakeWorker):
-        async def run(self, prompt, on_action=None):
+        async def run(self, prompt, on_action=None, step=""):
             if not once["failed"] and "into a contract a test can be written" in prompt:
                 once["failed"] = True
                 raise RuntimeError("temporary failure")
-            return await super().run(prompt, on_action)
+            return await super().run(prompt, on_action, step)
 
     d = project(tmp_path, "uncovered")
     c, _out = answering("1\n")      # the first row: try that step again
@@ -468,14 +471,14 @@ def test_criteria_whose_tests_share_a_file_take_turns_on_it(tmp_path):
     busy, overlaps = set(), []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None):
+        async def run(self, prompt, on_action=None, step=""):
             if "shared.js" in prompt:
                 if busy:
                     overlaps.append(prompt)
                 busy.add(prompt)
                 await asyncio.sleep(0.02)
                 busy.discard(prompt)
-            return await super().run(prompt, on_action)
+            return await super().run(prompt, on_action, step)
 
     verdicts = iter([rejects()] * 2)
     run(d, Watching(), FakeJudge(lambda q: next(verdicts, passes)(q)), console()[0])
@@ -507,6 +510,8 @@ def test_the_list_only_shrinks_until_the_test_passes(tmp_path):
     rounds = []
 
     class Converging:
+        tokens: dict = {}
+
         async def ask(self, prompt):
             quals = re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M)
             if "Comments to settle" not in prompt:
@@ -685,8 +690,19 @@ def test_a_record_from_the_per_test_layout_is_dropped_not_carried(tmp_path):
     d = project(tmp_path)
     with open(os.path.join(d, B.STATE_REL), "w") as fh:
         fh.write(json.dumps({"reviews": {
-            "tests/a.js::R-0001/AC1::1": {"covered": [], "comments": []},
-            "R-0001/AC2": {"covered": ["x"], "comments": []}}}))
+            "tests/a.js::R-0001/AC1::1": {"covered": [], "comments": [], "advice": []},
+            "R-0001/AC2": {"covered": ["x"], "comments": [], "advice": []}}}))
+    assert list(B.State.load(d).reviews) == ["R-0001/AC2"]
+
+
+def test_a_review_from_before_advice_is_judged_again_not_settled(tmp_path):
+    """Its comments were all blocking, the nitpicks too: settling them now
+    would hold the tests to points the criterion does not make."""
+    d = project(tmp_path)
+    with open(os.path.join(d, B.STATE_REL), "w") as fh:
+        fh.write(json.dumps({"reviews": {
+            "R-0001/AC1": {"covered": [], "comments": [{"check": "scope", "text": "x"}]},
+            "R-0001/AC2": {"covered": ["x"], "comments": [], "advice": []}}}))
     assert list(B.State.load(d).reviews) == ["R-0001/AC2"]
 
 
@@ -845,6 +861,7 @@ class Garbled:
     def __init__(self, then):
         self.then = FakeJudge(then)
         self.asked = []
+        self.tokens = {}
 
     async def ask(self, prompt):
         self.asked.append(prompt)
@@ -900,13 +917,13 @@ def test_first_round_writers_whose_tests_share_a_file_take_turns_on_it(tmp_path)
     busy, overlaps = [], []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None):
+        async def run(self, prompt, on_action=None, step=""):
             if busy:
                 overlaps.append(prompt)
             busy.append(prompt)
             await asyncio.sleep(0.02)
             busy.remove(prompt)
-            return await super().run(prompt, on_action)
+            return await super().run(prompt, on_action, step)
 
     r = B.Run(d, Watching(), FakeJudge(passes), console()[0], B.State())
     reqs, defined, paths = B._model(d)
@@ -935,3 +952,71 @@ def test_a_spec_that_changed_while_the_engineer_answered_is_not_overwritten(tmp_
     assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 1
     assert "changed while the run was waiting" in out.getvalue()
     assert REWORDED not in spec(d)
+
+
+# --- a changed criterion is judged before anyone rewrites its tests ----------
+
+def reworded(root):
+    """R-0001/AC2 reworded: its reviewed test goes `AC changed`."""
+    req = os.path.join(root, "spec", "requirements.md")
+    body = open(req).read()
+    open(req, "w").write(body.replace("-> accepted [http]",
+                                      "-> accepted, and the skew logged [http]"))
+
+
+def test_a_changed_criterion_is_reviewed_before_anyone_rewrites_it(tmp_path):
+    """A review is one tool-less call; a rewrite is a whole agent session.
+    Most tests still prove a reworded criterion."""
+    d = project(tmp_path)
+    reworded(d)
+    judge, worker = FakeJudge(passes), FakeWorker()
+    assert run(d, worker, judge, console()[0]) == 0
+    assert worker.of("write_test") == []
+    assert judge.settles == []                    # a fresh review, not a settle
+    # the new wording may ask more of the code: it is implemented all the same
+    [code] = worker.of("implement")
+    assert "Criterion: AC2: token inside the 30s clock-skew window -> accepted, and " in code
+
+
+def test_a_changed_criterion_the_reviewer_rejects_is_revised_with_the_reasons(tmp_path):
+    d = project(tmp_path)
+    reworded(d)
+    verdicts = iter([rejects("the skew is never shown to be logged")])
+    judge = FakeJudge(lambda q: next(verdicts, passes)(q))
+    worker = FakeWorker()
+    run(d, worker, judge, console()[0])
+    [revision] = worker.of("write_test")
+    assert "R-0001/AC2" in revision
+    assert "the skew is never shown to be logged" in revision
+
+
+# --- what each task runs on, and what it used ---------------------------------
+
+def test_each_task_tells_the_worker_its_kind_of_work(tmp_path):
+    d = project(tmp_path, "uncovered")
+    worker = FakeWorker(writes_a_test(d))
+    run(d, worker, FakeJudge(passes), console()[0])
+    assert set(worker.steps) == {"plan", "tests", "code"}
+
+
+def test_models_are_read_from_the_config_as_written():
+    cfg = {"model.tests": (" haiku ", 3), "model.code": ("", 4),
+           "test_command": ("true", 1)}
+    assert B.models(cfg) == {"tests": "haiku"}
+
+
+def test_the_run_ends_with_the_tokens_each_kind_of_work_used(tmp_path):
+    d = project(tmp_path)
+    worker, judge = FakeWorker(), FakeJudge(passes)
+    worker.tokens = {"tests": 1_234_567, "code": 5_000, "plan": 0}
+    judge.tokens = {"review": 300}
+    c, out = console()
+    run(d, worker, judge, c)
+    assert ("Tokens 1.2M · writing tests 1.2M · coding 5.0k · reviewing 300"
+            in out.getvalue())
+
+
+def test_no_tokens_line_when_no_agent_ran(tmp_path):
+    c, out = console()
+    run(project(tmp_path), FakeWorker(), FakeJudge(passes), c)
+    assert "Tokens" not in out.getvalue()

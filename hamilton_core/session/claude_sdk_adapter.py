@@ -26,7 +26,10 @@ vendor-specific things are contained here on purpose:
   * **One-shot work.** `ClaudeSdkJudge` (a reviewer, no tools) and
     `ClaudeSdkWorker` (one step of `hamilton build`, with tools and the phase
     guard) are both `query()` calls with no session behind them. That is what
-    lets the build loop be driven by Hamilton instead of by an agent.
+    lets the build loop be driven by Hamilton instead of by an agent. Which
+    model each kind of build work runs on is decided here too
+    (`DEFAULT_MODELS`, overridden by `model.<step>` in `.hamilton/config`),
+    and so is what counts as a token spent (`_spent`).
 
 Anything a future non-SDK harness would do differently belongs in this file.
 """
@@ -318,11 +321,40 @@ async def _foreground_only(hook_input, tool_use_id, context) -> dict:
                                    "permissionDecisionReason": FOREGROUND}}
 
 
+# The model for each kind of build work when `.hamilton/config` names none.
+# Writing and reviewing tests are many small, well-briefed tasks: a mid-tier
+# model does them for a fraction of the usage. Planning and coding decide
+# the shape of the code, and keep the CLI's default.
+DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
+
+
+def _model(step: str, chosen: dict) -> str | None:
+    """The model for `step`: the engineer's choice, else ours, else None --
+    the CLI's own default."""
+    return chosen.get(step) or DEFAULT_MODELS.get(step)
+
+
+def _spent(msg: ResultMessage) -> int:
+    """The tokens one query used: everything its models read fresh and
+    everything they wrote, subagents included. Reading a cached prompt again
+    is left out -- it is cheap, and would count one prompt over and over."""
+    if msg.model_usage:
+        return sum(int(u.get(k) or 0) for u in msg.model_usage.values()
+                   for k in ("inputTokens", "outputTokens", "cacheCreationInputTokens"))
+    usage = msg.usage or {}
+    return sum(int(usage.get(k) or 0) for k in
+               ("input_tokens", "output_tokens", "cache_creation_input_tokens"))
+
+
 class ClaudeSdkJudge:
     """`protocol.Judge` over `claude_agent_sdk`: every `ask` is a fresh
     one-turn session with no tools, no filesystem settings (so no project
     skill, hook or MCP server) and an empty temp dir as its cwd. The prompt is
     all it has to go on."""
+
+    def __init__(self, model: str | None = None) -> None:
+        self._model = _model("review", {"review": model} if model else {})
+        self.tokens: dict = {}
 
     def _options(self, cwd: str) -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
@@ -332,6 +364,7 @@ class ClaudeSdkJudge:
             setting_sources=[],
             strict_mcp_config=True,
             max_turns=1,
+            model=self._model,
         )
 
     async def ask(self, prompt: str) -> str:
@@ -340,8 +373,10 @@ class ClaudeSdkJudge:
             async for msg in query(prompt=prompt, options=self._options(cwd)):
                 if isinstance(msg, AssistantMessage):
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
-                elif isinstance(msg, ResultMessage) and msg.is_error:
-                    error = msg.result or msg.subtype or "the reviewer session failed"
+                elif isinstance(msg, ResultMessage):
+                    self.tokens["review"] = self.tokens.get("review", 0) + _spent(msg)
+                    if msg.is_error:
+                        error = msg.result or msg.subtype or "the reviewer session failed"
         if error:
             raise RuntimeError(error)
         return "\n".join(texts)
@@ -357,10 +392,13 @@ class ClaudeSdkWorker:
     and hooks apply to the work.
     """
 
-    def __init__(self, root: str, write_policy: P.WritePolicy) -> None:
+    def __init__(self, root: str, write_policy: P.WritePolicy,
+                 models: dict | None = None) -> None:
         self._root = root
         self._write_policy = write_policy
+        self._models = models or {}
         self.denials: list[P.ToolDenied] = []
+        self.tokens: dict = {}
 
     async def _can_use_tool(self, tool_name: str, tool_input: dict, context):
         denial = refusal(self._root, self._write_policy, tool_name, tool_input)
@@ -370,24 +408,28 @@ class ClaudeSdkWorker:
                                          denial))
         return PermissionResultDeny(message=denial)
 
-    def _options(self) -> ClaudeAgentOptions:
+    def _options(self, step: str = "") -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             cwd=self._root,
             setting_sources=["project"],
             can_use_tool=self._can_use_tool,
+            model=_model(step, self._models),
         )
 
-    async def run(self, prompt: str, on_action: P.OnAction | None = None) -> str:
+    async def run(self, prompt: str, on_action: P.OnAction | None = None,
+                  step: str = "") -> str:
         texts, error = [], None
-        async for msg in query(prompt=prompt, options=self._options()):
+        async for msg in query(prompt=prompt, options=self._options(step)):
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         texts.append(block.text)
                     elif isinstance(block, ToolUseBlock) and on_action:
                         on_action(action(self._root, block.name, block.input))
-            elif isinstance(msg, ResultMessage) and msg.is_error:
-                error = msg.result or msg.subtype or "the task failed"
+            elif isinstance(msg, ResultMessage):
+                self.tokens[step] = self.tokens.get(step, 0) + _spent(msg)
+                if msg.is_error:
+                    error = msg.result or msg.subtype or "the task failed"
         if error:
             raise RuntimeError(error)
         return "\n".join(texts)

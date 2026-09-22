@@ -210,7 +210,10 @@ observes, never by what is cheapest to test:
   asserted;
 - a subjective quality (looks, feel) -> first make it checkable, e.g. a
   screenshot compared against an approved reference kept in `spec/`; `manual`
-  only as a last resort. `manual` is reserved: it needs no definition and no
+  only as a last resort. Never "any page matches spec/<reference>": no bounded
+  test proves it, so the build keeps writing ever larger tests around it.
+  Name the properties the reference fixes — the palette, the fonts, a
+  breakpoint — one AC each. `manual` is reserved: it needs no definition and no
   test, and `hamilton verify` lists it as not machine-verified.
 - **every root needs at least one AC with an actor-facing method.** A root
   whose ACs are all `unit` proves the parts, never the goal — `hamilton verify`
@@ -237,7 +240,7 @@ live in `spec/` next to the model, one file per subject:
   as `spec/<file>` — `Statement: The configuration is priced per
   spec/price_model.md.` A bare file name is not a reference. A referenced file
   is part of the criterion: its content is in every referencing test's review,
-  so editing it sends those tests back to be rewritten, and `hamilton verify`
+  so editing it sends those tests back to review, and `hamilton verify`
   fails `missing-reference` on a path that names no file.
 - **Verification stays in the AC.** The AC says what must hold about the file
   — `any valid configuration -> the total follows the calculation path in
@@ -341,7 +344,7 @@ This lets the engineer see the shape and the size before spending attention.
 - **acceptance criteria** — all of them, each with its method; for an edit,
   *before* and *after*
 - **CONSEQUENCE** — what this makes true elsewhere: which ACs become
-  `uncovered`, which tagged tests go `unreviewed` and need rewriting —
+  `uncovered`, which tagged tests go `unreviewed` and are judged again —
   rewording an AC or its Statement does that, and changing an AC's method is a
   consequence just like rewording it: its old test no longer counts. Name
   them specifically. State a
@@ -360,7 +363,8 @@ This lets the engineer see the shape and the size before spending attention.
 **For a supporting file**, show the changed passage *before* and *after* (a
 new file in full), and a CONSEQUENCE naming every requirement that references
 it — search `spec/requirements.md` for its path — whose tagged tests go
-`unreviewed (AC changed)` and are rewritten in the next build. Write a new file
+`unreviewed (AC changed)` and are judged again — rewritten if they no longer
+prove it — in the next build. Write a new file
 before the AC that references it.
 
 **For a removal**, show where it sits, its full statement and acceptance

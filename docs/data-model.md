@@ -123,7 +123,7 @@ text:
 
 | Half | Covers | A change means |
 |---|---|---|
-| obligation | the AC id, its requirement's `Statement`, the AC text with its marker, the definition of each of the AC's methods whose paths hold the test file (sorted by name), and the content of each supporting file the `Statement` or AC references (sorted by path; only when there are any) | the test probably needs rewriting |
+| obligation | the AC id, its requirement's `Statement`, the AC text with its marker, the definition of each of the AC's methods whose paths hold the test file (sorted by name), and the content of each supporting file the `Statement` or AC references (sorted by path; only when there are any) | the test is judged against the new wording, and rewritten only if it no longer proves it |
 | test | the tag's region (§1), with every suffix stripped from its tag lines | the test only needs another review |
 
 - **Each tag has its own.** In a stacked tag block the test half is the same

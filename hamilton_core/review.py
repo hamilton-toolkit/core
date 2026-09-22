@@ -24,6 +24,11 @@ verdict per criterion:
            by its method could satisfy it -- a spec defect; the question is
            reported for the engineer
 
+Only blocking comments reject: a clause of the criterion the tests fail to
+prove. What would merely make the tests better is `advice` -- shown to the
+engineer, never settled, never sent to a writer -- so a review cannot keep a
+criterion in rewrites over points the criterion does not make.
+
 The reviewer does not pick the verdict; Hamilton computes it (`verdict`). A
 first review returns what the test covers and a list of comments. A re-review
 -- the build loop keeps what earlier reviews said -- raises nothing new: it
@@ -38,11 +43,11 @@ unfolds one criterion at a time: the criterion's text, then the review.
 
 An answer that does not parse is an error: no suffix is written. Each result
 is one criterion: {"ac", "criterion", "tests", "file", "line", "state",
-"verdict", "covered", "comments", "resolved", "question"}, where `criterion`
-is the AC's text, `tests` lists every test judged ({"file", "line",
-"state"}), `file`/`line` is the first of them and `state` says why the
-criterion was up for review, and `comments` are the open points as
-{"check", "text", "why"}.
+"verdict", "covered", "comments", "advice", "resolved", "question"}, where
+`criterion` is the AC's text, `tests` lists every test judged ({"file",
+"line", "state"}), `file`/`line` is the first of them and `state` says why
+the criterion was up for review, `comments` are the open points as
+{"check", "text", "why"} and `advice` what is not required, as text.
 """
 
 from __future__ import annotations
@@ -204,7 +209,9 @@ def _question(item: dict) -> str:
 
 
 def parse_first(reply: str, quals) -> dict:
-    """{qual: {"covered", "comments", "question"}} from a first review."""
+    """{qual: {"covered", "comments", "advice", "question"}} from a first
+    review. `comments` block a pass; `advice` never does -- it is shown, not
+    settled, and no writer is sent to act on it."""
     out = {}
     for qual, item in _items(reply, quals).items():
         # Both lists are required: an answer without them is not an empty
@@ -212,11 +219,15 @@ def parse_first(reply: str, quals) -> dict:
         covered, comments = item.get("covered"), item.get("comments")
         if not isinstance(covered, list) or not isinstance(comments, list):
             raise ValueError(f"malformed review for {qual}: {item!r}")
+        advice = item.get("advice")         # optional: none is no advice
+        advice = advice if isinstance(advice, list) else []
         out[qual] = {
             "covered": [str(c) for c in covered],
             "comments": [{"check": str(c.get("check", "")), "text": str(c["text"])}
                          if isinstance(c, dict) and "text" in c
                          else {"check": "", "text": str(c)} for c in comments],
+            "advice": [str(a.get("text", a)) if isinstance(a, dict) else str(a)
+                       for a in advice],
             "question": _question(item)}
     return out
 
@@ -275,6 +286,7 @@ def settle(earlier: dict, answer: dict) -> dict:
     # the criterion, which forgets this review. Until then it stays unclear.
     question = answer["question"] or earlier.get("question", "")
     return {"covered": covered, "comments": comments, "resolved": resolved,
+            "advice": earlier.get("advice", []),
             "question": question, "verdict": verdict(comments, question)}
 
 
@@ -288,7 +300,8 @@ def remember(memory: dict, results: list) -> dict:
         if r["verdict"] == "pass":
             out.pop(r["ac"], None)
         elif r["verdict"] != "error":
-            out[r["ac"]] = {"covered": r["covered"], "comments": r["comments"]}
+            out[r["ac"]] = {"covered": r["covered"], "comments": r["comments"],
+                            "advice": r["advice"]}
             if r["question"]:
                 out[r["ac"]]["question"] = r["question"]
     return out
@@ -364,7 +377,7 @@ async def review(root: str, judge, watch: Watch | None = None,
             except Exception as exc:      # the judge failed, or answered badly
                 answer = {"verdict": "error", "covered": [], "resolved": [],
                           "comments": [{"check": "error", "text": str(exc)}],
-                          "question": ""}
+                          "advice": [], "question": ""}
         c = group[0]
         open_ = next((t for t in group if t.state != REVIEWED), c)
         result = {"ac": qual,
@@ -413,6 +426,10 @@ def details(r: dict, width: int, paint) -> list:
     for done in r.get("resolved", ()):
         out += [paint.dim(ln) for ln in textwrap.wrap(
             f"resolved: {done}", width, initial_indent=INDENT + "  ✓ ",
+            subsequent_indent=INDENT + "    ")]
+    for tip in r.get("advice", ()):
+        out += [paint.dim(ln) for ln in textwrap.wrap(
+            f"advice, not required: {tip}", width, initial_indent=INDENT + "  · ",
             subsequent_indent=INDENT + "    ")]
     if r["question"]:
         out += _field("Question", r["question"], width, paint)

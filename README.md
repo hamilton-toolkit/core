@@ -133,11 +133,23 @@ calls an agent only for the parts that need one:
   reviewed where they are. When a run revises a criterion whose tests share
   a file with others, the writer moves them into a file of their own as part
   of that revision.
+- **A changed criterion is judged before it is rewritten.** Reword a
+  criterion, its Statement or a file it references and its tests are
+  reviewed against the new wording first; only the ones the reviewer rejects
+  go to a writer. A review is one call without tools; a rewrite is a whole
+  agent session.
 - **The review converges.** The first review lists what a test covers and
-  what is wrong with it. After a revision the reviewer only settles that
-  list — each comment resolved or not, each covered point still covered or
-  not — and raises nothing new. A lost point reopens; a resolved comment
-  becomes a covered point. The list only shrinks.
+  what is wrong with it. Only what keeps the tests from proving the
+  criterion as written is a comment, and only a comment sends them back;
+  what would merely make them better is advice, shown when you unfold the
+  review. After a revision the reviewer only settles the comments — each
+  resolved or not, each covered point still covered or not — and raises
+  nothing new. A lost point reopens; a resolved comment becomes a covered
+  point. The list only shrinks.
+- **Each kind of work runs on its own model.** Writing and reviewing tests —
+  many small, tightly briefed tasks — run on a mid-tier model; planning and
+  coding on the agent's default. `model.<step>` in `.hamilton/config`
+  (`plan`, `tests`, `review`, `code`, `clarify`) overrides either.
 - **You are asked one kind of question.** When a criterion cannot be settled
   from its wording, or no test by its method could satisfy it, the run asks
   you. You answer, and Hamilton drafts the change to the spec the way
@@ -156,11 +168,12 @@ calls an agent only for the parts that need one:
   back to coding with its output. The screen shows only a spinner and the
   outcome; the suite's own output goes to a log named as it starts —
   `tail -f` it in another terminal to watch.
-- **Every run ends with where its time went:**
+- **Every run ends with where its time and tokens went:**
   `Time 31m12s · checking 9m40s (3×, 1 with the suite) · planning 1m05s ·
-  writing tests 8m30s · reviewing 6m10s · coding 5m47s · waiting for you 20s`.
-  Your own time at a question is booked apart, and each gate check shows how
-  long it took.
+  writing tests 8m30s · reviewing 6m10s · coding 5m47s · waiting for you 20s`,
+  then `Tokens 2.1M · writing tests 1.4M · coding 420k · …` — what each kind
+  of work read fresh and wrote, subagents included. Your own time at a
+  question is booked apart, and each gate check shows how long it took.
 - **Re-running is the resume.** `.hamilton/build` keeps only what re-running
   could not work out for itself — what you chose to skip, how many rewrites
   each criterion has had, and what the reviewer said about the criteria whose
@@ -189,7 +202,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 476 passing
+$ python -m pytest -q          # expects 490 passing
 ```
 
 ### 2. Link it into a separate test project
@@ -343,7 +356,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `orphan-requirement` | A requirement with no `Parent:` does not name an `Actor:`. Add the `Actor:`, or give it a `Parent:`. |
 | `dangling-ref` | A `Parent:` or `Actor:` value names an entity that isn't declared. Fix the reference, or add the entity. |
 | `cyclic-parent` | Following `Parent:` links from some requirement loops back on itself. Re-point one `Parent:`. |
-| `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:`, method definition and the spec files it references) or its test changed since the review — the message says which. Run `hamilton build`: it rewrites the test if the criterion changed, and has it reviewed. Never write a suffix by hand. |
+| `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:`, method definition and the spec files it references) or its test changed since the review — the message says which. Run `hamilton build`: it has the test reviewed — against the criterion's current wording, if that changed — and rewritten only if the reviewer rejects it. Never write a suffix by hand. |
 | `missing-reference` | A `Statement:` or criterion names a `spec/<file>` that does not exist. Add the file or correct the path (in spec phase). |
 | `malformed` | A requirement is missing its `Statement`, has no criteria, repeats an id, or has a line that doesn't parse — or the file has no real requirements at all. The message names the line. |
 
@@ -453,8 +466,9 @@ Criteria:
 
 The criterion still says what must hold; the file only supplies the content.
 That content is part of the criterion: the reviewer is shown it in full, and
-editing the file sends every test of a referencing criterion back to be
-rewritten, so the next `hamilton build` builds the change. A path to a file
+editing the file sends every test of a referencing criterion back to review
+— and to a rewrite where it no longer holds — so the next `hamilton build`
+builds the change. A path to a file
 that does not exist fails `missing-reference`. Like the rest of `spec/`, these
 files are written in spec phase — `hamilton design` treats an edit to one as a
 change of its own and names the requirements it affects.
@@ -520,8 +534,8 @@ prints a notice until you delete it.
 
 **A project whose criteria name supporting files** (`spec/<file>`) sees
 those criteria go `unreviewed` once after upgrading: the files are now part of
-what their tests were reviewed against. The next `hamilton build` rewrites and
-reviews them. Criteria that reference no file are unaffected. A file named
+what their tests were reviewed against. The next `hamilton build` reviews
+them again, and rewrites only those the reviewer rejects. Criteria that reference no file are unaffected. A file named
 without its `spec/` prefix is not a reference — add the prefix in a `hamilton
 design` session.
 

@@ -1090,8 +1090,8 @@ _UNREVIEWED = {
         "the criterion, its requirement's Statement, its method's "
         "definition or a spec file it references changed since the review, "
         "so the test may no longer prove what the criterion now says",
-        "run 'hamilton build', which rewrites the test against the current "
-        "wording and has it reviewed"),
+        "run 'hamilton build', which reviews the test against the current "
+        "wording and has it rewritten only if it no longer proves it"),
     TEST_CHANGED: (
         "the test changed since the review -- its section, or the preamble "
         "of its file",
@@ -1099,8 +1099,8 @@ _UNREVIEWED = {
     BOTH_CHANGED: (
         "both the criterion (or its Statement, method definition or a spec "
         "file it references) and the test changed since the review",
-        "run 'hamilton build', which rewrites the test against the current "
-        "wording and has it reviewed"),
+        "run 'hamilton build', which reviews the test against the current "
+        "wording and has it rewritten only if it no longer proves it"),
 }
 
 
