@@ -112,6 +112,8 @@ able to see what is happening:
 - **An interrupted session can be resumed.** Every turn writes
   `.hamilton/session`; the next launch in the same phase offers to pick up
   where you left off — which is what you want when a session dies mid-spec.
+  A session you ended with *Finish this session* is complete and is not
+  offered again.
 
 ### How a build run differs
 

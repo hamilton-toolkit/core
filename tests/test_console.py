@@ -236,12 +236,16 @@ def test_the_fixed_rows_carry_no_icons():
     assert C.FINISH_ROW == "Finish this session"
 
 
-def test_finishing_a_question_reads_as_an_interruption_not_completion():
-    # mid-question the engineer is leaving mid-thought: the driver treats
-    # `aborted` as resumable, which is what we want here
+def test_finishing_at_a_question_is_a_chosen_finish():
     c, _ = console("3\n")
     c.ask(QUESTION)
-    assert c.aborted is True
+    assert c.aborted is True and c.finished is True
+
+
+def test_leaving_a_question_without_choosing_to_finish_is_an_interruption():
+    c, _ = console("")               # EOF
+    c.ask(QUESTION)
+    assert c.aborted is True and c.finished is False
 
 
 def test_choose_returns_none_when_the_engineer_finishes():

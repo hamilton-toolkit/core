@@ -148,6 +148,40 @@ def test_each_menu_choice_carries_its_own_instruction(tmp_path):
         assert expected in a.sent[1].lower(), (pick, a.sent[1])
 
 
+class AskingAdapter(FakeAdapter):
+    """Asks the engineer one question during the first turn, the way the
+    agent does, before the turn's scripted events."""
+
+    def __init__(self, *turns, ask, session_ref=None):
+        super().__init__(*turns, session_ref=session_ref)
+        self._ask = ask
+
+    async def send(self, text):
+        if not self.sent:
+            await asyncio.to_thread(self._ask, P.Question(
+                "Which parent?", (P.Choice("R-0007"), P.Choice("R-0009"))))
+        await super().send(text)
+
+
+def drive_asking(tmp_path, keys):
+    c, out = console(keys)
+    a = AskingAdapter([P.AgentText("stopping here")], ask=c.ask, session_ref="s1")
+    rc = asyncio.run(L.drive(str(tmp_path), DESIGN, "KICKOFF", a, c))
+    return rc, a, P.Checkpoint.load(str(tmp_path))
+
+
+def test_finishing_at_the_agents_question_ends_the_session_as_complete(tmp_path):
+    rc, a, cp = drive_asking(tmp_path, "3\n")    # two choices, then Finish
+    assert rc == 0 and a.sent == ["KICKOFF"]
+    assert cp.done is True and cp.resumable is False
+
+
+def test_leaving_the_agents_question_keeps_the_session_resumable(tmp_path):
+    rc, a, cp = drive_asking(tmp_path, "")        # EOF at the question
+    assert a.sent == ["KICKOFF"]
+    assert cp.done is False and cp.resumable is True
+
+
 def test_an_unfinished_session_checkpoints_as_resumable(tmp_path):
     # one turn, then the engineer ends the session (EOF at the turn prompt)
     a = FakeAdapter([P.AgentText("still working")], session_ref="s2")

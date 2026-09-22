@@ -69,9 +69,9 @@ MAX_ROWS = 5
 
 
 class Outcome(enum.Enum):
-    """What a question resolved to. `FINISH` is the engineer choosing to stop;
-    at an iteration boundary that is a clean finish, mid-question it is an
-    interruption, and `ask` and `choose` read it accordingly."""
+    """What a question resolved to. `FINISH` is the engineer choosing to stop
+    for good, wherever it is picked; `ABORT` is leaving without saying so (Esc,
+    EOF), which keeps the session resumable."""
     CHOICE = enum.auto()
     TEXT = enum.auto()
     FINISH = enum.auto()
@@ -202,7 +202,9 @@ def echo(text: str) -> str:
 
 class Console:
     """Everything the engineer sees. `aborted` goes true when they end the
-    session at a prompt (EOF/Esc), which the driver checks after the turn.
+    session at one of the agent's questions, which the driver checks after the
+    turn; `finished` too when they did it by choosing to finish, so the session
+    is complete rather than interrupted.
 
     `terminal` returns the context `prompt_toolkit` runs in. It defaults to
     this console's own streams; tests pass a pipe input instead, which also
@@ -212,6 +214,7 @@ class Console:
         self._out = out or sys.stderr
         self._in = inp or sys.stdin
         self.aborted = False
+        self.finished = False
         self.paint = Paint(supports_color(self._out) if color is None else color)
         self._terminal = terminal
         self._lock = threading.RLock()
@@ -422,9 +425,9 @@ class Console:
     # --- questions -----------------------------------------------------------
 
     def ask(self, q: P.Question) -> str:
-        """A question from the agent. Its answer goes back to the model, so
-        finishing here reads as an interruption -- the engineer is leaving
-        mid-thought, and the checkpoint should stay resumable."""
+        """A question from the agent. Leaving it ends the session after the
+        turn: complete if the engineer chose to finish, resumable if they only
+        left (Esc, EOF)."""
         q = without_fixed_rows(q)
         with self._question(q):
             if q.choices:
@@ -434,6 +437,7 @@ class Console:
                 outcome = Outcome.ABORT if value is None else Outcome.TEXT
         if outcome in (Outcome.ABORT, Outcome.FINISH):
             self.aborted = True
+            self.finished = outcome is Outcome.FINISH
             return ENDED
         return value
 

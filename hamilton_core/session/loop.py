@@ -139,7 +139,9 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
             cp.turns_completed += 1
 
             if console.aborted or rc:
-                cp.save(root)           # interrupted: leave it resumable
+                # resumable unless the engineer chose to finish
+                cp.done = console.finished and not rc
+                cp.save(root)
                 break
 
             if done:
