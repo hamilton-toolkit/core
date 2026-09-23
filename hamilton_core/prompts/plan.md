@@ -63,6 +63,12 @@ $config
 You may not write to `$requirements` or anything else under `spec/` -- the
 phase gate refuses it, and a criterion that seems wrong is not yours to fix.
 
+**Stay within the groundwork.** Read only what the criteria's surfaces touch
+-- the page, route or module they are reached through -- not the existing
+test suites. **Run no tests**, not even to check the scaffold: the test
+writers run theirs against it next, and the coder after them. A syntax check
+of a file you changed (`php -l`, `node --check`) is all you need.
+
 ## Answer
 
 Finish with one JSON object on its own, and nothing after it. `briefs` holds

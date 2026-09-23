@@ -389,15 +389,16 @@ def test_writers_and_coders_think_less_than_the_cli_default():
     w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
     assert w._options("tests").effort == "medium"
     assert w._options("code").effort == "medium"
-    assert w._options("plan").effort is None
+    assert w._options("plan").effort == "medium"
+    assert w._options("clarify").effort is None
     assert ClaudeSdkJudge()._options("/tmp/e").effort is None
 
 
 def test_an_effort_named_in_the_config_wins():
     w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None,
-                        efforts={"code": "high", "plan": "low"})
+                        efforts={"code": "high", "clarify": "low"})
     assert w._options("code").effort == "high"
-    assert w._options("plan").effort == "low"
+    assert w._options("clarify").effort == "low"
     assert w._options("tests").effort == "medium"
     assert ClaudeSdkJudge(effort="low")._options("/tmp/e").effort == "low"
 

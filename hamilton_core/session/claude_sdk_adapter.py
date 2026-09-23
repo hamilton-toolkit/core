@@ -342,8 +342,9 @@ DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
 
 # How hard each kind of build work thinks, where the CLI's default is too
 # much. Left to itself a test writer spends most of its output thinking --
-# twenty thousand tokens before a single edit, at times.
-DEFAULT_EFFORTS = {"tests": "medium", "code": "medium"}
+# twenty thousand tokens before a single edit, at times -- and a planner
+# three quarters of it.
+DEFAULT_EFFORTS = {"plan": "medium", "tests": "medium", "code": "medium"}
 
 # Every build agent caches its prompt for 5 minutes, not the hour a
 # subscription defaults to: a 1-hour cache write costs twice the input, a

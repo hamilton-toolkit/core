@@ -158,7 +158,7 @@ calls an agent only for the parts that need one:
   many small, tightly briefed tasks — run on a mid-tier model; planning and
   coding on the agent's default. `model.<step>` in `.hamilton/config`
   (`plan`, `tests`, `review`, `code`, `clarify`) overrides either. Test
-  writers and coders think at medium effort and reviewers not at all;
+  writers, coders and the planner think at medium effort and reviewers not at all;
   `effort.<step>` overrides it. Each finished task reports its tokens beside
   its time.
 - **You are asked one kind of question.** When a criterion cannot be settled
