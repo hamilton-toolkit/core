@@ -986,6 +986,7 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
             REQ_REL, 1)], [], notices, [], n_reqs, n_acs)
 
     out = []
+    suite_failed = None                 # (the tests-failed finding, its output)
     from hamilton_core import model as _model   # local: model imports this module
     actors = _model.parse_actors(root)
     warnings = collect_warnings(root, reqs, actors)
@@ -1024,6 +1025,7 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
             failed["output"] = failures(output)
             failed["log"] = log
             out.append(failed)
+            suite_failed = (failed, output)
 
     for rid, line, first in duplicates:
         out.append(_finding("malformed",
@@ -1133,6 +1135,15 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
                 file, line, req=req, ac=ac))
         else:
             tags.setdefault((req, ac), []).append((file, line))
+
+    if suite_failed:
+        # the criteria whose tests the failures name, for whoever fixes them
+        failed, output = suite_failed
+        files: dict = {}
+        for (req, ac), where in tags.items():
+            for file, _line in where:
+                files.setdefault(file, set()).add(f"{req}/{ac}")
+        failed["failed"] = sorted(named(failure_text(output), files))
 
     manual, unpathed = [], {}
     for rid, r in reqs.items():

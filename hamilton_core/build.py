@@ -349,6 +349,11 @@ def test_prompt(qual: str, reqs: dict, defined: dict, brief: str,
         reasons=said or "(this is the first attempt)")
 
 
+def failing(work: Work) -> list:
+    """The criteria whose tests a failed suite names."""
+    return [q for f in work.suite for q in f.get("failed", ())]
+
+
 def rejected_by_criterion(results: list, skipped) -> dict:
     """{qual: its review} for each criterion whose tests were rejected. An
     error is not among them: there is nothing in it for a writer to solve."""
@@ -368,7 +373,13 @@ def code_prompt(work: Work, reqs: dict, defined: dict, quals: list,
     engineer never needs to read them, the implementer does."""
     failures = "\n\n".join(
         f"The failures in the suite's output (the whole of it: {f.get('log') or 'not kept'}):"
-        f"\n\n```\n{f['output']}\n```" for f in work.suite if f.get("output"))
+        f"\n\n```\n{f['output']}\n```\n\n"
+        + (f"The criteria whose tests failed: {', '.join(f['failed'])}. Run "
+           f"`hamilton verify` on each until it passes."
+           if f.get("failed") else
+           "The failures name no criterion's test file: find them in the "
+           "output above.")
+        for f in work.suite if f.get("output"))
     return _template("implement").substitute(
         findings="\n".join(f"- {f['message']}" for f in work.suite + work.cover)
                  or "- (none: the tests are written and reviewed)",
@@ -754,8 +765,9 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
             break
 
     # A changed criterion is implemented too: its wording may ask for more
-    # than the code does, whether or not its tests had to change.
-    covered = [q for q in dict.fromkeys(work.to_write + changed)
+    # than the code does, whether or not its tests had to change. So is one
+    # whose tests the failing suite names.
+    covered = [q for q in dict.fromkeys(work.to_write + changed + failing(work))
                if q not in state.skipped]
     if covered or work.suite or work.config:
         await run.code(work, reqs, defined, covered)

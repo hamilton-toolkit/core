@@ -808,6 +808,28 @@ def test_the_coder_is_given_the_tests_to_run(tmp_path):
     assert "Do **not** run the full suite\n(`true`)" in coding
 
 
+def suite_failed(failed):
+    return {"rule": "tests-failed", "req": None, "ac": None, "file": ".hamilton/config",
+            "line": 1, "message": "tests-failed", "output": "not ok 1", "log": "/tmp/l",
+            "failed": failed}
+
+
+def test_the_coder_is_told_which_criteria_failed_and_given_their_spec():
+    reqs = {"R-0001": {"title": "Auth", "statement": "S.",
+                       "acs": {"AC2": {"text": "skewed -> accepted [http]",
+                                       "methods": ["http"]}}}}
+    work = B.Work(suite=[suite_failed(["R-0001/AC2"])])
+    brief = B.code_prompt(work, reqs, {"http": {"description": "over HTTP"}},
+                          B.failing(work))
+    assert "The criteria whose tests failed: R-0001/AC2." in brief
+    assert "Criterion: AC2: skewed -> accepted [http]" in brief
+
+
+def test_a_failure_naming_no_criterion_says_so():
+    brief = B.code_prompt(B.Work(suite=[suite_failed([])]), {}, {}, [])
+    assert "The failures name no criterion's test file" in brief
+
+
 def test_a_run_ends_with_where_its_time_went(tmp_path):
     d = project(tmp_path, "uncovered")
     c, out = console()

@@ -972,3 +972,20 @@ def test_every_failure_is_named_however_many_there_are():
 def test_output_that_marks_no_failure_is_handed_on_as_its_tail():
     output = "\n".join(f"line {n}" for n in range(500))
     assert C.failures(output) == "\n".join(f"line {n}" for n in range(300, 500))
+
+
+def test_a_failed_suite_names_the_criteria_whose_tests_failed(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, test_command="echo 'not ok 3 - at tests/ac2.js:2' && exit 1")
+    [failed] = [f for f in json.loads(run_verify(d, "--json").stdout)["findings"]
+                if f["rule"] == "tests-failed"]
+    assert failed["failed"] == ["R-0001/AC2"]
+
+
+def test_a_failure_outside_the_tagged_tests_names_no_criterion(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    configure(d, test_command="echo 'FAIL tests/Unrelated.php' && exit 1")
+    [failed] = [f for f in json.loads(run_verify(d, "--json").stdout)["findings"]
+                if f["rule"] == "tests-failed"]
+    assert failed["failed"] == []
