@@ -40,6 +40,9 @@ verified (`[browser]`, `[unit, http]`); a test for it counts only under the
                      exist
   unreviewed         a counting tag has no review suffix, or its AC or its
                      test changed since the review (one finding per tag)
+  copied-suffix      two tags carry the same review suffix: the reviewer wrote
+                     it to one test, so the other is a copy (one finding per
+                     tag)
   malformed          a requirement has no ACs, no Statement, a repeated id,
                      or an unparseable line
 
@@ -69,7 +72,7 @@ its name and `file:first-last` (`view`) -- then the suite's result, then
 whatever is about no one criterion. While the suite runs, the working
 indicator of `hamilton build` shows. The suite's own output is not shown --
 it goes, as it runs, into a temp file named on failure (a green suite's is
-deleted), and its end travels with the `tests-failed` finding;
+deleted), and its failures travel with the `tests-failed` finding;
 `--suite-output` streams it instead.
 
 The finding messages -- in `--json`, and handed to the agents `hamilton
@@ -84,6 +87,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -125,6 +129,10 @@ _METHOD_DEF_RE = re.compile(rf"-\s+\*\*({_METHOD_NAME})\*\*\s*[—–:-]\s*(.+)$
 _METHOD_MARKER_RE = re.compile(
     rf"\[\s*({_METHOD_NAME}(?:\s*,\s*{_METHOD_NAME})*)\s*\]$")
 PATHS_PREFIX = "paths."
+# `run.browser=tools/run-browser.sh`: the command that runs the test files of
+# one method given to it as arguments -- how `hamilton verify R-nnnn/ACn`
+# runs one criterion's tests without the whole suite.
+RUN_PREFIX = "run."
 # a supporting spec file named in a Statement or AC: `spec/price_model.md`. It
 # ends in a word character, so the "." closing a sentence is not part of it.
 REF_RE = re.compile(r"(?<![\w/])spec/[\w./-]*\w")
@@ -374,6 +382,19 @@ def method_paths(cfg: dict) -> dict:
     return out
 
 
+def keyed(cfg: dict, prefix: str) -> dict:
+    """{name: value} from the `<prefix><name>` keys of the config, as
+    written. A blank value counts as unset."""
+    return {key[len(prefix):]: value.strip()
+            for key, (value, _line) in cfg.items()
+            if key.startswith(prefix) and value.strip()}
+
+
+def run_commands(cfg: dict) -> dict:
+    """{method: command} from the `run.<method>` keys of the config."""
+    return keyed(cfg, RUN_PREFIX)
+
+
 def under(rel: str, dirs) -> bool:
     """True if repo-relative path ``rel`` lies in one of ``dirs``."""
     r = rel.replace("\\", "/")
@@ -389,6 +410,12 @@ def missing_methods(methods, paths: dict, files) -> list:
 
 
 SUITE_TAIL = 200         # lines of a failed suite's output a finding carries
+SUITE_SUMMARY = 15       # of them, the last lines of the output: its summary
+# A line that reports a failure, in the words of the common runners: TAP's
+# `not ok`, PHPUnit's and Jest's `FAIL`/`Failures:`, pytest's `FAILED`, the
+# marks and exception names of the rest.
+FAILURE_RE = re.compile(r"\bnot ok\b|FAIL|\bfailed\b|\bFailures?\b|[✗✖×]|\w*Error\b")
+FAILURE_CONTEXT = (2, 20)   # lines kept before and after one: the details follow
 
 
 SUITE_TIMEOUT = 1800     # seconds before a suite that never ends is stopped
@@ -409,6 +436,57 @@ def follow_hint(log: str) -> str:
     return f"follow it: tail -f {log}"
 
 
+def failure_blocks(lines: list) -> list:
+    """[(start, stop)] of ``lines``: one per line that reports a failure,
+    with its context -- up to the next such line, so that no failure is
+    folded into the one before it."""
+    before, after = FAILURE_CONTEXT
+    hits = [i for i, line in enumerate(lines) if FAILURE_RE.search(line)]
+    blocks: list = []
+    for n, i in enumerate(hits):
+        start = max(0, i - before, blocks[-1][1] if blocks else 0)
+        stop = min(len(lines), i + after + 1,
+                   hits[n + 1] if n + 1 < len(hits) else len(lines))
+        blocks.append((start, stop))
+    return blocks
+
+
+def failure_text(output: str) -> str:
+    """Every line of ``output`` that reports a failure, with its context, and
+    nothing else -- uncut, for finding out what failed."""
+    lines = output.splitlines()
+    return "\n".join("\n".join(lines[a:b]) for a, b in failure_blocks(lines))
+
+
+def failures(output: str) -> str:
+    """What of a failed run's output its fixer needs: the lines that report a
+    failure, with their context, then the run's last lines -- its summary --
+    at most `SUITE_TAIL` lines in all. A tail alone can be nothing but
+    passing tests. Output with no line a runner marks as failed gets the
+    tail."""
+    lines = output.splitlines()
+    blocks = failure_blocks(lines)
+    if not blocks:
+        return "\n".join(lines[-SUITE_TAIL:])
+    summary = max(len(lines) - SUITE_SUMMARY, 0)
+    blocks = [(start, min(stop, summary)) for start, stop in blocks
+              if start < summary]
+    # Every failure gets its share: its first lines say what failed, and a
+    # long one must not crowd out the rest.
+    budget = SUITE_TAIL - SUITE_SUMMARY - len(blocks) - 1
+    share = max(budget // max(len(blocks), 1), 1)
+    kept: list = []
+    shown = 0                       # the line after the last one kept
+    for start, stop in blocks:
+        if start > shown:
+            kept.append("…")
+        shown = min(stop, start + share)
+        kept += lines[start:shown]
+    if summary > 0:
+        kept.append("…")
+    return "\n".join(kept + lines[summary:])
+
+
 def run_tests(root: str, cfg: dict, echo: bool = False, log: str | None = None):
     """Run test_command in ``root``. Returns (ok, detail, lineno, output).
 
@@ -425,27 +503,35 @@ def run_tests(root: str, cfg: dict, echo: bool = False, log: str | None = None):
     try:
         if echo:
             print(f"hamilton verify: running test_command: {cmd.strip()}", file=sys.stderr)
-            p = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr,
-                               timeout=SUITE_TIMEOUT)
+            returncode = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr,
+                                        timeout=SUITE_TIMEOUT).returncode
             output = ""
         else:
-            log = log or new_log()
-            with open(log, "w", encoding="utf-8") as fh:
-                p = subprocess.Popen(cmd, shell=True, cwd=root, stdout=fh,
-                                     stderr=subprocess.STDOUT)
-                try:
-                    p.wait(timeout=SUITE_TIMEOUT)
-                except subprocess.TimeoutExpired:
-                    p.kill()
-                    p.wait()
-                    raise
-            with open(log, encoding="utf-8", errors="replace") as fh:
-                output = fh.read()
+            returncode, output = _run_logged(root, cmd, log or new_log())
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"test_command could not be run ({exc})", lineno, ""
-    if p.returncode == 0:
+    if returncode == 0:
         return True, "", lineno, output
-    return False, f"test_command {cmd.strip()!r} exited {p.returncode}", lineno, output
+    return False, f"test_command {cmd.strip()!r} exited {returncode}", lineno, output
+
+
+def _run_logged(root: str, cmd: str, log: str, mode: str = "w") -> tuple[int, str]:
+    """Run ``cmd`` in ``root`` with its output going, as it comes, into
+    ``log`` (appended with mode "a"). Returns (exit code, its output)."""
+    with open(log, mode, encoding="utf-8") as fh:
+        start = fh.tell()
+        fh.flush()
+        p = subprocess.Popen(cmd, shell=True, cwd=root, stdout=fh,
+                             stderr=subprocess.STDOUT)
+        try:
+            p.wait(timeout=SUITE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            raise
+    with open(log, encoding="utf-8", errors="replace") as fh:
+        fh.seek(start)
+        return p.returncode, fh.read()
 
 
 def spec_lines(path: str):
@@ -697,6 +783,120 @@ def tested(root: str, reqs: dict) -> dict:
     return out
 
 
+def tagged_files(root: str, quals) -> dict:
+    """{qual: the files holding a `@covers` tag for it}, under any method's
+    paths."""
+    paths = method_paths(read_config(root))
+    out: dict = {q: set() for q in quals}
+    for t in scan(root, [d for ds in paths.values() for d in ds]):
+        out.get(f"{t.rid}/{t.acid}", set()).add(t.file)
+    return out
+
+
+def named(text: str, files: dict) -> set:
+    """The criteria of ``files`` ({file: quals}) whose file ``text`` names --
+    by its path, or by its file name, as a runner reports where a test
+    failed."""
+    return {q for f, quals in files.items()
+            if f in text or os.path.basename(f) in text for q in quals}
+
+
+# How one criterion's tests came out in `run_criteria`.
+PASSED, FAILED, NOT_RUN, NO_TEST = "passed", "failed", "not run", "no test"
+
+
+def run_criteria(root: str, quals, on_log=None) -> dict:
+    """Run the tests of these criteria, and only those: each method's tagged
+    files, by its `run.<method>` command with the files as arguments.
+    Returns {"results": {qual: PASSED | FAILED | NOT_RUN | NO_TEST},
+    "missing": [the methods with no run command], "output": the failures,
+    "log": the whole output, kept only when something failed}.
+
+    A failed run names the criteria whose files its failures mention; when
+    it names none, every criterion it ran failed. `on_log` is told the log
+    before the first run starts."""
+    cfg = read_config(root)
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    defined = extract_methods(os.path.join(root, REQ_REL))
+    paths, commands = method_paths(cfg), run_commands(cfg)
+    tags = scan(root, [d for ds in paths.values() for d in ds])
+    runs: dict = {}                 # method -> {file: {qual, ...}}
+    results = {q: NO_TEST for q in quals}
+    for c in counted(root, reqs, defined, paths, tags):
+        qual = f"{c.tag.rid}/{c.tag.acid}"
+        if qual in results:
+            runs.setdefault(c.methods[0], {}).setdefault(c.tag.file, set()).add(qual)
+            results[qual] = PASSED
+    log, failed = "", []
+    for method, files in sorted(runs.items()):
+        if method not in commands:
+            for q in set().union(*files.values()):
+                if results[q] != FAILED:
+                    results[q] = NOT_RUN
+            continue
+        if not log:
+            log = new_log()
+            if on_log is not None:
+                on_log(log)
+        cmd = f"{commands[method]} {' '.join(shlex.quote(f) for f in sorted(files))}"
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(f"$ {cmd}\n")
+        code, output = _run_logged(root, cmd, log, "a")
+        if code == 0:
+            continue
+        failed.append(output)
+        for q in (named(failure_text(output), files)
+                  or set().union(*files.values())):
+            results[q] = FAILED
+    if log and not failed:
+        os.remove(log)                  # nothing failed: nothing to read
+        log = ""
+    return {"results": results,
+            "missing": sorted(m for m in runs if m not in commands),
+            "output": failures("\n".join(failed)) if failed else "",
+            "log": log}
+
+
+def missing_runs(root: str) -> list:
+    """A `no-run-command` finding for each method the criteria are verified
+    by that has its paths but no `run.<method>`. Not part of the gate -- a
+    suite passes without one -- but `hamilton build` has it set, so that a
+    step can run one criterion's tests (`run_criteria`) instead of working
+    out the project's runners for itself."""
+    cfg = read_config(root)
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    paths, commands = method_paths(cfg), run_commands(cfg)
+    used = sorted({m for r in reqs.values() for ac in r["acs"].values()
+                   for m in ac["methods"]
+                   if m != MANUAL and m in paths and m not in commands})
+    return [_finding("no-run-command",
+        f"{CONFIG_REL} has no {RUN_PREFIX}{m}, so one criterion's [{m}] tests "
+        f"cannot be run on their own. Expected: a '{RUN_PREFIX}{m}=<command>' "
+        f"line: a command that runs the test files given to it as arguments, "
+        f"starting whatever they need (a server, a container). Found: none. "
+        f"Fix: set it in {CONFIG_REL}, and check it with 'hamilton verify "
+        f"R-nnnn/ACn' on a [{m}] criterion.", CONFIG_REL, 1, methods=[m])
+        for m in used]
+
+
+def still_failing(ran: dict) -> dict | None:
+    """A `tests-failed` finding for the criteria a `run_criteria` found
+    failing, or None -- what `hamilton build` hands its coder when a fix it
+    re-checked did not hold, instead of running the whole suite to learn
+    it."""
+    failed = [q for q, r in ran["results"].items() if r == FAILED]
+    if not failed:
+        return None
+    where = f" -- the whole output is in {ran['log']}" if ran["log"] else ""
+    found = _finding("tests-failed",
+        f"the tests of {', '.join(failed)} still fail. Expected: them to pass "
+        f"before the suite runs again. Found: they did not{where}. Fix: run "
+        f"'hamilton verify <criterion>' for each and repair the implementation.",
+        CONFIG_REL, 1)
+    found.update(output=ran["output"], log=ran["log"], failed=failed)
+    return found
+
+
 def _sample(ids, limit=8):
     """A bounded, sorted preview of an id collection for a finding message."""
     ids = sorted(ids)
@@ -834,6 +1034,7 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
             REQ_REL, 1)], [], notices, [], n_reqs, n_acs)
 
     out = []
+    suite_failed = None                 # (the tests-failed finding, its output)
     from hamilton_core import model as _model   # local: model imports this module
     actors = _model.parse_actors(root)
     warnings = collect_warnings(root, reqs, actors)
@@ -867,11 +1068,12 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
                 f"fails and repair the implementation or the test; or "
                 f"set/correct test_command in {CONFIG_REL}.",
                 CONFIG_REL, cfg_line)
-            # the end of the output, for whoever fixes it (`hamilton build`
-            # hands it to its coding step), and where the whole of it is
-            failed["output"] = "\n".join(output.splitlines()[-SUITE_TAIL:])
+            # the failures, for whoever fixes it (`hamilton build` hands
+            # them to its coding step), and where the whole output is
+            failed["output"] = failures(output)
             failed["log"] = log
             out.append(failed)
+            suite_failed = (failed, output)
 
     for rid, line, first in duplicates:
         out.append(_finding("malformed",
@@ -981,6 +1183,17 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
                 file, line, req=req, ac=ac))
         else:
             tags.setdefault((req, ac), []).append((file, line))
+
+    out += _copied(scanned)
+
+    if suite_failed:
+        # the criteria whose tests the failures name, for whoever fixes them
+        failed, output = suite_failed
+        files: dict = {}
+        for (req, ac), where in tags.items():
+            for file, _line in where:
+                files.setdefault(file, set()).add(f"{req}/{ac}")
+        failed["failed"] = sorted(named(failure_text(output), files))
 
     manual, unpathed = [], {}
     for rid, r in reqs.items():
@@ -1117,29 +1330,93 @@ def _unreviewed(c: Counted, ac: dict):
         t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"], state=state)
 
 
-def _one(root: str, only: str, as_json: bool) -> int:
-    m = _QUAL_RE.fullmatch(only)
+def _copied(tags) -> list:
+    """A `copied-suffix` finding for each tag whose review suffix another tag
+    also carries. A suffix hashes its criterion and the exact test it was
+    written to, so it cannot come about twice: one of them is a copy -- a
+    test file duplicated, say, which carries its suffix along."""
+    by_suffix: dict = {}
+    for t in tags:
+        if t.suffix:
+            by_suffix.setdefault((t.rid, t.acid, t.suffix), []).append(t)
+    out = []
+    for (rid, acid, sfx), same in by_suffix.items():
+        if len(same) < 2:
+            continue
+        for t in same:
+            others = ", ".join(f"{o.file}:{o.line}" for o in same if o is not t)
+            out.append(_finding("copied-suffix",
+                f"the '@covers {rid}/{acid}' tag carries the review suffix "
+                f"#{sfx}, which {others} carries too. Expected: each suffix on "
+                f"the one test the reviewer wrote it to. Found: a copy -- a "
+                f"duplicated test file or section. Fix: delete the copy (a "
+                f"scratch file, an extract of a test), or its tag; never edit "
+                f"a suffix.", t.file, t.line, req=rid, ac=acid))
+    return out
+
+
+def _one(root: str, only: str, as_json: bool, console, suite: bool = True) -> int:
+    """`hamilton verify R-nnnn[/ACn]`: those criteria's status, and their
+    tests run -- only theirs, each method's by its `run.<method>` -- unless
+    `suite` is False."""
+    m = _SELECT_RE.fullmatch(only)
     if not m:
-        raise UsageError(f"{only!r} is not an acceptance criterion id; give it "
-                         f"as R-nnnn/ACn, e.g. R-0001/AC2")
+        raise UsageError(f"{only!r} is not a requirement or criterion id; give "
+                         f"it as R-nnnn or R-nnnn/ACn, e.g. R-0001 or R-0001/AC2")
     rid, acid = m.groups()
     findings, _w, _n, manual, _nr, _na = run(root, suite=False)
     reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
-    if acid not in reqs.get(rid, {}).get("acs", {}):
+    if rid not in reqs or (acid and acid not in reqs[rid]["acs"]):
         raise UsageError(f"{only} is not declared in {REQ_REL}")
-    mine = [f for f in findings if (f.get("req"), f.get("ac")) == (rid, acid)]
+    acids = [acid] if acid else list(reqs[rid]["acs"])
+    quals = [f"{rid}/{a}" for a in acids]
+    mine = [f for f in findings if f.get("req") == rid and f.get("ac") in acids]
+    if suite and not as_json:
+        console.start_working("Running the tests")
+    started = time.monotonic()
+    ran = (run_criteria(root, quals, on_log=None if as_json else (
+               lambda log: console.say(console.paint.dim(follow_hint(log)))))
+           if suite else None)
+    console.stop_working()
+    red = [q for q, r in (ran or {"results": {}})["results"].items()
+           if r in (FAILED, NOT_RUN)]
     if as_json:
-        print(json.dumps({"ok": not mine, "findings": mine,
-                          "manual": [q for q in manual if q == only]}))
-        return 1 if mine else 0
-    from hamilton_core.session.console import Paint, supports_color
-    one = {rid: dict(reqs[rid], acs={acid: reqs[rid]["acs"][acid]})}
-    lines, _other = view(mine, one, manual, Paint(supports_color(sys.stdout)),
-                         tested(root, one))
+        print(json.dumps({"ok": not (mine or red), "findings": mine,
+                          "manual": [q for q in manual if q in quals],
+                          **({"tests": ran} if ran else {})}))
+        return 1 if mine or red else 0
+    from hamilton_core.session.console import Paint, elapsed, supports_color
+    paint = Paint(supports_color(sys.stdout))
+    one = {rid: dict(reqs[rid], acs={a: reqs[rid]["acs"][a] for a in acids})}
+    lines, _other = view(mine, one, manual, paint, tested(root, one))
+    lines += (_tests_report(ran, elapsed(time.monotonic() - started), paint)
+              if ran else ["", "Tests not run (--no-suite)"])
     for text in lines:
         print(text)
-    print(f"hamilton verify: {only} only -- the suite was not run", file=sys.stderr)
-    return 1 if mine else 0
+    return 1 if mine or red else 0
+
+
+def _tests_report(ran: dict, took: str, paint) -> list:
+    """How the criteria's own tests came out: what failed, with its
+    failures, and which method has no command to run its tests by."""
+    results = ran["results"]
+    failed = [q for q, r in results.items() if r == FAILED]
+    passed = [q for q, r in results.items() if r == PASSED]
+    out = [""]
+    if failed:
+        where = f" -- full output: {ran['log']}" if ran["log"] else ""
+        out.append(f"Tests {paint.red('✗')} {', '.join(failed)} failed ({took}){where}")
+        out += ["", ran["output"]]
+    elif passed:
+        out.append(f"Tests {paint.green('✓')} passed ({took})")
+    elif not ran["missing"]:
+        out.append("Tests: none tagged yet, nothing to run")
+    for method in ran["missing"]:
+        out.append(f"Tests {paint.yellow('?')} not run for [{method}]: {CONFIG_REL} "
+                   f"has no {RUN_PREFIX}{method}. Set it to a command that runs "
+                   f"the test files given to it as arguments, e.g. "
+                   f"'{RUN_PREFIX}{method}=npx playwright test'.")
+    return out
 
 
 # How a criterion reads in the human view, decided by the worst finding for
@@ -1149,6 +1426,7 @@ _AC_MARKS = {
     "wrong-method": ("✗", "tested, but not by its method"),
     "no-method": ("✗", "no [method] marker"),
     "unknown-method": ("✗", "names a method the spec does not define"),
+    "copied-suffix": ("✗", "a test's review suffix is copied"),
     "unreviewed": ("?", "not reviewed"),
 }
 
@@ -1193,15 +1471,16 @@ def view(findings: list, reqs: dict, manual: list, paint,
     return lines, other
 
 
-_QUAL_RE = re.compile(r"(R-\d{4})/(AC\d+)")
+_SELECT_RE = re.compile(r"(R-\d{4})(?:/(AC\d+))?")
 
 
 def main(as_json: bool = False, suite_output: bool = False,
-         only: str | None = None) -> int:
-    """`only` ("R-nnnn/ACn") narrows the gate to one criterion's status -- its
-    tags and reviews -- without running the suite: the question a step working
-    on that criterion asks, answered in a second. The full gate is the run
-    without it."""
+         only: str | None = None, suite: bool = True) -> int:
+    """`only` ("R-nnnn" or "R-nnnn/ACn") narrows the gate to those criteria:
+    their tags and reviews, and their own tests run instead of the suite --
+    the question a step working on them asks. The full gate is the run
+    without it. `suite=False` runs no tests at all: the spec, the tags and
+    the reviews only, which is all a spec session changes."""
     from hamilton_core.session.console import Console, Paint, elapsed, supports_color
     root = os.getcwd()
     # While the suite runs, the indicator `hamilton build` shows. Not under
@@ -1210,11 +1489,11 @@ def main(as_json: bool = False, suite_output: bool = False,
     started = time.monotonic()
     try:
         if only is not None:
-            return _one(root, only, as_json)
-        if not (as_json or suite_output):
+            return _one(root, only, as_json, console, suite)
+        if suite and not (as_json or suite_output):
             console.start_working("Running the tests")
         findings, warnings, notices, manual, n_reqs, n_acs = run(
-            root, echo=suite_output,
+            root, suite=suite, echo=suite_output,
             on_log=lambda log: console.say(console.paint.dim(follow_hint(log))))
     except UsageError as exc:
         if as_json:
@@ -1243,6 +1522,8 @@ def main(as_json: bool = False, suite_output: bool = False,
     if failed:
         where = f" -- full output: {failed['log']}" if failed.get("log") else ""
         print(f"\nSuite {paint.red('✗')} failed ({took}){where}")
+    elif ran and not suite:
+        print(f"\nSuite not run (--no-suite)")
     elif ran:
         print(f"\nSuite {paint.green('✓')} passed ({took})")
     rest = [f for f in other if f is not failed]

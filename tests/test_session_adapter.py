@@ -7,6 +7,7 @@ events.
 """
 
 import asyncio
+import os
 
 from claude_agent_sdk import (
     AssistantMessage, ResultMessage, TaskNotificationMessage,
@@ -17,7 +18,7 @@ from claude_agent_sdk import (
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import (
     FOREGROUND, ClaudeSdkAdapter, ClaudeSdkJudge, ClaudeSdkWorker, Tasks,
-    _as_question, _foreground_only, _spent, _translate,
+    _as_question, FOREGROUND_TASK, _spent, _translate,
 )
 
 
@@ -135,6 +136,24 @@ def test_the_judge_session_has_no_tools_settings_or_history():
     assert o.setting_sources == [] and o.strict_mcp_config is True
     assert o.mcp_servers == {} and o.resume is None
     assert o.max_turns == 1 and o.cwd == "/tmp/empty"
+
+
+def test_the_judge_does_not_think():
+    assert ClaudeSdkJudge()._options("/tmp/empty").thinking == {"type": "disabled"}
+
+
+def test_every_build_agent_caches_for_five_minutes():
+    ttl = ("CLAUDE_CODE_PROMPT_CACHE_TTL", "5m")
+    assert ttl in ClaudeSdkJudge()._options("/tmp/empty").env.items()
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert all(ttl in w._options(step).env.items() for step in ("plan", "tests", "code"))
+
+
+def test_a_worker_s_long_command_is_not_moved_to_the_background():
+    """The CLI does that after two minutes; a browser test file takes longer."""
+    env = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)._options("code").env
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert int(env["BASH_DEFAULT_TIMEOUT_MS"]) >= 600_000
 
 
 # --- the message stream, as Hamilton events --------------------------------
@@ -257,15 +276,33 @@ def test_a_failed_result_is_a_session_error():
         P.SessionError("out of budget"), P.TurnEnded(False)]
 
 
+def test_a_turn_s_end_carries_what_it_spent():
+    spent = ResultMessage("success", 1, 1, False, 1, "s",
+                          usage={"input_tokens": 10, "output_tokens": 5,
+                                 "cache_creation_input_tokens": 100})
+    assert translate(spent) == [P.TurnEnded(False, 115)]
+
+
+def foreground_hook(options, tool_name):
+    """The first PreToolUse hook `options` runs for `tool_name`, as a
+    callable."""
+    matcher = next(m for m in options.hooks["PreToolUse"]
+                   if tool_name in m.matcher.split("|"))
+    hook = matcher.hooks[0]
+
+    def call(**tool_input):
+        return asyncio.run(hook({"tool_name": tool_name, "tool_input": tool_input},
+                                "X", None))
+    return call
+
+
 def test_the_foreground_hook_is_installed_for_the_subagent_tool():
     [matcher] = adapter()._options.hooks["PreToolUse"]
-    assert matcher.matcher == "Agent|Task" and matcher.hooks == [_foreground_only]
+    assert matcher.matcher == "Agent|Task"
 
 
 def test_a_background_subagent_is_refused_and_a_foreground_one_allowed():
-    def hook(**tool_input):
-        return asyncio.run(_foreground_only(
-            {"tool_name": "Agent", "tool_input": tool_input}, "X", None))
+    hook = foreground_hook(adapter()._options, "Agent")
 
     assert hook(description="d", prompt="p") == {}
     assert hook(description="d", prompt="p", run_in_background=False) == {}
@@ -334,11 +371,67 @@ def test_a_tool_call_reads_as_what_it_does_to_what():
 
 # --- which model, and what it used -------------------------------------------
 
+def test_a_worker_may_run_nothing_in_the_background():
+    """Its task ends when it answers: a background run would never report."""
+    options = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)._options("code")
+    for tool in ("Bash", "Agent", "Task"):
+        hook = foreground_hook(options, tool)
+        assert hook(command="pytest") == {}
+        denied = hook(command="pytest", run_in_background=True)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert denied["hookSpecificOutput"]["permissionDecisionReason"] == FOREGROUND_TASK
+
+
+def test_a_worker_may_not_run_the_whole_suite(tmp_path):
+    os.makedirs(tmp_path / ".hamilton")
+    (tmp_path / ".hamilton" / "config").write_text("test_command=tools/run-tests.sh\n")
+    options = ClaudeSdkWorker(str(tmp_path), write_policy=lambda p: None)._options("code")
+    [hook] = [h for m in options.hooks["PreToolUse"] if m.matcher == "Bash"
+              for h in m.hooks]
+
+    def run(command):
+        out = asyncio.run(hook({"tool_name": "Bash", "tool_input": {"command": command}},
+                               "X", None))
+        return (out.get("hookSpecificOutput") or {}).get("permissionDecision")
+
+    for whole in ("tools/run-tests.sh", "./tools/run-tests.sh",
+                  "timeout 590 tools/run-tests.sh > /tmp/log 2>&1; echo $?",
+                  "tools/run-tests.sh 2>&1 | tail -40", "(tools/run-tests.sh)"):
+        assert run(whole) == "deny", whole
+    for narrowed in ("tools/run-tests.sh tests/Browser/a.test.js",
+                     "cat tools/run-tests.sh.bak", "hamilton verify R-0001/AC1",
+                     "tools/run-browser.sh tests/Browser/a.test.js"):
+        assert run(narrowed) is None, narrowed
+
+
 def test_tests_and_review_default_to_a_mid_tier_model():
     w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
     assert w._options("tests").model == "sonnet"
     assert w._options("plan").model is None and w._options("code").model is None
     assert ClaudeSdkJudge()._options("/tmp/e").model == "sonnet"
+
+
+def test_a_worker_loads_no_skill():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert all(w._options(step).skills == [] for step in ("plan", "tests", "code"))
+
+
+def test_writers_and_coders_think_less_than_the_cli_default():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert w._options("tests").effort == "medium"
+    assert w._options("code").effort == "medium"
+    assert w._options("plan").effort == "medium"
+    assert w._options("clarify").effort is None
+    assert ClaudeSdkJudge()._options("/tmp/e").effort is None
+
+
+def test_an_effort_named_in_the_config_wins():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None,
+                        efforts={"code": "high", "clarify": "low"})
+    assert w._options("code").effort == "high"
+    assert w._options("clarify").effort == "low"
+    assert w._options("tests").effort == "medium"
+    assert ClaudeSdkJudge(effort="low")._options("/tmp/e").effort == "low"
 
 
 def test_a_model_named_in_the_config_wins():

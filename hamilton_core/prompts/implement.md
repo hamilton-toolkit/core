@@ -16,12 +16,14 @@ $criteria
 
 $tests
 
-Run only these, with the project's runner for each file (`phpunit <file>`,
-`npx playwright test <file>`, `node --test <file>` …). Do **not** run the
-full suite (`$command`) while you work: it runs every criterion's tests and
-takes minutes. Hamilton runs it once, at the end, and brings you back if
-anything else broke. `hamilton verify R-nnnn/ACn` shows one criterion's status
--- tagged, reviewed -- in a second, without running any tests.
+Run them with `hamilton verify <criterion>` (`R-nnnn/ACn`, or `R-nnnn` for
+all of a requirement's): it runs that criterion's tests and nothing else,
+and shows its failures and its status. If it says a `run.<method>` is not
+set, set it in `.hamilton/config` first -- a command that runs the test files
+given to it as arguments, starting whatever they need -- and run it again. Do **not** run the full suite
+(`$command`) while you work: it runs every criterion's tests and takes
+minutes. Hamilton runs it once, at the end, and brings you back if anything
+else broke.
 
 ## What to do
 
@@ -34,6 +36,9 @@ anything else broke. `hamilton verify R-nnnn/ACn` shows one criterion's status
 3. If a tagged test points at a criterion that no longer exists (an
    `orphan-tag` finding), delete the test and whatever only it needed, or
    retarget the tag if the behaviour moved to another requirement.
+4. If a review suffix is copied (a `copied-suffix` finding), delete the copy
+   -- the scratch file or extract that is not the criterion's own test -- or
+   its tag.
 
 ## What you may change, and what you may not
 
@@ -43,6 +48,10 @@ anything else broke. `hamilton verify R-nnnn/ACn` shows one criterion's status
   in the implementation — never edit a test to make it pass. Editing a test
   sends it back to the reviewer, which is Hamilton's business, not yours.
 - **Never write, edit or copy a `#…` review suffix.** The guard refuses it.
+- **Scratch files stay out of the test paths** -- a debug script, an
+  extract of a test. A file there that holds a `@covers` tag counts as a
+  test of that criterion. Put them in a git-ignored directory, and delete
+  them before you finish. Never copy a test file.
 - **An acceptance criterion is immutable here**, and `spec/` cannot be written
   in build phase at all. If a criterion turns out to be wrong or impossible,
   stop and say so plainly in your answer rather than working around it — the

@@ -63,7 +63,7 @@ have not finished setting.
 
 **Build phase** — the agent writes the code and the tests. It cannot edit
 `spec/`, `.claude/`, or `AGENTS.md`, and of `.hamilton/` only `config` — and
-there only `test_command` / `paths.<method>`, because picking the test
+there only `test_command` / `paths.<method>` / `run.<method>`, because picking the test
 framework and layout is a build-time call. It cannot quietly change a requirement to
 match what it built, or rewrite its own rules.
 
@@ -103,6 +103,10 @@ able to see what is happening:
   each subagent the agent runs — a test writer, say — is a live row: what it
   does, for how long, and its latest tool. When it finishes, one `✓` line stays
   behind.
+- **You can see what it costs.** After each turn a dim line gives the tokens
+  it used and the session's total so far — `12.3k tokens · 84.0k this
+  session` — and the session ends with its total, counted the way a build
+  run counts them.
 - **Finishing a piece of work is not the end of the session.** When the agent
   gives its closing summary, Hamilton shows you the next step — another change,
   a change to requirements you pick from the tree, a decomposition or a
@@ -146,10 +150,21 @@ calls an agent only for the parts that need one:
   resolved or not, each covered point still covered or not — and raises
   nothing new. A lost point reopens; a resolved comment becomes a covered
   point. The list only shrinks.
+- **A criterion's tests stay short.** More than 200 lines — counting the
+  preamble of each file they are in — and Hamilton sends them back to the
+  writer unread, without a reviewer: every later step would read them again.
+  Tests reviewed before the cap and over it are written again the next time
+  a run has work to do.
+- **Each method has a command that runs one criterion's tests**
+  (`run.<method>`). When one is missing and a run has work to do, the
+  planner sets it first, so no step has to work out the project's runners.
 - **Each kind of work runs on its own model.** Writing and reviewing tests —
   many small, tightly briefed tasks — run on a mid-tier model; planning and
   coding on the agent's default. `model.<step>` in `.hamilton/config`
-  (`plan`, `tests`, `review`, `code`, `clarify`) overrides either.
+  (`plan`, `tests`, `review`, `code`, `clarify`) overrides either. Test
+  writers, coders and the planner think at medium effort and reviewers not at all;
+  `effort.<step>` overrides it. Each finished task reports its tokens beside
+  its time.
 - **You are asked one kind of question.** When a criterion cannot be settled
   from its wording, or no test by its method could satisfy it, the run asks
   you. You answer, and Hamilton drafts the change to the spec the way
@@ -162,10 +177,12 @@ calls an agent only for the parts that need one:
   fails. Piped or in CI, it reports the stop and exits non-zero instead of
   asking.
 - **The full suite runs once, at the end.** Each writer runs only its own
-  criterion's test file, and the coding step only the tests of the criteria it
-  implements — or the failing ones — with the project's own runner. `hamilton
-  check` runs the whole suite when nothing else is left, and sends a failure
-  back to coding with its output. The screen shows only a spinner and the
+  criterion's tests, and the coding step only those of the criteria it
+  implements — or the failing ones — with `hamilton verify R-nnnn/ACn`.
+  `hamilton verify` runs the whole suite when nothing else is left, and sends
+  a failure back to coding with its failures and the criteria whose tests
+  they name. After that fix, Hamilton re-runs only those criteria's tests; the
+  suite runs again once they pass. The screen shows only a spinner and the
   outcome; the suite's own output goes to a log named as it starts —
   `tail -f` it in another terminal to watch.
 - **Every run ends with where its time and tokens went:**
@@ -333,7 +350,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton design` | sets **spec** | Write the phase, print the status banner, run a spec-phase session with a kickoff to draft the vision / requirements through the review protocol. Offers to resume an unfinished spec session. |
 | `hamilton build` | sets **build** | Get the gate green, as a loop Hamilton drives rather than a session an agent drives: `hamilton verify` is the work list; a planner scaffolds each new surface as a contract; a writer per criterion writes its tests against it, in a file of their own (and may read the code); a reviewer that sees only the spec and the criterion's tests, judged together, lists what they cover and what is wrong; revisions are re-reviewed against that list only, until it is settled; then the implementation is written against the tests. Each step names itself and shows what is running. The one question it asks is a clarification: a criterion the spec cannot settle, answered by you and written into the spec on your approval. Without a terminal it reports and exits non-zero. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
-| `hamilton verify [R-nnnn/ACn] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — and under it each test that verifies it, by name and `file:lines`, then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton verify R-nnnn/ACn` shows one criterion's status in a second, without running the suite. Writes nothing to the project. This is the gate — run it in CI. |
+| `hamilton verify [R-nnnn[/ACn]] [--no-suite] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — and under it each test that verifies it, by name and `file:lines`, then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton verify R-nnnn/ACn` (or `R-nnnn`, for all of a requirement's criteria) shows those criteria's status and runs only their tests, each method's files by its `run.<method>` command, instead of the suite — how an agent in `hamilton build` runs the tests it works on, without working out the project's runners itself. A failure is put down to the criterion whose file it names. `--no-suite` runs no tests at all — the spec, the tags and the reviews only, in a second — which is what a spec session checks. Writes nothing to the project. This is the gate — run it in CI. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton show [ID] [--json]` | read-only | Without an id, the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. On a terminal it is interactive: ↑/↓ move, ←/→ fold or unfold, Enter opens the selected requirement in full; without one it is printed. With an id, print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
 
@@ -357,6 +374,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `dangling-ref` | A `Parent:` or `Actor:` value names an entity that isn't declared. Fix the reference, or add the entity. |
 | `cyclic-parent` | Following `Parent:` links from some requirement loops back on itself. Re-point one `Parent:`. |
 | `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:`, method definition and the spec files it references) or its test changed since the review — the message says which. Run `hamilton build`: it has the test reviewed — against the criterion's current wording, if that changed — and rewritten only if the reviewer rejects it. Never write a suffix by hand. |
+| `copied-suffix` | Two `@covers` tags carry the same review suffix. A suffix is written to one test, so the other is a copy — a duplicated test file, a debug extract. Delete the copy, or its tag. |
 | `missing-reference` | A `Statement:` or criterion names a `spec/<file>` that does not exist. Add the file or correct the path (in spec phase). |
 | `malformed` | A requirement is missing its `Statement`, has no criteria, repeats an id, or has a line that doesn't parse — or the file has no real requirements at all. The message names the line. |
 

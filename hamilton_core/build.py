@@ -56,10 +56,11 @@ from hamilton_core import review as _review
 from hamilton_core import status as _status
 from hamilton_core.verify import REQ_REL, UsageError
 from hamilton_core.session import protocol as P
-from hamilton_core.session.console import Console, Rows, elapsed
+from hamilton_core.session.console import Console, Rows, elapsed, tokens as _tokens
 
 STATE_REL = os.path.join(".hamilton", "build")
 MODEL_PREFIX = "model."
+EFFORT_PREFIX = "effort."
 _QUAL_RE = re.compile(r"R-\d{4}/AC\d+")
 SESSION_ENV = "HAMILTON_SESSION"
 
@@ -87,8 +88,13 @@ SPEC_RULES = frozenset({"malformed", "dangling-ref", "orphan-requirement",
                         "cyclic-parent", "no-method", "unknown-method",
                         "missing-reference"})
 CONFIG_RULES = frozenset({"no-test-command", "no-method-paths", "retired-config"})
+# Not the gate's: what lets a step run one criterion's tests. The plan step
+# sets it, and nothing needs coding for it.
+RUN_RULES = frozenset({"no-run-command"})
 COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
-SUITE_RULES = frozenset({"tests-failed"})
+# What the coding step fixes without a test being written: a failing suite,
+# and a copied test, which it deletes.
+SUITE_RULES = frozenset({"tests-failed", "copied-suffix"})
 # The states of an `unreviewed` tag whose criterion changed. Its tests are
 # still reviewed first -- most still prove the new wording, and a review is
 # far cheaper than a rewrite -- but not against what was said of them before.
@@ -106,6 +112,7 @@ class Work:
     """One pass's findings, routed to the step that answers them."""
     spec: list = field(default_factory=list)        # build cannot fix these
     config: list = field(default_factory=list)
+    runs: list = field(default_factory=list)        # run commands to set
     cover: list = field(default_factory=list)       # needs a test written
     review: list = field(default_factory=list)      # needs judging only
     suite: list = field(default_factory=list)
@@ -132,6 +139,8 @@ def route(findings: list, skipped) -> Work:
             work.spec.append(f)
         elif f["rule"] in CONFIG_RULES:
             work.config.append(f)
+        elif f["rule"] in RUN_RULES:
+            work.runs.append(f)
         elif f["rule"] in COVER_RULES:
             work.cover.append(f)
         elif f["rule"] in SUITE_RULES:
@@ -310,7 +319,8 @@ def spec_of(reqs: dict, defined: dict, qual: str) -> str:
 def plan_prompt(root: str, work: Work, reqs: dict, defined: dict) -> str:
     quals = work.to_write
     return _template("plan").substitute(
-        findings="\n".join(f"- {f['message']}" for f in work.config + work.cover),
+        findings="\n".join(f"- {f['message']}"
+                            for f in work.config + work.runs + work.cover),
         criteria="\n\n".join(spec_of(reqs, defined, q) for q in quals),
         quals=", ".join(quals) or "(none)",
         config=_config_text(root),
@@ -336,17 +346,27 @@ def test_prompt(qual: str, reqs: dict, defined: dict, brief: str,
         if review["covered"]:
             said += ("\n\nAlready covered -- keep every one of these:\n"
                      + "\n".join(f"- {k}" for k in review["covered"]))
-        said += ("\n\nThe next review checks only these points, across all of "
-                 "the criterion's tests together: that each comment is solved, "
-                 "and that nothing already covered was lost. You may add, split "
-                 "or merge tests to get there. Change nothing the comments do "
-                 "not ask for.")
+        if _review.reviewed(review):
+            said += ("\n\nThe next review checks only these points, across all "
+                     "of the criterion's tests together: that each comment is "
+                     "solved, and that nothing already covered was lost. You may "
+                     "add, split or merge tests to get there. Change nothing the "
+                     "comments do not ask for.")
+        else:
+            said += ("\n\nThey were sent back unread, for their length: the "
+                     "reviewer judges them once they fit.")
     return _template("write_test").substitute(
         qual=qual, name=qual.replace("/", "-"), command=command or "the full suite",
         criterion=spec_of(reqs, defined, qual),
         brief=brief or "(none given -- work it out from the criterion)",
+        budget=_review.MAX_LINES,
         paths=where or "(no path configured for this method)",
         reasons=said or "(this is the first attempt)")
+
+
+def failing(work: Work) -> list:
+    """The criteria whose tests a failed suite names."""
+    return [q for f in work.suite for q in f.get("failed", ())]
 
 
 def rejected_by_criterion(results: list, skipped) -> dict:
@@ -356,28 +376,25 @@ def rejected_by_criterion(results: list, skipped) -> dict:
             if r["verdict"] == "reject" and r["ac"] not in skipped}
 
 
-def tagged_files(root: str, quals) -> dict:
-    """{qual: the files holding a `@covers` tag for it}."""
-    paths = _verify.method_paths(_verify.read_config(root))
-    out: dict = {q: set() for q in quals}
-    for t in _verify.scan(root, [d for ds in paths.values() for d in ds]):
-        out.get(f"{t.rid}/{t.acid}", set()).add(t.file)
-    return out
-
-
 def test_files(root: str, quals) -> list:
     """The files holding a `@covers` tag for any of these criteria -- what a
     step working on them runs, instead of the whole suite."""
-    return sorted(set().union(*tagged_files(root, quals).values()))
+    return sorted(set().union(*_verify.tagged_files(root, quals).values()))
 
 
 def code_prompt(work: Work, reqs: dict, defined: dict, quals: list,
                 files: list = (), command: str = "") -> str:
-    """The implementer's brief. A failed suite comes with the end of its own
-    output: the engineer never needs to read it, the implementer does."""
+    """The implementer's brief. A failed suite comes with its failures: the
+    engineer never needs to read them, the implementer does."""
     failures = "\n\n".join(
-        f"The end of the suite's output (the whole of it: {f.get('log') or 'not kept'}):"
-        f"\n\n```\n{f['output']}\n```" for f in work.suite if f.get("output"))
+        f"The failures in the suite's output (the whole of it: {f.get('log') or 'not kept'}):"
+        f"\n\n```\n{f['output']}\n```\n\n"
+        + (f"The criteria whose tests failed: {', '.join(f['failed'])}. Run "
+           f"`hamilton verify` on each until it passes."
+           if f.get("failed") else
+           "The failures name no criterion's test file: find them in the "
+           "output above.")
+        for f in work.suite if f.get("output"))
     return _template("implement").substitute(
         findings="\n".join(f"- {f['message']}" for f in work.suite + work.cover)
                  or "- (none: the tests are written and reviewed)",
@@ -394,15 +411,6 @@ def _config_text(root: str) -> str:
             return fh.read().strip() or "(empty)"
     except OSError:
         return "(no .hamilton/config)"
-
-
-def models(cfg: dict) -> dict:
-    """{step: model} from the `model.<step>` keys of `.hamilton/config`, as
-    the engineer wrote them: which model a name means is the adapter's
-    business, and so is the default for a step left unset."""
-    return {key[len(MODEL_PREFIX):]: value.strip()
-            for key, (value, _line) in cfg.items()
-            if key.startswith(MODEL_PREFIX) and value.strip()}
 
 
 def plan_answer(answer: str) -> tuple[dict, dict]:
@@ -443,6 +451,7 @@ class Run:
         self.began = time.monotonic()
         self.spent: dict = {}           # SPENT key -> seconds
         self.checks = self.suites = 0
+        self.runs_asked = False         # missing `run.<method>`s put to the plan
         self._open: tuple | None = None # (SPENT key, when it started)
 
     # -- where the time goes --
@@ -503,15 +512,31 @@ class Run:
 
     # -- steps --
 
-    def check(self, suite: bool) -> list:
-        self.step("check", "with the suite" if suite else "")
+    def check(self, suite: bool, recheck=()) -> list:
+        """The gate: with the suite, or without it -- and then the tests of
+        the criteria in `recheck` run on their own, a fix re-checked before
+        the whole suite is worth running again."""
+        detail = ("with the suite" if suite else
+                  f"re-running {', '.join(recheck)}" if recheck else "")
+        self.step("check", detail)
         started = time.monotonic()
         # The suite's output goes to a file, not the screen, so the indicator
         # keeps running through it: follow the file to watch, the build shows
         # the outcome, and a failure's output goes to the coding step.
+        follow = lambda log: self.said(_verify.follow_hint(log))
         findings, _w, _n, _manual, _nr, _na = _verify.run(
-            self.root, suite=suite,
-            on_log=lambda log: self.said(_verify.follow_hint(log)))
+            self.root, suite=suite, on_log=follow)
+        if recheck and not suite:
+            ran = _verify.run_criteria(self.root, list(recheck), on_log=follow)
+            failed = _verify.still_failing(ran)
+            if failed:
+                findings.append(failed)
+        if findings and not self.runs_asked:
+            # With work to do anyway, a missing `run.<method>` joins it --
+            # once a run: without one, every step works out the project's
+            # runners for itself.
+            findings += _verify.missing_runs(self.root)
+            self.runs_asked = True
         self.checks += 1
         self.suites += suite
         took = f" ({elapsed(time.monotonic() - started)})"
@@ -533,25 +558,28 @@ class Run:
         return entry[0].strip() if entry else "(no test_command set)"
 
     async def task(self, key, label: str, prompt: str, step: str) -> str:
-        """One AI task, as a row while it runs and a line when it is done. A
-        task that does not come back is the step's failure, not the run's.
-        `step` is the kind of work, which the worker may pick its model by."""
+        """One AI task, as a row while it runs and a line when it is done --
+        how long it took and the tokens it used. A task that does not come
+        back is the step's failure, not the run's. `step` is the kind of
+        work, which the worker may pick its model by."""
         self.rows.start(key, label)
+        used: list = []
         try:
             try:
                 answer = await self.worker.run(
                     prompt, on_action=lambda action: self.rows.doing(key, action),
-                    step=step)
+                    step=step, on_tokens=used.append)
             except Exception as exc:
                 raise Failed(label, exc) from exc
         finally:
             took = self.rows.stop(key)
         self.console.say(self.console.paint.dim(
-            f"  ✓ {label} ({elapsed(took)})"))
+            f"  ✓ {label} ({_cost(took, sum(used))})"))
         return answer
 
     async def plan(self, work: Work, reqs: dict, defined: dict) -> tuple[dict, dict]:
-        self.step("plan", _count(len(work.to_write), "criterion", "criteria"))
+        self.step("plan", _count(len(work.to_write), "criterion", "criteria")
+                  if work.to_write else "the config")
         answer = await self.task("plan", "Plan the surfaces",
                                  plan_prompt(self.root, work, reqs, defined), "plan")
         return plan_answer(answer)
@@ -566,7 +594,7 @@ class Run:
                   _count(len(quals), "criterion", "criteria"))
         slots = asyncio.Semaphore(WRITERS)
         files: dict = {}
-        tagged = tagged_files(self.root, quals)
+        tagged = _verify.tagged_files(self.root, quals)
 
         async def write(qual: str) -> None:
             mine = sorted(tagged[qual] | {t["file"] for t in
@@ -587,20 +615,27 @@ class Run:
         was, a re-review that settles what was said then."""
         again = bool(self.state.reviews)
         self.step("review", "settling the earlier comments" if again else "")
+        started = time.monotonic()
         results = await _review.review(self.root, self.judge, watch=self.shown,
                                        memory=self.state.reviews)
         self.state.reviews = _review.remember(self.state.reviews, results)
         self.state.save(self.root)
         self.shown.report(results)
+        if results:
+            self.said(_cost(time.monotonic() - started,
+                            sum(r.get("tokens", 0) for r in results)))
         return [r for r in results if r["ac"] not in self.state.skipped]
 
     async def code(self, work: Work, reqs: dict, defined: dict, quals: list) -> None:
         # Why it is coding: the criteria whose tests were just written, a
-        # failing suite, or both.
+        # failing suite, a copied test -- or several of them.
         why = [", ".join(quals) if len(quals) <= 3
                else _count(len(quals), "criterion", "criteria")] if quals else []
-        if work.suite:
+        rules = {f["rule"] for f in work.suite}
+        if "tests-failed" in rules:
             why.append("the suite is failing")
+        if "copied-suffix" in rules:
+            why.append("a test is copied")
         self.step("code", " · ".join(why))
         await self.task("code", "Write the implementation",
                         code_prompt(work, reqs, defined, quals,
@@ -608,12 +643,9 @@ class Run:
                         "code")
 
 
-def _tokens(n: int) -> str:
-    """1234 -> 1.2k, 2345678 -> 2.3M."""
-    for size, unit in ((1_000_000, "M"), (1_000, "k")):
-        if n >= size:
-            return f"{n / size:.1f}{unit}"
-    return str(n)
+def _cost(seconds: float, tokens: int) -> str:
+    """What a piece of work took: "2m58s · 44.0k tokens"."""
+    return elapsed(seconds) + (f" · {_tokens(tokens)} tokens" if tokens else "")
 
 
 def _count(n: int, one: str, many: str) -> str:
@@ -641,11 +673,15 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
     started = time.monotonic()
     # The full suite runs only when nothing else is left: every step works on
     # its own tests, and this is the one run that checks them all together.
+    # After a fix for a failing suite, the criteria it named are re-run on
+    # their own first: while they fail, the suite has nothing to add.
     suite = False
+    recheck: list = []
     passes = 0
     while True:
         try:
-            findings = run.check(suite)
+            findings = run.check(suite, recheck)
+            recheck = []
         except UsageError as exc:
             console.error(f"build: {exc}")
             return 2
@@ -684,6 +720,7 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
             suite = False           # a clarified criterion: back to the gate
             continue
         suite = False               # back to the gate; the suite at the end
+        recheck = [q for q in failing(work) if q not in state.skipped]
 
     console.say()
     console.error("build: still not green after "
@@ -706,7 +743,7 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     state.reviews = _review.forget(state.reviews, changed)
 
     plans, infeasible = {}, {}
-    if work.config or work.cover:
+    if work.config or work.runs or work.cover:
         plans, infeasible = await run.plan(work, reqs, defined)
     # The planner's JSON names criteria in its own words: only one the spec
     # declares can be clarified.
@@ -714,8 +751,13 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     if infeasible:
         await _spec_gaps(run, infeasible, reqs)
 
-    rejected: dict = {}
-    quals = [q for q in work.to_write if q not in state.skipped]
+    # Tests reviewed before there was a cap, and longer than it, are written
+    # again first: every step that works on their criterion reads them.
+    rejected = {q: r for q, r in _review.oversized(root).items()
+                if q not in state.skipped}
+    shortened = list(rejected)
+    quals = [q for q in dict.fromkeys(work.to_write + shortened)
+             if q not in state.skipped]
     while True:
         writable = [q for q in quals if state.round_of(q) < ROUNDS
                     and q not in state.skipped]
@@ -752,8 +794,10 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
             break
 
     # A changed criterion is implemented too: its wording may ask for more
-    # than the code does, whether or not its tests had to change.
-    covered = [q for q in dict.fromkeys(work.to_write + changed)
+    # than the code does, whether or not its tests had to change. So is one
+    # whose tests the failing suite names.
+    covered = [q for q in dict.fromkeys(work.to_write + changed + failing(work)
+                                        + shortened)
                if q not in state.skipped]
     if covered or work.suite or work.config:
         await run.code(work, reqs, defined, covered)
@@ -954,13 +998,18 @@ def main() -> int:
 
     from hamilton_core.session.claude_sdk_adapter import (ClaudeSdkJudge,
                                                           ClaudeSdkWorker)
+    # The model and effort of each step, as the engineer wrote them in
+    # `model.<step>` and `effort.<step>`: what a name means, and the default
+    # for a step left unset, is the adapter's business.
     try:
-        chosen = models(_verify.read_config(root))
+        cfg = _verify.read_config(root)
     except UsageError as exc:
         return refuse(str(exc), 2)
+    models = _verify.keyed(cfg, MODEL_PREFIX)
+    efforts = _verify.keyed(cfg, EFFORT_PREFIX)
     worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target),
-                             chosen)
-    judge = ClaudeSdkJudge(chosen.get("review"))
+                             models, efforts)
+    judge = ClaudeSdkJudge(models.get("review"), efforts.get("review"))
     console.start_working(STEPS["check"])
     try:
         return asyncio.run(build(root, worker, judge, console, state))

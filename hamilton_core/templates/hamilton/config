@@ -9,13 +9,22 @@
 #               spec/requirements.md, e.g. `paths.browser=tests/browser`. A
 #               `@covers` tag counts for an AC only under the paths of one of
 #               its methods. `manual` needs no paths.
+# run.<method>  a command that runs the test files of that method given to it
+#               as arguments, starting whatever they need, e.g.
+#               `run.unit=python -m pytest -q`. `hamilton verify R-nnnn/ACn`
+#               runs one criterion's tests with it instead of the suite.
 #               Which framework runs and where each method's tests live are
-#               build-time calls, so `test_command` and the `paths.*` keys are
-#               the keys the agent MAY edit during a `build` session.
+#               build-time calls, so `test_command` and the `paths.*` and
+#               `run.*` keys are the keys the agent MAY edit during a `build`
+#               session.
 # model.<step>  which model a kind of build work runs on: `plan`, `tests`,
 #               `review`, `code` or `clarify`, e.g. `model.code=opus`. Unset,
 #               test writing and review run on a mid-tier model and the rest
 #               on the agent's default.
+# effort.<step>  how hard a kind of build work thinks: `low`, `medium`,
+#               `high`, `xhigh` or `max`, e.g. `effort.code=high`. Unset,
+#               planning, test writing and coding run at `medium`, the rest
+#               at the agent's default; the reviewer does not think at all.
 # mutation_command  RESERVED. Per-language mutation testing (see concept.md
 #               5.3). Not implemented yet -- if you set it, `hamilton verify`
 #               prints a notice every run and does NOT run it. Leave it unset.

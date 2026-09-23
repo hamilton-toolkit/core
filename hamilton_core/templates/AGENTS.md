@@ -1,8 +1,8 @@
 # Hamilton project
 
 Specification-gated development with enforced verification. This file states the
-rules for any coding agent working here; the `hamilton` skill / prompt carries
-the workflows.
+rules for any coding agent working here; Hamilton's commands (`hamilton design`,
+`hamilton build`) carry the workflows and brief each agent they start.
 
 - Behaviour changes require a specification change first.
 - Specification is top-down: ratify the root layer of actor goals before

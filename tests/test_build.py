@@ -25,17 +25,20 @@ QUAL_RE = re.compile(r"R-\d{4}/AC\d+")
 class FakeWorker:
     """Records every prompt. `act(prompt)` stands in for the work itself."""
 
-    def __init__(self, act=None):
+    def __init__(self, act=None, spend=0):
         self.prompts = []
         self.steps = []
         self.tokens = {}
         self._act = act
+        self._spend = spend
 
-    async def run(self, prompt, on_action=None, step=""):
+    async def run(self, prompt, on_action=None, step="", on_tokens=None):
         self.prompts.append(prompt)
         self.steps.append(step)
         if on_action:
             on_action("editing a file")
+        if on_tokens and self._spend:
+            on_tokens(self._spend)
         return (self._act(prompt) if self._act else "") or ""
 
     def of(self, kind):
@@ -58,7 +61,7 @@ class FakeJudge:
         self.settles = []
         self.tokens = {}
 
-    async def ask(self, prompt):
+    async def ask(self, prompt, on_tokens=None):
         self.asked.append(prompt)
         blocks = re.split(r"^## (?=R-\d{4}/AC\d+$)", prompt, flags=re.M)[1:]
         settling = "Comments to settle" in prompt
@@ -167,6 +170,12 @@ def test_every_rule_reaches_exactly_one_step():
     # review is far cheaper than a rewrite, and most still prove it
     assert work.to_write == ["R-0001/AC1", "R-0001/AC2"]
     assert [f["ac"] for f in work.review] == ["AC1", "AC2", "AC3", "AC4"]
+
+
+def test_a_copied_test_goes_to_the_coder_to_delete():
+    work = B.route([finding("copied-suffix", "R-0001", "AC1")], skipped=[])
+    assert [f["rule"] for f in work.suite] == ["copied-suffix"]
+    assert work.to_write == [] and work.open
 
 
 def test_a_missing_reference_goes_back_to_the_spec():
@@ -360,7 +369,7 @@ def test_what_did_not_pass_is_left_for_the_engineer_to_unfold(tmp_path):
 def test_a_task_that_does_not_come_back_is_the_steps_failure_not_the_runs(tmp_path):
     """A model error ends up as a choice, not a traceback."""
     class Broken(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             self.prompts.append(prompt)
             raise RuntimeError("the agent session failed: out of budget")
 
@@ -376,7 +385,7 @@ def test_a_failed_step_can_be_tried_again(tmp_path):
     once = {"failed": False}
 
     class Flaky(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             if not once["failed"] and "into a contract a test can be written" in prompt:
                 once["failed"] = True
                 raise RuntimeError("temporary failure")
@@ -392,12 +401,38 @@ def test_a_test_that_only_needed_judging_costs_no_implementation(tmp_path):
     """A tag goes unreviewed when its test is edited. Reviewing it again is
     the whole job: there is nothing to plan and nothing to build."""
     d = project(tmp_path)
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write("run.http=true\nrun.unit=true\n")
     stamp(d)
     body = open(f"{d}/tests/covers.js").read()
     open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
     worker = FakeWorker()
     assert run(d, worker, FakeJudge(passes), console()[0]) == 0
     assert worker.of("implement") == [] and worker.of("plan") == []
+
+
+def test_a_missing_run_command_goes_to_the_planner_once_and_needs_no_coding(tmp_path):
+    """So that a step can run one criterion's tests, not work out the
+    project's runners for itself."""
+    d = project(tmp_path)
+    stamp(d)
+    body = open(f"{d}/tests/covers.js").read()
+    open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
+    worker = FakeWorker()
+    c, out = console()
+    assert run(d, worker, FakeJudge(passes), c) == 0
+    [plan] = worker.of("plan")
+    assert "has no run.http" in plan
+    assert worker.of("implement") == []
+    assert "▸ Planning — the config" in out.getvalue()
+
+
+def test_a_green_gate_is_not_held_up_for_a_run_command(tmp_path):
+    d = project(tmp_path)
+    stamp(d)
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert worker.prompts == []
 
 
 def test_an_error_nothing_expected_is_reported_not_traced(tmp_path, monkeypatch):
@@ -471,7 +506,7 @@ def test_criteria_whose_tests_share_a_file_take_turns_on_it(tmp_path):
     busy, overlaps = set(), []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             if "shared.js" in prompt:
                 if busy:
                     overlaps.append(prompt)
@@ -512,7 +547,7 @@ def test_the_list_only_shrinks_until_the_test_passes(tmp_path):
     class Converging:
         tokens: dict = {}
 
-        async def ask(self, prompt):
+        async def ask(self, prompt, on_tokens=None):
             quals = re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M)
             if "Comments to settle" not in prompt:
                 return json.dumps([{"ac": q, "covered": ["a 401"], "question": "",
@@ -791,7 +826,7 @@ def test_a_writer_runs_only_its_own_tests(tmp_path):
     worker = FakeWorker(writes_a_test(d))
     run(d, worker, FakeJudge(passes), console()[0])
     brief = worker.of("write_test")[0]
-    assert "Run it -- and only it." in brief
+    assert "with `hamilton verify R-0001/AC2`" in brief
     assert "Never run the full suite** (`true`)" in brief     # the fixture's test_command
 
 
@@ -801,7 +836,30 @@ def test_the_coder_is_given_the_tests_to_run(tmp_path):
     run(d, worker, FakeJudge(passes), console()[0])
     [coding] = worker.of("implement")
     assert "- tests/R-0001_AC2.js" in coding
-    assert "Do **not** run the\nfull suite (`true`)" in coding
+    assert "`hamilton verify <criterion>`" in coding
+    assert "Do **not** run the full suite\n(`true`)" in coding
+
+
+def suite_failed(failed):
+    return {"rule": "tests-failed", "req": None, "ac": None, "file": ".hamilton/config",
+            "line": 1, "message": "tests-failed", "output": "not ok 1", "log": "/tmp/l",
+            "failed": failed}
+
+
+def test_the_coder_is_told_which_criteria_failed_and_given_their_spec():
+    reqs = {"R-0001": {"title": "Auth", "statement": "S.",
+                       "acs": {"AC2": {"text": "skewed -> accepted [http]",
+                                       "methods": ["http"]}}}}
+    work = B.Work(suite=[suite_failed(["R-0001/AC2"])])
+    brief = B.code_prompt(work, reqs, {"http": {"description": "over HTTP"}},
+                          B.failing(work))
+    assert "The criteria whose tests failed: R-0001/AC2." in brief
+    assert "Criterion: AC2: skewed -> accepted [http]" in brief
+
+
+def test_a_failure_naming_no_criterion_says_so():
+    brief = B.code_prompt(B.Work(suite=[suite_failed([])]), {}, {}, [])
+    assert "The failures name no criterion's test file" in brief
 
 
 def test_a_run_ends_with_where_its_time_went(tmp_path):
@@ -863,7 +921,7 @@ class Garbled:
         self.asked = []
         self.tokens = {}
 
-    async def ask(self, prompt):
+    async def ask(self, prompt, on_tokens=None):
         self.asked.append(prompt)
         if len(self.asked) == 1:
             return "I could not decide."
@@ -917,7 +975,7 @@ def test_first_round_writers_whose_tests_share_a_file_take_turns_on_it(tmp_path)
     busy, overlaps = [], []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             if busy:
                 overlaps.append(prompt)
             busy.append(prompt)
@@ -1002,7 +1060,7 @@ def test_each_task_tells_the_worker_its_kind_of_work(tmp_path):
 def test_models_are_read_from_the_config_as_written():
     cfg = {"model.tests": (" haiku ", 3), "model.code": ("", 4),
            "test_command": ("true", 1)}
-    assert B.models(cfg) == {"tests": "haiku"}
+    assert C.keyed(cfg, B.MODEL_PREFIX) == {"tests": "haiku"}
 
 
 def test_the_run_ends_with_the_tokens_each_kind_of_work_used(tmp_path):
@@ -1016,7 +1074,108 @@ def test_the_run_ends_with_the_tokens_each_kind_of_work_used(tmp_path):
             in out.getvalue())
 
 
+def test_each_task_reports_its_tokens_beside_its_time(tmp_path):
+    d = project(tmp_path, "uncovered")
+    c, out = console()
+    run(d, FakeWorker(writes_a_test(d), spend=44_000), FakeJudge(passes), c)
+    assert re.search(r"✓ Plan the surfaces \(\d+s · 44\.0k tokens\)", out.getvalue())
+
+
+def test_a_task_that_reports_no_tokens_shows_its_time_alone(tmp_path):
+    d = project(tmp_path, "uncovered")
+    c, out = console()
+    run(d, FakeWorker(writes_a_test(d)), FakeJudge(passes), c)
+    assert re.search(r"✓ Plan the surfaces \(\d+s\)", out.getvalue())
+
+
+def test_the_review_step_reports_its_time_and_tokens(tmp_path):
+    class Spending(FakeJudge):
+        async def ask(self, prompt, on_tokens=None):
+            on_tokens(1_500)
+            return await super().ask(prompt)
+
+    d = project(tmp_path, "uncovered")
+    c, out = console()
+    run(d, FakeWorker(writes_a_test(d)), Spending(passes), c)
+    assert re.search(r"\d+s · 1\.5k tokens", out.getvalue())
+
+
 def test_no_tokens_line_when_no_agent_ran(tmp_path):
     c, out = console()
     run(project(tmp_path), FakeWorker(), FakeJudge(passes), c)
     assert "Tokens" not in out.getvalue()
+
+
+def test_a_fix_for_a_failing_suite_is_rechecked_on_its_own_before_the_suite(tmp_path):
+    """While the named criterion still fails, the whole suite has nothing to
+    add: its own tests are run, and the coder goes straight back to it."""
+    d = project(tmp_path)
+    os.remove(f"{d}/tests/covers.js")
+    for ac in ("AC1", "AC2"):
+        with open(f"{d}/tests/{ac.lower()}.js", "w") as fh:
+            fh.write(f"// @covers R-0001/{ac}\nit('{ac}', () => {{}});\n")
+    stamp(d)
+    fails = 'test -f fixed || { echo "not ok 1 - at tests/ac2.js:2"; exit 1; }'
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write(f"\ntest_command=echo suite >> suites.txt; {fails}\n"
+                 f"run.http=sh -c 'echo \"$0 $*\" >> ran.txt; {fails}'\n")
+    codings = []
+
+    def act(prompt):
+        if "Write the implementation" in prompt:
+            codings.append(prompt)
+            if len(codings) == 2:           # the second attempt fixes it
+                open(f"{d}/fixed", "w").close()
+
+    c, out = console()
+    assert run(d, FakeWorker(act), FakeJudge(passes), c) == 0
+    assert "The criteria whose tests failed: R-0001/AC2." in codings[0]
+    assert "the tests of R-0001/AC2 still fail" in codings[1]
+    assert open(f"{d}/ran.txt").read().split() == ["tests/ac2.js", "tests/ac2.js"]
+    assert open(f"{d}/suites.txt").read().split() == ["suite", "suite"]
+    assert "re-running R-0001/AC2" in out.getvalue()
+
+
+SHORT = ("// @covers R-0001/AC1\nit('rejects an expired token', () => {});\n"
+         "// @covers R-0001/AC2\nit('accepts a skewed token', () => {});\n")
+
+
+def oversized_project(tmp_path):
+    """Both criteria's tests reviewed, in one file whose helpers take them
+    over the cap -- reviewed before there was one."""
+    from hamilton_core import review as R
+    d = project(tmp_path)
+    helpers = "".join(f"const helper{n} = () => {n};\n" for n in range(R.MAX_LINES))
+    open(f"{d}/tests/covers.js", "w").write(helpers + SHORT)
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write("run.http=true\nrun.unit=true\ntest_command=test -f fixed\n")
+    stamp(d)
+    return d
+
+
+def test_reviewed_tests_over_the_cap_are_written_again_before_coding(tmp_path):
+    d = oversized_project(tmp_path)
+    briefs = []
+
+    def act(prompt):
+        if "Write the tests for one acceptance criterion" in prompt:
+            briefs.append(prompt)
+            open(f"{d}/tests/covers.js", "w").write(SHORT)
+        elif "Write the implementation" in prompt:
+            open(f"{d}/fixed", "w").close()
+
+    worker = FakeWorker(act)
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert len(briefs) == 2
+    assert all("sent back unread, for their length" in b for b in briefs)
+    [coding] = worker.of("implement")
+    assert "Criterion: AC1:" in coding and "Criterion: AC2:" in coding
+
+
+def test_a_green_gate_is_not_held_up_for_long_tests(tmp_path):
+    """The cap costs a rewrite only when there is work on the way anyway."""
+    d = oversized_project(tmp_path)
+    open(f"{d}/fixed", "w").close()
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert worker.prompts == []

@@ -640,16 +640,32 @@ def test_the_suite_s_output_can_still_be_streamed(tmp_path):
     assert "running 61 tests" in run_verify(d, "--suite-output").stderr
 
 
-# --- one criterion's status ------------------------------------------------------
+# --- one criterion: its status, and its own tests run ---------------------------
+
+def configure(d, **keys):
+    """Set `.hamilton/config` keys, replacing any already there."""
+    with open(f"{d}/.hamilton/config") as fh:
+        lines = [ln for ln in fh.read().splitlines()
+                 if ln.partition("=")[0] not in keys]
+    with open(f"{d}/.hamilton/config", "w") as fh:
+        fh.write("\n".join(lines + [f"{k}={v}" for k, v in keys.items()]) + "\n")
+
+
+def two_files(d):
+    """AC1's test and AC2's test, each in a file of its own, both reviewed."""
+    os.remove(f"{d}/tests/covers.js")
+    with open(f"{d}/tests/ac1.js", "w") as fh:
+        fh.write("// @covers R-0001/AC1\nit('rejects an expired token', () => {});\n")
+    with open(f"{d}/tests/ac2.js", "w") as fh:
+        fh.write("// @covers R-0001/AC2\nit('accepts a skewed token', () => {});\n")
+    stamp(d)
+
 
 def test_one_criterion_s_status_needs_no_suite(tmp_path):
-    """A step working on a criterion asks whether it is covered and reviewed;
-    that must not cost a ten-minute suite."""
+    """A step working on a criterion asks whether it is covered, reviewed
+    and passing; that must not cost a ten-minute suite."""
     d = copy_fixture("multi-violation", tmp_path)
-    with open(f"{d}/.hamilton/config") as fh:
-        cfg = fh.read()
-    with open(f"{d}/.hamilton/config", "w") as fh:     # a suite that would fail
-        fh.write(re.sub(r"test_command=.*", "test_command=false", cfg))
+    configure(d, **{"test_command": "false", "run.http": "true", "run.unit": "true"})
     ok = run_verify(d, "R-0001/AC1")
     assert ok.returncode == 0
     assert "- ✓ AC1 " in ok.stdout and "AC2" not in ok.stdout and "Suite" not in ok.stdout
@@ -659,10 +675,60 @@ def test_one_criterion_s_status_needs_no_suite(tmp_path):
     assert [f["rule"] for f in payload["findings"]] == ["uncovered"]
 
 
-@pytest.mark.parametrize("only", ["R-0001", "R-0001/AC9"])
+@pytest.mark.parametrize("only", ["R-0009", "R-0001/AC9", "AC1", "R-0001/"])
 def test_one_criterion_must_be_one_that_exists(tmp_path, only):
     d = copy_fixture("clean", tmp_path)
     assert run_verify(d, only).returncode == 2
+
+
+def test_a_criterion_s_own_files_are_run_by_its_method_s_command(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"test_command": "false",
+                    "run.http": "sh -c 'echo \"$0 $*\" > ran.txt'"})
+    proc = run_verify(d, "R-0001/AC1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert open(f"{d}/ran.txt").read().split() == ["tests/ac1.js"]
+    assert re.search(r"Tests ✓ passed \(\d+s\)", proc.stdout)
+
+
+def test_a_requirement_runs_every_criterion_s_tests_at_once(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"run.http": "sh -c 'echo \"$0 $*\" > ran.txt'"})
+    assert run_verify(d, "R-0001").returncode == 0
+    assert open(f"{d}/ran.txt").read().split() == ["tests/ac1.js", "tests/ac2.js"]
+
+
+def test_a_failure_is_put_down_to_the_criterion_whose_file_it_names(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"run.http": "sh -c 'echo \"not ok 1 - expired at tests/ac2.js:2\"; exit 1'"})
+    proc = run_verify(d, "R-0001")
+    assert proc.returncode == 1
+    assert re.search(r"Tests ✗ R-0001/AC2 failed \(\d+s\) -- full output: ", proc.stdout)
+    assert "not ok 1 - expired at tests/ac2.js:2" in proc.stdout
+    ran = json.loads(run_verify(d, "R-0001", "--json").stdout)["tests"]
+    assert ran["results"] == {"R-0001/AC1": "passed", "R-0001/AC2": "failed"}
+    assert "not ok 1" in open(ran["log"]).read()
+
+
+def test_a_failure_that_names_no_file_fails_every_criterion_it_ran(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"run.http": "sh -c 'echo \"not ok 1 - something\"; exit 1'"})
+    ran = json.loads(run_verify(d, "R-0001", "--json").stdout)["tests"]
+    assert ran["results"] == {"R-0001/AC1": "failed", "R-0001/AC2": "failed"}
+
+
+def test_a_method_without_a_run_command_is_named_not_guessed(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    proc = run_verify(d, "R-0001/AC1")
+    assert proc.returncode == 1
+    assert "not run for [http]: .hamilton/config has no run.http" in proc.stdout
+    ran = json.loads(run_verify(d, "R-0001/AC1", "--json").stdout)["tests"]
+    assert ran == {"results": {"R-0001/AC1": "not run"}, "missing": ["http"],
+                   "output": "", "log": ""}
 
 
 
@@ -871,3 +937,99 @@ def test_a_binary_reference_is_hashed_by_its_bytes():
     assert C.ref_digest(b"\xff\x00png") != C.ref_digest(b"\xff\x01png")
     assert C.ref_text(b"\xff\x00png") is None
     assert C.ref_digest(None) == "(missing)"
+
+
+# --- what a failed run hands its fixer ---------------------------------------
+
+def tap(passing_after=300, failing=("the total is wrong",)):
+    """A TAP log: some failures, then a long run of passing tests."""
+    out = ["TAP version 13"]
+    for n, name in enumerate(failing, 1):
+        out += [f"not ok {n} - {name}", "  ---", "  error: 'expected 3, got 4'",
+                "  ..."]
+    for n in range(passing_after):
+        out += [f"ok {n + 100} - passing test {n}"]
+    out += ["1..400", "# pass 399", "# fail 1"]
+    return "\n".join(out)
+
+
+def test_the_failures_are_kept_not_the_end_of_the_output():
+    excerpt = C.failures(tap())
+    assert "not ok 1 - the total is wrong" in excerpt
+    assert "expected 3, got 4" in excerpt
+    assert "# fail 1" in excerpt                 # the summary still closes it
+    assert "passing test 150" not in excerpt
+    assert len(excerpt.splitlines()) <= C.SUITE_TAIL
+
+
+def test_every_failure_is_named_however_many_there_are():
+    names = [f"failure {n}" for n in range(60)]
+    excerpt = C.failures(tap(failing=names))
+    assert all(f"not ok {n + 1} - failure {n}" in excerpt for n in range(60))
+    assert len(excerpt.splitlines()) <= C.SUITE_TAIL
+
+
+def test_output_that_marks_no_failure_is_handed_on_as_its_tail():
+    output = "\n".join(f"line {n}" for n in range(500))
+    assert C.failures(output) == "\n".join(f"line {n}" for n in range(300, 500))
+
+
+def test_a_failed_suite_names_the_criteria_whose_tests_failed(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, test_command="echo 'not ok 3 - at tests/ac2.js:2' && exit 1")
+    [failed] = [f for f in json.loads(run_verify(d, "--json").stdout)["findings"]
+                if f["rule"] == "tests-failed"]
+    assert failed["failed"] == ["R-0001/AC2"]
+
+
+def test_a_failure_outside_the_tagged_tests_names_no_criterion(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    configure(d, test_command="echo 'FAIL tests/Unrelated.php' && exit 1")
+    [failed] = [f for f in json.loads(run_verify(d, "--json").stdout)["findings"]
+                if f["rule"] == "tests-failed"]
+    assert failed["failed"] == []
+
+
+# --- a copied review suffix ----------------------------------------------------
+
+def test_a_copied_test_file_is_found_by_its_suffix(tmp_path):
+    """A suffix is written to one test; a shell copy carries it along."""
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    assert run_verify(d).returncode == 0
+    open(f"{d}/tests/_extract.mjs", "w").write(open(f"{d}/tests/ac1.js").read())
+    proc = run_verify(d, "--json")
+    copied = [f for f in json.loads(proc.stdout)["findings"]
+              if f["rule"] == "copied-suffix"]
+    assert sorted(f["file"] for f in copied) == ["tests/_extract.mjs", "tests/ac1.js"]
+    assert all(f["req"] == "R-0001" and f["ac"] == "AC1" for f in copied)
+    assert "tests/ac1.js:1 carries too" in next(
+        f["message"] for f in copied if f["file"] == "tests/_extract.mjs")
+    assert "- ✗ AC1 " in run_verify(d).stdout
+
+
+def test_tags_without_a_suffix_are_no_copies(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    body = open(f"{d}/tests/ac1.js").read()
+    bare = re.sub(r" #\S+", "", body)
+    open(f"{d}/tests/ac1.js", "w").write(bare)
+    open(f"{d}/tests/_extract.mjs", "w").write(bare)
+    rules = {f["rule"] for f in json.loads(run_verify(d, "--json").stdout)["findings"]}
+    assert "copied-suffix" not in rules
+
+
+def test_no_suite_checks_the_spec_and_the_tags_and_runs_nothing(tmp_path):
+    """What a spec session needs to know, without minutes of tests."""
+    d = copy_fixture("clean", tmp_path)
+    configure(d, **{"test_command": "touch suite-ran; false",
+                    "run.http": "touch criterion-ran; false"})
+    proc = run_verify(d, "--no-suite")
+    assert proc.returncode == 0 and "Suite not run (--no-suite)" in proc.stdout
+    one = run_verify(d, "R-0001/AC1", "--no-suite")
+    assert one.returncode == 0 and "Tests not run (--no-suite)" in one.stdout
+    assert "tests" not in json.loads(run_verify(d, "R-0001", "--no-suite", "--json").stdout)
+    assert not os.path.exists(f"{d}/suite-ran") and not os.path.exists(f"{d}/criterion-ran")
+    uncovered = copy_fixture("uncovered", tmp_path)
+    assert run_verify(uncovered, "--no-suite").returncode == 1

@@ -22,6 +22,8 @@ answers:
   * **The completion sentinel** is taken out of the agent's text and becomes a
     `PhaseDone` at the end of the turn. The engineer reads the closing
     summary, not the marker that ends it.
+  * **What a turn cost** is a `Spent` at its end: the tokens of every
+    `TurnEnded` it took in, turns the agent started itself included.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ class Agent:
         self._rows: dict[str, P.Activity] = {}
         self._snapshot: tuple[P.Activity, ...] = ()
         self._pump_task: asyncio.Task | None = None
+        self._spent = 0                 # tokens of the turn running now
 
     @property
     def session_ref(self) -> str | None:
@@ -64,6 +67,7 @@ class Agent:
 
     async def run_turn(self, text: str) -> AsyncIterator[P.Event]:
         done, tail = False, ""
+        self._spent = 0
         async for ev in self._turn(text):
             if isinstance(ev, P.AgentText):
                 body, hit = strip_sentinel(ev.text)
@@ -72,6 +76,8 @@ class Agent:
                     continue
                 tail, ev = body, P.AgentText(body)
             yield ev
+        if self._spent:
+            yield P.Spent(self._spent)
         if done:
             yield P.PhaseDone(tail.strip())
 
@@ -89,7 +95,9 @@ class Agent:
             self._pump_task = asyncio.create_task(self._pump())
         while not self._queue.empty():
             ev = self._queue.get_nowait()
-            if not isinstance(ev, P.TurnEnded):     # a turn the agent started
+            if isinstance(ev, P.TurnEnded):         # a turn the agent started
+                self._spent += ev.tokens
+            else:
                 yield ev
         if self._pump_task.done():
             return                                  # the stream is gone
@@ -98,6 +106,7 @@ class Agent:
         while (ev := await self._next(ended)) is not None:
             if isinstance(ev, P.TurnEnded):
                 ended = True
+                self._spent += ev.tokens
                 if not self._rows:
                     return
                 continue                            # subagents still running

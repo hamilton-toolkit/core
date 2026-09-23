@@ -52,12 +52,22 @@ $config
    something narrower or different. That includes tests still tagged for a
    criterion that is now `[manual]`: they no longer count, and when one
    proves a new criterion, its brief says to retag it.
-5. **Set the config keys the findings ask for**, if any. In build phase you
-   may edit `test_command` and `paths.<method>` in `.hamilton/config`, and
-   nothing else under `.hamilton/`.
+5. **Set the config keys the findings ask for**, if any, and a
+   `run.<method>` for each method the criteria use that has none: a command
+   that runs the test files given to it as arguments, starting whatever they
+   need (a server, a container), so `hamilton verify R-nnnn/ACn` can run one
+   criterion's tests. In build phase you may edit `test_command`,
+   `paths.<method>` and `run.<method>` in `.hamilton/config`, and nothing
+   else under `.hamilton/`.
 
 You may not write to `$requirements` or anything else under `spec/` -- the
 phase gate refuses it, and a criterion that seems wrong is not yours to fix.
+
+**Stay within the groundwork.** Read only what the criteria's surfaces touch
+-- the page, route or module they are reached through -- not the existing
+test suites. **Run no tests**, not even to check the scaffold: the test
+writers run theirs against it next, and the coder after them. A syntax check
+of a file you changed (`php -l`, `node --check`) is all you need.
 
 ## Answer
 

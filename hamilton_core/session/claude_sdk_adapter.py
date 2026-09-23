@@ -29,7 +29,9 @@ vendor-specific things are contained here on purpose:
     lets the build loop be driven by Hamilton instead of by an agent. Which
     model each kind of build work runs on is decided here too
     (`DEFAULT_MODELS`, overridden by `model.<step>` in `.hamilton/config`),
-    and so is what counts as a token spent (`_spent`).
+    how hard it thinks (`DEFAULT_EFFORTS`, overridden by `effort.<step>`; a
+    reviewer does not think at all), and what counts as a token spent
+    (`_spent`).
 
 Anything a future non-SDK harness would do differently belongs in this file.
 """
@@ -77,6 +79,12 @@ SUBAGENT_TOOLS = ("Agent", "Task")      # "Task" is the tool's older name
 
 FOREGROUND = ("Run subagents in the foreground; issue several Agent calls in "
               "one message to run them in parallel.")
+# A build task ends when it answers: whatever it left running in the
+# background never reports back, and its work is lost.
+FOREGROUND_TASK = ("Run it in the foreground: this task ends when you answer, "
+                   "and a background run never reports back. Several Agent "
+                   "calls in one message still run in parallel.")
+BACKGROUND_TOOLS = ("Bash", *SUBAGENT_TOOLS)
 
 _ASK_DESCRIPTION = (
     "Ask the engineer a question and wait for their answer. Use this for every "
@@ -198,7 +206,7 @@ class ClaudeSdkAdapter:
                 "hamilton", tools=[ask_engineer])},
             can_use_tool=self._can_use_tool,
             hooks={"PreToolUse": [HookMatcher(matcher="|".join(SUBAGENT_TOOLS),
-                                              hooks=[_foreground_only])]},
+                                              hooks=[_foreground(FOREGROUND)])]},
             resume=resume_ref,
         )
 
@@ -308,17 +316,22 @@ def _translate(msg, tasks: Tasks) -> list[P.StreamEvent]:
                                       or "the agent session failed"))
         # Ours, or one the CLI started itself to report a finished task.
         by_agent = not (msg.origin is None or msg.origin.get("kind") == "human")
-        out.append(P.TurnEnded(by_agent))
+        out.append(P.TurnEnded(by_agent, _spent(msg)))
         return out
     return []
 
 
-async def _foreground_only(hook_input, tool_use_id, context) -> dict:
-    if not (hook_input.get("tool_input") or {}).get("run_in_background"):
-        return {}
-    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                   "permissionDecision": "deny",
-                                   "permissionDecisionReason": FOREGROUND}}
+def _foreground(reason: str):
+    """A PreToolUse hook that refuses any call asking to run in the
+    background, with `reason`. A hook, not `can_use_tool`: that is not asked
+    about the `Agent` tool, nor about a command the project already allows."""
+    async def hook(hook_input, tool_use_id, context) -> dict:
+        if not (hook_input.get("tool_input") or {}).get("run_in_background"):
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                       "permissionDecision": "deny",
+                                       "permissionDecisionReason": reason}}
+    return hook
 
 
 # The model for each kind of build work when `.hamilton/config` names none.
@@ -327,11 +340,38 @@ async def _foreground_only(hook_input, tool_use_id, context) -> dict:
 # the shape of the code, and keep the CLI's default.
 DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
 
+# How hard each kind of build work thinks, where the CLI's default is too
+# much. Left to itself a test writer spends most of its output thinking --
+# twenty thousand tokens before a single edit, at times -- and a planner
+# three quarters of it.
+DEFAULT_EFFORTS = {"plan": "medium", "tests": "medium", "code": "medium"}
+
+# Every build agent caches its prompt for 5 minutes, not the hour a
+# subscription defaults to: a 1-hour cache write costs twice the input, a
+# 5-minute one a quarter more. Each read renews it, so only a single step
+# idle for longer pays a write again -- rare, and cheaper than the hour on
+# every write. Caching cannot be turned off on a subscription: with the
+# client's markers gone the server still caches, for 5 minutes.
+CACHE = {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
+
+# A worker's command runs to its end where the worker waits for it. Left to
+# itself the CLI moves a command still running after two minutes -- a
+# browser test file, say -- into the background, and the task, which ends
+# when it answers, either waits turn after turn or never hears back.
+FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                  "BASH_DEFAULT_TIMEOUT_MS": "900000",
+                  "BASH_MAX_TIMEOUT_MS": "900000"}
+
 
 def _model(step: str, chosen: dict) -> str | None:
     """The model for `step`: the engineer's choice, else ours, else None --
     the CLI's own default."""
     return chosen.get(step) or DEFAULT_MODELS.get(step)
+
+
+def _effort(step: str, chosen: dict) -> str | None:
+    """The effort for `step`, the way `_model` picks its model."""
+    return chosen.get(step) or DEFAULT_EFFORTS.get(step)
 
 
 def _spent(msg: ResultMessage) -> int:
@@ -350,10 +390,16 @@ class ClaudeSdkJudge:
     """`protocol.Judge` over `claude_agent_sdk`: every `ask` is a fresh
     one-turn session with no tools, no filesystem settings (so no project
     skill, hook or MCP server) and an empty temp dir as its cwd. The prompt is
-    all it has to go on."""
+    all it has to go on.
 
-    def __init__(self, model: str | None = None) -> None:
+    It does not think: a review fills in a checklist it is given, and
+    thinking was nine tenths of what a review cost. Its prompt is cached for
+    the shortest time there is (`CACHE`): no later call reads it back."""
+
+    def __init__(self, model: str | None = None,
+                 effort: str | None = None) -> None:
         self._model = _model("review", {"review": model} if model else {})
+        self._effort = _effort("review", {"review": effort} if effort else {})
         self.tokens: dict = {}
 
     def _options(self, cwd: str) -> ClaudeAgentOptions:
@@ -365,16 +411,22 @@ class ClaudeSdkJudge:
             strict_mcp_config=True,
             max_turns=1,
             model=self._model,
+            effort=self._effort,
+            thinking={"type": "disabled"},
+            env=CACHE,
         )
 
-    async def ask(self, prompt: str) -> str:
+    async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None) -> str:
         texts, error = [], None
         with tempfile.TemporaryDirectory(prefix="hamilton-review-") as cwd:
             async for msg in query(prompt=prompt, options=self._options(cwd)):
                 if isinstance(msg, AssistantMessage):
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
                 elif isinstance(msg, ResultMessage):
-                    self.tokens["review"] = self.tokens.get("review", 0) + _spent(msg)
+                    spent = _spent(msg)
+                    self.tokens["review"] = self.tokens.get("review", 0) + spent
+                    if on_tokens:
+                        on_tokens(spent)
                     if msg.is_error:
                         error = msg.result or msg.subtype or "the reviewer session failed"
         if error:
@@ -389,14 +441,18 @@ class ClaudeSdkWorker:
     No session and no resume: the prompt Hamilton built is the brief, and
     when the work is done the process is gone. That is what makes a step
     repeatable. The project's own settings are loaded, so its conventions
-    and hooks apply to the work.
+    and hooks apply to the work -- but not its skills: the prompt is the
+    whole brief, and a skill the worker loads is read again on every turn.
+    Nothing may run in the background: the task is over when it answers.
+    Nor may it run the whole suite: Hamilton does, at the end.
     """
 
     def __init__(self, root: str, write_policy: P.WritePolicy,
-                 models: dict | None = None) -> None:
+                 models: dict | None = None, efforts: dict | None = None) -> None:
         self._root = root
         self._write_policy = write_policy
         self._models = models or {}
+        self._efforts = efforts or {}
         self.denials: list[P.ToolDenied] = []
         self.tokens: dict = {}
 
@@ -408,16 +464,33 @@ class ClaudeSdkWorker:
                                          denial))
         return PermissionResultDeny(message=denial)
 
+    async def _no_suite(self, hook_input, tool_use_id, context) -> dict:
+        """A PreToolUse hook: no task runs the whole suite (`guard`)."""
+        command = str((hook_input.get("tool_input") or {}).get("command") or "")
+        denial = guard.suite_denial(self._root, command)
+        if denial is None:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                       "permissionDecision": "deny",
+                                       "permissionDecisionReason": denial}}
+
     def _options(self, step: str = "") -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             cwd=self._root,
             setting_sources=["project"],
+            env={**CACHE, **FOREGROUND_ENV},
+            skills=[],
             can_use_tool=self._can_use_tool,
+            hooks={"PreToolUse": [
+                HookMatcher(matcher="|".join(BACKGROUND_TOOLS),
+                            hooks=[_foreground(FOREGROUND_TASK)]),
+                HookMatcher(matcher="Bash", hooks=[self._no_suite])]},
             model=_model(step, self._models),
+            effort=_effort(step, self._efforts),
         )
 
     async def run(self, prompt: str, on_action: P.OnAction | None = None,
-                  step: str = "") -> str:
+                  step: str = "", on_tokens: P.OnTokens | None = None) -> str:
         texts, error = [], None
         async for msg in query(prompt=prompt, options=self._options(step)):
             if isinstance(msg, AssistantMessage):
@@ -427,7 +500,10 @@ class ClaudeSdkWorker:
                     elif isinstance(block, ToolUseBlock) and on_action:
                         on_action(action(self._root, block.name, block.input))
             elif isinstance(msg, ResultMessage):
-                self.tokens[step] = self.tokens.get(step, 0) + _spent(msg)
+                spent = _spent(msg)
+                self.tokens[step] = self.tokens.get(step, 0) + spent
+                if on_tokens:
+                    on_tokens(spent)
                 if msg.is_error:
                     error = msg.result or msg.subtype or "the task failed"
         if error:

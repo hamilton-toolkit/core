@@ -19,7 +19,10 @@ passes the test; a change to the AC, its requirement's Statement, its method's
 definition, or the test itself leaves the tag `unreviewed`. `hamilton verify`
 never writes anything. It prints the spec with a mark per criterion; `hamilton verify --json`
 carries each finding in full -- `file:line`, rule and fix -- treat those as the
-work list. It also prints advisory **warnings** (`long-statement`,
+work list. **In a spec session, run `hamilton verify --no-suite`**: a spec
+change does not change what the tests do, and the suite takes minutes; with
+`--no-suite` it checks the spec, the tags and the reviews in a second. It also
+prints advisory **warnings** (`long-statement`,
 `long-description`, `root-unit-only`) that never fail a run but flag spec prose
 that needs attention — see **How to write a requirement**.
 

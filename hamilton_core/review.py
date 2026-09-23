@@ -24,6 +24,10 @@ verdict per criterion:
            by its method could satisfy it -- a spec defect; the question is
            reported for the engineer
 
+Tests longer than `MAX_LINES`, as the reviewer would be shown them, are not
+put to it: Hamilton rejects them itself, unread, and that is no review --
+nothing of it is remembered, so the next one is a first review.
+
 Only blocking comments reject: a clause of the criterion the tests fail to
 prove. What would merely make the tests better is `advice` -- shown to the
 engineer, never settled, never sent to a writer -- so a review cannot keep a
@@ -47,7 +51,8 @@ is one criterion: {"ac", "criterion", "tests", "file", "line", "state",
 `criterion` is the AC's text, `tests` lists every test judged ({"file",
 "line", "state"}), `file`/`line` is the first of them and `state` says why
 the criterion was up for review, `comments` are the open points as
-{"check", "text", "why"} and `advice` what is not required, as text.
+{"check", "text", "why"}, `advice` what is not required, as text, and
+`tokens` what the review used.
 """
 
 from __future__ import annotations
@@ -74,6 +79,12 @@ DONE = {"pass": "passed", "reject": "rejected", "unclear": "unclear",
 INDENT = "    "
 LABEL = 11              # width of the label column in an unfolded result
 MAX_WIDTH = 100         # longer lines are hard to read, however wide the terminal
+# The most lines of test a criterion may take, as the reviewer is shown them:
+# each file's preamble once, and every tagged section. Longer is sent back
+# unread -- a test that long is a framework, not a proof, and every step
+# after this one would read it again.
+MAX_LINES = 200
+SIZE = "size"           # the check of a comment Hamilton makes, not the reviewer
 def targets(root: str) -> tuple[dict, dict, list]:
     """(reqs, defined, groups): one group per acceptance criterion that needs
     a review -- every counting tag of it, wherever it lies, as soon as one of
@@ -81,6 +92,25 @@ def targets(root: str) -> tuple[dict, dict, list]:
     together, because together is how they prove it. Groups come in the
     order of their first test. Raises UsageError when the spec or config is
     missing."""
+    reqs, defined, groups = _groups(root)
+    return reqs, defined, [g for g in groups
+                           if any(c.state != REVIEWED for c in g)]
+
+
+def oversized(root: str) -> dict:
+    """{qual: a result sending its tests back} for each criterion whose tests
+    were all reviewed, but run over `MAX_LINES` -- reviewed before there was
+    a cap, and no less costly to every step that reads them for it. The rest
+    are capped when they come up for review."""
+    reqs, _defined, groups = _groups(root)
+    return {_qual(g[0]): result(reqs, g, too_long(size(g)))
+            for g in groups
+            if all(c.state == REVIEWED for c in g) and size(g) > MAX_LINES}
+
+
+def _groups(root: str) -> tuple[dict, dict, list]:
+    """(reqs, defined, groups): every criterion's counting tags, one group
+    each, in the order of their first test."""
     if not os.path.isfile(os.path.join(root, REQ_REL)):
         raise UsageError(f"{REQ_REL}: not found (run from the project root)")
     paths = method_paths(read_config(root))
@@ -91,8 +121,7 @@ def targets(root: str) -> tuple[dict, dict, list]:
     for c in counted(root, reqs, defined, paths, tags):
         by_ac.setdefault(_qual(c), []).append(c)
     groups = [sorted(g, key=lambda c: (c.tag.file, c.tag.line))
-              for g in by_ac.values()
-              if any(c.state != REVIEWED for c in g)]
+              for g in by_ac.values()]
     groups.sort(key=lambda g: (g[0].tag.file, g[0].tag.line))
     return reqs, defined, groups
 
@@ -133,10 +162,11 @@ def _referenced(refs: dict) -> str:
             + "\n\n".join(out))
 
 
-def _tests(group) -> str:
-    """Every test of the criterion, file by file: the file's preamble once,
-    then each of its tagged sections. A region is preamble plus section, so
-    the preamble is what comes before the region's first tag line."""
+def _files(group) -> dict:
+    """{file: {"preamble", "sections": {section: its tag line}}}: every test
+    of the criterion, as the reviewer is shown it. A region is preamble plus
+    section, so the preamble is what comes before the region's first tag
+    line."""
     files: dict = {}
     for c in group:
         lines = c.region.splitlines()
@@ -144,8 +174,21 @@ def _tests(group) -> str:
         preamble, section = "\n".join(lines[:first]), "\n".join(lines[first:])
         entry = files.setdefault(c.tag.file, {"preamble": preamble, "sections": {}})
         entry["sections"].setdefault(section, c.tag.line)
+    return files
+
+
+def size(group) -> int:
+    """The lines of test the reviewer would be shown for the criterion."""
+    return sum(len(text.splitlines())
+               for entry in _files(group).values()
+               for text in (entry["preamble"], *entry["sections"]))
+
+
+def _tests(group) -> str:
+    """Every test of the criterion, file by file: the file's preamble once,
+    then each of its tagged sections."""
     out = []
-    for path, entry in files.items():
+    for path, entry in _files(group).items():
         out.append(f"### `{path}`\n\nPreamble (everything above its first "
                    f"`@covers` tag):\n\n```\n{entry['preamble']}\n```")
         for section, line in entry["sections"].items():
@@ -290,16 +333,39 @@ def settle(earlier: dict, answer: dict) -> dict:
             "question": question, "verdict": verdict(comments, question)}
 
 
+def too_long(lines: int, earlier: dict | None = None) -> dict:
+    """Hamilton's own reject of tests too long to review: no reviewer reads
+    them, so this is no review. What an earlier review left open stays in
+    view, for the writer to keep solving."""
+    earlier = earlier or {}
+    return {"verdict": "reject", "covered": list(earlier.get("covered", [])),
+            "resolved": [], "advice": list(earlier.get("advice", [])),
+            "question": earlier.get("question", ""),
+            "comments": [*earlier.get("comments", []), {"check": SIZE, "text":
+                f"{lines} lines of test, counting each file's preamble -- more "
+                f"than the {MAX_LINES} a criterion may take. Prove it with "
+                f"fewer, plainer tests: no generic discovery, crawling or "
+                f"comparison framework, only what the criterion names."}]}
+
+
+
+def reviewed(r: dict) -> bool:
+    """Whether a result is a review: not an error, and not tests sent back
+    for their length unread."""
+    return r.get("verdict") != "error" and not any(
+        c.get("check") == SIZE for c in r["comments"])
+
+
 def remember(memory: dict, results: list) -> dict:
     """The memory after `results`, one entry per criterion: a criterion that
     passed is forgotten, one that did not keeps what its tests cover, what is
-    still open and the question it raised. An error changes nothing -- it is
-    not a review."""
+    still open and the question it raised. What is no review -- an error,
+    tests sent back unread -- changes nothing."""
     out = dict(memory)
     for r in results:
         if r["verdict"] == "pass":
             out.pop(r["ac"], None)
-        elif r["verdict"] != "error":
+        elif reviewed(r):
             out[r["ac"]] = {"covered": r["covered"], "comments": r["comments"],
                             "advice": r["advice"]}
             if r["question"]:
@@ -333,6 +399,22 @@ def write_suffix(root: str, tag, value: str) -> None:
         fh.write("".join(parts))
 
 
+def result(reqs: dict, group, answer: dict, tokens: int = 0) -> dict:
+    """One criterion's result: which tests, why it was up, and `answer`."""
+    c = group[0]
+    open_ = next((t for t in group if t.state != REVIEWED), c)
+    return {"ac": _qual(c),
+            "criterion": reqs[c.tag.rid]["acs"][c.tag.acid]["text"],
+            "tests": [{"file": t.tag.file, "line": t.tag.line, "state": t.state}
+                      for t in group],
+            "file": c.tag.file, "line": c.tag.line, "state": open_.state,
+            "tokens": tokens, **answer}
+
+
+class _TooLong(Exception):
+    """A criterion's tests are over `MAX_LINES`: not put to the judge."""
+
+
 class Watch:
     """What `review` reports while it runs. This one ignores it."""
 
@@ -363,31 +445,31 @@ async def review(root: str, judge, watch: Watch | None = None,
         if earlier and not (earlier["covered"] or earlier["comments"]
                             or earlier.get("question")):
             earlier = None      # nothing to settle: a re-review would pass it unseen
+        lines = size(group)
         async with slots:
             files = sorted({os.path.basename(c.tag.file) for c in group})
             watch.started(key, f"{qual} · {', '.join(files)}")
+            used: list = []
             try:
-                reply = await judge.ask(prompt(reqs, defined, group, earlier))
+                if lines > MAX_LINES:
+                    raise _TooLong(lines)
+                reply = await judge.ask(prompt(reqs, defined, group, earlier),
+                                        on_tokens=used.append)
                 if earlier:
                     answer = settle(earlier, parse_settle(reply, {qual: earlier})[qual])
                 else:
                     a = parse_first(reply, [qual])[qual]
                     answer = dict(a, resolved=[],
                                   verdict=verdict(a["comments"], a["question"]))
+            except _TooLong:
+                answer = too_long(lines, earlier)
             except Exception as exc:      # the judge failed, or answered badly
                 answer = {"verdict": "error", "covered": [], "resolved": [],
                           "comments": [{"check": "error", "text": str(exc)}],
                           "advice": [], "question": ""}
-        c = group[0]
-        open_ = next((t for t in group if t.state != REVIEWED), c)
-        result = {"ac": qual,
-                  "criterion": reqs[c.tag.rid]["acs"][c.tag.acid]["text"],
-                  "tests": [{"file": t.tag.file, "line": t.tag.line,
-                             "state": t.state} for t in group],
-                  "file": c.tag.file, "line": c.tag.line, "state": open_.state,
-                  **answer}
-        watch.finished(key, [result])
-        return result
+        done = result(reqs, group, answer, sum(used))
+        watch.finished(key, [done])
+        return done
 
     results = await asyncio.gather(*(judged(i, g) for i, g in enumerate(groups)))
     for group, r in zip(groups, results):
