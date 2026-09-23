@@ -505,15 +505,25 @@ class Run:
 
     # -- steps --
 
-    def check(self, suite: bool) -> list:
-        self.step("check", "with the suite" if suite else "")
+    def check(self, suite: bool, recheck=()) -> list:
+        """The gate: with the suite, or without it -- and then the tests of
+        the criteria in `recheck` run on their own, a fix re-checked before
+        the whole suite is worth running again."""
+        detail = ("with the suite" if suite else
+                  f"re-running {', '.join(recheck)}" if recheck else "")
+        self.step("check", detail)
         started = time.monotonic()
         # The suite's output goes to a file, not the screen, so the indicator
         # keeps running through it: follow the file to watch, the build shows
         # the outcome, and a failure's output goes to the coding step.
+        follow = lambda log: self.said(_verify.follow_hint(log))
         findings, _w, _n, _manual, _nr, _na = _verify.run(
-            self.root, suite=suite,
-            on_log=lambda log: self.said(_verify.follow_hint(log)))
+            self.root, suite=suite, on_log=follow)
+        if recheck and not suite:
+            ran = _verify.run_criteria(self.root, list(recheck), on_log=follow)
+            failed = _verify.still_failing(ran)
+            if failed:
+                findings.append(failed)
         self.checks += 1
         self.suites += suite
         took = f" ({elapsed(time.monotonic() - started)})"
@@ -654,11 +664,15 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
     started = time.monotonic()
     # The full suite runs only when nothing else is left: every step works on
     # its own tests, and this is the one run that checks them all together.
+    # After a fix for a failing suite, the criteria it named are re-run on
+    # their own first: while they fail, the suite has nothing to add.
     suite = False
+    recheck: list = []
     passes = 0
     while True:
         try:
-            findings = run.check(suite)
+            findings = run.check(suite, recheck)
+            recheck = []
         except UsageError as exc:
             console.error(f"build: {exc}")
             return 2
@@ -697,6 +711,7 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
             suite = False           # a clarified criterion: back to the gate
             continue
         suite = False               # back to the gate; the suite at the end
+        recheck = [q for q in failing(work) if q not in state.skipped]
 
     console.say()
     console.error("build: still not green after "

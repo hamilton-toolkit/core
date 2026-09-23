@@ -849,6 +849,24 @@ def run_criteria(root: str, quals, on_log=None) -> dict:
             "log": log}
 
 
+def still_failing(ran: dict) -> dict | None:
+    """A `tests-failed` finding for the criteria a `run_criteria` found
+    failing, or None -- what `hamilton build` hands its coder when a fix it
+    re-checked did not hold, instead of running the whole suite to learn
+    it."""
+    failed = [q for q, r in ran["results"].items() if r == FAILED]
+    if not failed:
+        return None
+    where = f" -- the whole output is in {ran['log']}" if ran["log"] else ""
+    found = _finding("tests-failed",
+        f"the tests of {', '.join(failed)} still fail. Expected: them to pass "
+        f"before the suite runs again. Found: they did not{where}. Fix: run "
+        f"'hamilton verify <criterion>' for each and repair the implementation.",
+        CONFIG_REL, 1)
+    found.update(output=ran["output"], log=ran["log"], failed=failed)
+    return found
+
+
 def _sample(ids, limit=8):
     """A bounded, sorted preview of an id collection for a finding message."""
     ids = sorted(ids)

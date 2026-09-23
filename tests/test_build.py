@@ -1072,3 +1072,33 @@ def test_no_tokens_line_when_no_agent_ran(tmp_path):
     c, out = console()
     run(project(tmp_path), FakeWorker(), FakeJudge(passes), c)
     assert "Tokens" not in out.getvalue()
+
+
+def test_a_fix_for_a_failing_suite_is_rechecked_on_its_own_before_the_suite(tmp_path):
+    """While the named criterion still fails, the whole suite has nothing to
+    add: its own tests are run, and the coder goes straight back to it."""
+    d = project(tmp_path)
+    os.remove(f"{d}/tests/covers.js")
+    for ac in ("AC1", "AC2"):
+        with open(f"{d}/tests/{ac.lower()}.js", "w") as fh:
+            fh.write(f"// @covers R-0001/{ac}\nit('{ac}', () => {{}});\n")
+    stamp(d)
+    fails = 'test -f fixed || { echo "not ok 1 - at tests/ac2.js:2"; exit 1; }'
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write(f"\ntest_command=echo suite >> suites.txt; {fails}\n"
+                 f"run.http=sh -c 'echo \"$0 $*\" >> ran.txt; {fails}'\n")
+    codings = []
+
+    def act(prompt):
+        if "Write the implementation" in prompt:
+            codings.append(prompt)
+            if len(codings) == 2:           # the second attempt fixes it
+                open(f"{d}/fixed", "w").close()
+
+    c, out = console()
+    assert run(d, FakeWorker(act), FakeJudge(passes), c) == 0
+    assert "The criteria whose tests failed: R-0001/AC2." in codings[0]
+    assert "the tests of R-0001/AC2 still fail" in codings[1]
+    assert open(f"{d}/ran.txt").read().split() == ["tests/ac2.js", "tests/ac2.js"]
+    assert open(f"{d}/suites.txt").read().split() == ["suite", "suite"]
+    assert "re-running R-0001/AC2" in out.getvalue()

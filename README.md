@@ -164,10 +164,12 @@ calls an agent only for the parts that need one:
   fails. Piped or in CI, it reports the stop and exits non-zero instead of
   asking.
 - **The full suite runs once, at the end.** Each writer runs only its own
-  criterion's test file, and the coding step only the tests of the criteria it
-  implements — or the failing ones — with the project's own runner. `hamilton
-  check` runs the whole suite when nothing else is left, and sends a failure
-  back to coding with its output. The screen shows only a spinner and the
+  criterion's tests, and the coding step only those of the criteria it
+  implements — or the failing ones — with `hamilton verify R-nnnn/ACn`.
+  `hamilton verify` runs the whole suite when nothing else is left, and sends
+  a failure back to coding with its failures and the criteria whose tests
+  they name. After that fix, Hamilton re-runs only those criteria's tests; the
+  suite runs again once they pass. The screen shows only a spinner and the
   outcome; the suite's own output goes to a log named as it starts —
   `tail -f` it in another terminal to watch.
 - **Every run ends with where its time and tokens went:**
