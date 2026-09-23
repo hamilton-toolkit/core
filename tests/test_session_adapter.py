@@ -17,7 +17,7 @@ from claude_agent_sdk import (
 from hamilton_core.session import protocol as P
 from hamilton_core.session.claude_sdk_adapter import (
     FOREGROUND, ClaudeSdkAdapter, ClaudeSdkJudge, ClaudeSdkWorker, Tasks,
-    _as_question, _foreground_only, _spent, _translate,
+    _as_question, FOREGROUND_TASK, _spent, _translate,
 )
 
 
@@ -263,15 +263,25 @@ def test_a_failed_result_is_a_session_error():
         P.SessionError("out of budget"), P.TurnEnded(False)]
 
 
+def foreground_hook(options, tool_name):
+    """The PreToolUse hook `options` runs for `tool_name`, as a callable."""
+    [matcher] = options.hooks["PreToolUse"]
+    assert tool_name in matcher.matcher.split("|")
+    [hook] = matcher.hooks
+
+    def call(**tool_input):
+        return asyncio.run(hook({"tool_name": tool_name, "tool_input": tool_input},
+                                "X", None))
+    return call
+
+
 def test_the_foreground_hook_is_installed_for_the_subagent_tool():
     [matcher] = adapter()._options.hooks["PreToolUse"]
-    assert matcher.matcher == "Agent|Task" and matcher.hooks == [_foreground_only]
+    assert matcher.matcher == "Agent|Task"
 
 
 def test_a_background_subagent_is_refused_and_a_foreground_one_allowed():
-    def hook(**tool_input):
-        return asyncio.run(_foreground_only(
-            {"tool_name": "Agent", "tool_input": tool_input}, "X", None))
+    hook = foreground_hook(adapter()._options, "Agent")
 
     assert hook(description="d", prompt="p") == {}
     assert hook(description="d", prompt="p", run_in_background=False) == {}
@@ -339,6 +349,17 @@ def test_a_tool_call_reads_as_what_it_does_to_what():
 
 
 # --- which model, and what it used -------------------------------------------
+
+def test_a_worker_may_run_nothing_in_the_background():
+    """Its task ends when it answers: a background run would never report."""
+    options = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)._options("code")
+    for tool in ("Bash", "Agent", "Task"):
+        hook = foreground_hook(options, tool)
+        assert hook(command="pytest") == {}
+        denied = hook(command="pytest", run_in_background=True)
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert denied["hookSpecificOutput"]["permissionDecisionReason"] == FOREGROUND_TASK
+
 
 def test_tests_and_review_default_to_a_mid_tier_model():
     w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)

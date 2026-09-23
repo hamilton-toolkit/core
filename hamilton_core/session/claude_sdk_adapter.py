@@ -78,6 +78,12 @@ SUBAGENT_TOOLS = ("Agent", "Task")      # "Task" is the tool's older name
 
 FOREGROUND = ("Run subagents in the foreground; issue several Agent calls in "
               "one message to run them in parallel.")
+# A build task ends when it answers: whatever it left running in the
+# background never reports back, and its work is lost.
+FOREGROUND_TASK = ("Run it in the foreground: this task ends when you answer, "
+                   "and a background run never reports back. Several Agent "
+                   "calls in one message still run in parallel.")
+BACKGROUND_TOOLS = ("Bash", *SUBAGENT_TOOLS)
 
 _ASK_DESCRIPTION = (
     "Ask the engineer a question and wait for their answer. Use this for every "
@@ -199,7 +205,7 @@ class ClaudeSdkAdapter:
                 "hamilton", tools=[ask_engineer])},
             can_use_tool=self._can_use_tool,
             hooks={"PreToolUse": [HookMatcher(matcher="|".join(SUBAGENT_TOOLS),
-                                              hooks=[_foreground_only])]},
+                                              hooks=[_foreground(FOREGROUND)])]},
             resume=resume_ref,
         )
 
@@ -314,12 +320,17 @@ def _translate(msg, tasks: Tasks) -> list[P.StreamEvent]:
     return []
 
 
-async def _foreground_only(hook_input, tool_use_id, context) -> dict:
-    if not (hook_input.get("tool_input") or {}).get("run_in_background"):
-        return {}
-    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                   "permissionDecision": "deny",
-                                   "permissionDecisionReason": FOREGROUND}}
+def _foreground(reason: str):
+    """A PreToolUse hook that refuses any call asking to run in the
+    background, with `reason`. A hook, not `can_use_tool`: that is not asked
+    about the `Agent` tool, nor about a command the project already allows."""
+    async def hook(hook_input, tool_use_id, context) -> dict:
+        if not (hook_input.get("tool_input") or {}).get("run_in_background"):
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                       "permissionDecision": "deny",
+                                       "permissionDecisionReason": reason}}
+    return hook
 
 
 # The model for each kind of build work when `.hamilton/config` names none.
@@ -407,6 +418,7 @@ class ClaudeSdkWorker:
     repeatable. The project's own settings are loaded, so its conventions
     and hooks apply to the work -- but not its skills: the prompt is the
     whole brief, and a skill the worker loads is read again on every turn.
+    Nothing may run in the background: the task is over when it answers.
     """
 
     def __init__(self, root: str, write_policy: P.WritePolicy,
@@ -431,6 +443,8 @@ class ClaudeSdkWorker:
             setting_sources=["project"],
             skills=[],
             can_use_tool=self._can_use_tool,
+            hooks={"PreToolUse": [HookMatcher(matcher="|".join(BACKGROUND_TOOLS),
+                                              hooks=[_foreground(FOREGROUND_TASK)])]},
             model=_model(step, self._models),
             effort=DEFAULT_EFFORTS.get(step),
         )
