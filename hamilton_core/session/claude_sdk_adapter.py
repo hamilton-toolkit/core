@@ -444,6 +444,7 @@ class ClaudeSdkWorker:
     and hooks apply to the work -- but not its skills: the prompt is the
     whole brief, and a skill the worker loads is read again on every turn.
     Nothing may run in the background: the task is over when it answers.
+    Nor may it run the whole suite: Hamilton does, at the end.
     """
 
     def __init__(self, root: str, write_policy: P.WritePolicy,
@@ -463,6 +464,16 @@ class ClaudeSdkWorker:
                                          denial))
         return PermissionResultDeny(message=denial)
 
+    async def _no_suite(self, hook_input, tool_use_id, context) -> dict:
+        """A PreToolUse hook: no task runs the whole suite (`guard`)."""
+        command = str((hook_input.get("tool_input") or {}).get("command") or "")
+        denial = guard.suite_denial(self._root, command)
+        if denial is None:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                       "permissionDecision": "deny",
+                                       "permissionDecisionReason": denial}}
+
     def _options(self, step: str = "") -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             cwd=self._root,
@@ -470,8 +481,10 @@ class ClaudeSdkWorker:
             env={**CACHE, **FOREGROUND_ENV},
             skills=[],
             can_use_tool=self._can_use_tool,
-            hooks={"PreToolUse": [HookMatcher(matcher="|".join(BACKGROUND_TOOLS),
-                                              hooks=[_foreground(FOREGROUND_TASK)])]},
+            hooks={"PreToolUse": [
+                HookMatcher(matcher="|".join(BACKGROUND_TOOLS),
+                            hooks=[_foreground(FOREGROUND_TASK)]),
+                HookMatcher(matcher="Bash", hooks=[self._no_suite])]},
             model=_model(step, self._models),
             effort=_effort(step, self._efforts),
         )

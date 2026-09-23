@@ -40,12 +40,13 @@ sees it. A shell write gets around it, as it gets around every guard rule; CI
 and the PR diff are the backstop.
 """
 import os
+import re
 import sys
 import json
 from collections import Counter
 
 from hamilton_core import phase as _phase
-from hamilton_core.verify import TAG_RE
+from hamilton_core.verify import TAG_RE, UsageError, read_config
 
 LOCKED_IN_BUILD_DIRS = ("spec", ".hamilton", ".claude")
 LOCKED_IN_BUILD_FILES = ("AGENTS.md", "CLAUDE.md")
@@ -119,6 +120,27 @@ def _edited(text: str, edits) -> str | None:
             return None
         text = text.replace(old, new, -1 if e.get("replace_all") else 1)
     return text
+
+
+def suite_denial(root: str, command: str) -> str | None:
+    """None, or the denial for a build task's command that runs the whole
+    suite -- the project's `test_command` with nothing narrowing it. Hamilton
+    runs the suite itself, once, at the end; a task that runs it waits
+    minutes and reads every criterion's failures but its own."""
+    try:
+        entry = read_config(root).get("test_command")
+    except UsageError:
+        return None
+    suite = (entry[0] if entry else "").strip()
+    # Followed by nothing but the end of the command, a redirect, a pipe or
+    # the next command: arguments after it narrow the run, and that is fine.
+    if not suite or not re.search(
+            rf"(?<![\w./-])(?:\./)?{re.escape(suite.removeprefix('./'))}"
+            rf"\s*(?=$|[;&|>)]|\d>)", command):
+        return None
+    return (f"'{suite}' runs the whole suite: Hamilton runs it itself, once, "
+            f"at the end. Run the tests of the criteria you work on with "
+            f"`hamilton verify R-nnnn/ACn` (or `R-nnnn`) instead.")
 
 
 def suffix_denial(tool_name: str, tool_input: dict, root: str) -> str | None:

@@ -7,6 +7,7 @@ events.
 """
 
 import asyncio
+import os
 
 from claude_agent_sdk import (
     AssistantMessage, ResultMessage, TaskNotificationMessage,
@@ -276,10 +277,11 @@ def test_a_failed_result_is_a_session_error():
 
 
 def foreground_hook(options, tool_name):
-    """The PreToolUse hook `options` runs for `tool_name`, as a callable."""
-    [matcher] = options.hooks["PreToolUse"]
-    assert tool_name in matcher.matcher.split("|")
-    [hook] = matcher.hooks
+    """The first PreToolUse hook `options` runs for `tool_name`, as a
+    callable."""
+    matcher = next(m for m in options.hooks["PreToolUse"]
+                   if tool_name in m.matcher.split("|"))
+    hook = matcher.hooks[0]
 
     def call(**tool_input):
         return asyncio.run(hook({"tool_name": tool_name, "tool_input": tool_input},
@@ -371,6 +373,28 @@ def test_a_worker_may_run_nothing_in_the_background():
         denied = hook(command="pytest", run_in_background=True)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert denied["hookSpecificOutput"]["permissionDecisionReason"] == FOREGROUND_TASK
+
+
+def test_a_worker_may_not_run_the_whole_suite(tmp_path):
+    os.makedirs(tmp_path / ".hamilton")
+    (tmp_path / ".hamilton" / "config").write_text("test_command=tools/run-tests.sh\n")
+    options = ClaudeSdkWorker(str(tmp_path), write_policy=lambda p: None)._options("code")
+    [hook] = [h for m in options.hooks["PreToolUse"] if m.matcher == "Bash"
+              for h in m.hooks]
+
+    def run(command):
+        out = asyncio.run(hook({"tool_name": "Bash", "tool_input": {"command": command}},
+                               "X", None))
+        return (out.get("hookSpecificOutput") or {}).get("permissionDecision")
+
+    for whole in ("tools/run-tests.sh", "./tools/run-tests.sh",
+                  "timeout 590 tools/run-tests.sh > /tmp/log 2>&1; echo $?",
+                  "tools/run-tests.sh 2>&1 | tail -40", "(tools/run-tests.sh)"):
+        assert run(whole) == "deny", whole
+    for narrowed in ("tools/run-tests.sh tests/Browser/a.test.js",
+                     "cat tools/run-tests.sh.bak", "hamilton verify R-0001/AC1",
+                     "tools/run-browser.sh tests/Browser/a.test.js"):
+        assert run(narrowed) is None, narrowed
 
 
 def test_tests_and_review_default_to_a_mid_tier_model():
