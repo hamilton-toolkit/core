@@ -344,6 +344,14 @@ DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
 # twenty thousand tokens before a single edit, at times.
 DEFAULT_EFFORTS = {"tests": "medium"}
 
+# Every build agent caches its prompt for 5 minutes, not the hour a
+# subscription defaults to: a 1-hour cache write costs twice the input, a
+# 5-minute one a quarter more. Each read renews it, so only a single step
+# idle for longer pays a write again -- rare, and cheaper than the hour on
+# every write. Caching cannot be turned off on a subscription: with the
+# client's markers gone the server still caches, for 5 minutes.
+CACHE = {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
+
 
 def _model(step: str, chosen: dict) -> str | None:
     """The model for `step`: the engineer's choice, else ours, else None --
@@ -370,9 +378,8 @@ class ClaudeSdkJudge:
     all it has to go on.
 
     It does not think: a review fills in a checklist it is given, and
-    thinking was nine tenths of what a review cost. Nor does it cache its
-    prompt: no later call reads it back, so writing it to the cache only
-    costs more than reading it."""
+    thinking was nine tenths of what a review cost. Its prompt is cached for
+    the shortest time there is (`CACHE`): no later call reads it back."""
 
     def __init__(self, model: str | None = None) -> None:
         self._model = _model("review", {"review": model} if model else {})
@@ -388,7 +395,7 @@ class ClaudeSdkJudge:
             max_turns=1,
             model=self._model,
             thinking={"type": "disabled"},
-            env={"DISABLE_PROMPT_CACHING": "1"},
+            env=CACHE,
         )
 
     async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None) -> str:
@@ -441,6 +448,7 @@ class ClaudeSdkWorker:
         return ClaudeAgentOptions(
             cwd=self._root,
             setting_sources=["project"],
+            env=CACHE,
             skills=[],
             can_use_tool=self._can_use_tool,
             hooks={"PreToolUse": [HookMatcher(matcher="|".join(BACKGROUND_TOOLS),

@@ -137,10 +137,15 @@ def test_the_judge_session_has_no_tools_settings_or_history():
     assert o.max_turns == 1 and o.cwd == "/tmp/empty"
 
 
-def test_the_judge_neither_thinks_nor_caches_its_prompt():
-    o = ClaudeSdkJudge()._options("/tmp/empty")
-    assert o.thinking == {"type": "disabled"}
-    assert o.env == {"DISABLE_PROMPT_CACHING": "1"}
+def test_the_judge_does_not_think():
+    assert ClaudeSdkJudge()._options("/tmp/empty").thinking == {"type": "disabled"}
+
+
+def test_every_build_agent_caches_for_five_minutes():
+    five = {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
+    assert ClaudeSdkJudge()._options("/tmp/empty").env == five
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert all(w._options(step).env == five for step in ("plan", "tests", "code"))
 
 
 # --- the message stream, as Hamilton events --------------------------------
