@@ -533,21 +533,23 @@ class Run:
         return entry[0].strip() if entry else "(no test_command set)"
 
     async def task(self, key, label: str, prompt: str, step: str) -> str:
-        """One AI task, as a row while it runs and a line when it is done. A
-        task that does not come back is the step's failure, not the run's.
-        `step` is the kind of work, which the worker may pick its model by."""
+        """One AI task, as a row while it runs and a line when it is done --
+        how long it took and the tokens it used. A task that does not come
+        back is the step's failure, not the run's. `step` is the kind of
+        work, which the worker may pick its model by."""
         self.rows.start(key, label)
+        used: list = []
         try:
             try:
                 answer = await self.worker.run(
                     prompt, on_action=lambda action: self.rows.doing(key, action),
-                    step=step)
+                    step=step, on_tokens=used.append)
             except Exception as exc:
                 raise Failed(label, exc) from exc
         finally:
             took = self.rows.stop(key)
         self.console.say(self.console.paint.dim(
-            f"  ✓ {label} ({elapsed(took)})"))
+            f"  ✓ {label} ({_cost(took, sum(used))})"))
         return answer
 
     async def plan(self, work: Work, reqs: dict, defined: dict) -> tuple[dict, dict]:
@@ -587,11 +589,15 @@ class Run:
         was, a re-review that settles what was said then."""
         again = bool(self.state.reviews)
         self.step("review", "settling the earlier comments" if again else "")
+        started = time.monotonic()
         results = await _review.review(self.root, self.judge, watch=self.shown,
                                        memory=self.state.reviews)
         self.state.reviews = _review.remember(self.state.reviews, results)
         self.state.save(self.root)
         self.shown.report(results)
+        if results:
+            self.said(_cost(time.monotonic() - started,
+                            sum(r.get("tokens", 0) for r in results)))
         return [r for r in results if r["ac"] not in self.state.skipped]
 
     async def code(self, work: Work, reqs: dict, defined: dict, quals: list) -> None:
@@ -614,6 +620,11 @@ def _tokens(n: int) -> str:
         if n >= size:
             return f"{n / size:.1f}{unit}"
     return str(n)
+
+
+def _cost(seconds: float, tokens: int) -> str:
+    """What a piece of work took: "2m58s · 44.0k tokens"."""
+    return elapsed(seconds) + (f" · {_tokens(tokens)} tokens" if tokens else "")
 
 
 def _count(n: int, one: str, many: str) -> str:

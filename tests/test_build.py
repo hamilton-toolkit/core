@@ -25,17 +25,20 @@ QUAL_RE = re.compile(r"R-\d{4}/AC\d+")
 class FakeWorker:
     """Records every prompt. `act(prompt)` stands in for the work itself."""
 
-    def __init__(self, act=None):
+    def __init__(self, act=None, spend=0):
         self.prompts = []
         self.steps = []
         self.tokens = {}
         self._act = act
+        self._spend = spend
 
-    async def run(self, prompt, on_action=None, step=""):
+    async def run(self, prompt, on_action=None, step="", on_tokens=None):
         self.prompts.append(prompt)
         self.steps.append(step)
         if on_action:
             on_action("editing a file")
+        if on_tokens and self._spend:
+            on_tokens(self._spend)
         return (self._act(prompt) if self._act else "") or ""
 
     def of(self, kind):
@@ -58,7 +61,7 @@ class FakeJudge:
         self.settles = []
         self.tokens = {}
 
-    async def ask(self, prompt):
+    async def ask(self, prompt, on_tokens=None):
         self.asked.append(prompt)
         blocks = re.split(r"^## (?=R-\d{4}/AC\d+$)", prompt, flags=re.M)[1:]
         settling = "Comments to settle" in prompt
@@ -360,7 +363,7 @@ def test_what_did_not_pass_is_left_for_the_engineer_to_unfold(tmp_path):
 def test_a_task_that_does_not_come_back_is_the_steps_failure_not_the_runs(tmp_path):
     """A model error ends up as a choice, not a traceback."""
     class Broken(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             self.prompts.append(prompt)
             raise RuntimeError("the agent session failed: out of budget")
 
@@ -376,7 +379,7 @@ def test_a_failed_step_can_be_tried_again(tmp_path):
     once = {"failed": False}
 
     class Flaky(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             if not once["failed"] and "into a contract a test can be written" in prompt:
                 once["failed"] = True
                 raise RuntimeError("temporary failure")
@@ -471,7 +474,7 @@ def test_criteria_whose_tests_share_a_file_take_turns_on_it(tmp_path):
     busy, overlaps = set(), []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             if "shared.js" in prompt:
                 if busy:
                     overlaps.append(prompt)
@@ -512,7 +515,7 @@ def test_the_list_only_shrinks_until_the_test_passes(tmp_path):
     class Converging:
         tokens: dict = {}
 
-        async def ask(self, prompt):
+        async def ask(self, prompt, on_tokens=None):
             quals = re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M)
             if "Comments to settle" not in prompt:
                 return json.dumps([{"ac": q, "covered": ["a 401"], "question": "",
@@ -863,7 +866,7 @@ class Garbled:
         self.asked = []
         self.tokens = {}
 
-    async def ask(self, prompt):
+    async def ask(self, prompt, on_tokens=None):
         self.asked.append(prompt)
         if len(self.asked) == 1:
             return "I could not decide."
@@ -917,7 +920,7 @@ def test_first_round_writers_whose_tests_share_a_file_take_turns_on_it(tmp_path)
     busy, overlaps = [], []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step=""):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None):
             if busy:
                 overlaps.append(prompt)
             busy.append(prompt)
@@ -1014,6 +1017,32 @@ def test_the_run_ends_with_the_tokens_each_kind_of_work_used(tmp_path):
     run(d, worker, judge, c)
     assert ("Tokens 1.2M · writing tests 1.2M · coding 5.0k · reviewing 300"
             in out.getvalue())
+
+
+def test_each_task_reports_its_tokens_beside_its_time(tmp_path):
+    d = project(tmp_path, "uncovered")
+    c, out = console()
+    run(d, FakeWorker(writes_a_test(d), spend=44_000), FakeJudge(passes), c)
+    assert re.search(r"✓ Plan the surfaces \(\d+s · 44\.0k tokens\)", out.getvalue())
+
+
+def test_a_task_that_reports_no_tokens_shows_its_time_alone(tmp_path):
+    d = project(tmp_path, "uncovered")
+    c, out = console()
+    run(d, FakeWorker(writes_a_test(d)), FakeJudge(passes), c)
+    assert re.search(r"✓ Plan the surfaces \(\d+s\)", out.getvalue())
+
+
+def test_the_review_step_reports_its_time_and_tokens(tmp_path):
+    class Spending(FakeJudge):
+        async def ask(self, prompt, on_tokens=None):
+            on_tokens(1_500)
+            return await super().ask(prompt)
+
+    d = project(tmp_path, "uncovered")
+    c, out = console()
+    run(d, FakeWorker(writes_a_test(d)), Spending(passes), c)
+    assert re.search(r"\d+s · 1\.5k tokens", out.getvalue())
 
 
 def test_no_tokens_line_when_no_agent_ran(tmp_path):

@@ -47,7 +47,8 @@ is one criterion: {"ac", "criterion", "tests", "file", "line", "state",
 `criterion` is the AC's text, `tests` lists every test judged ({"file",
 "line", "state"}), `file`/`line` is the first of them and `state` says why
 the criterion was up for review, `comments` are the open points as
-{"check", "text", "why"} and `advice` what is not required, as text.
+{"check", "text", "why"}, `advice` what is not required, as text, and
+`tokens` what the review used.
 """
 
 from __future__ import annotations
@@ -366,8 +367,10 @@ async def review(root: str, judge, watch: Watch | None = None,
         async with slots:
             files = sorted({os.path.basename(c.tag.file) for c in group})
             watch.started(key, f"{qual} · {', '.join(files)}")
+            used: list = []
             try:
-                reply = await judge.ask(prompt(reqs, defined, group, earlier))
+                reply = await judge.ask(prompt(reqs, defined, group, earlier),
+                                        on_tokens=used.append)
                 if earlier:
                     answer = settle(earlier, parse_settle(reply, {qual: earlier})[qual])
                 else:
@@ -385,7 +388,7 @@ async def review(root: str, judge, watch: Watch | None = None,
                   "tests": [{"file": t.tag.file, "line": t.tag.line,
                              "state": t.state} for t in group],
                   "file": c.tag.file, "line": c.tag.line, "state": open_.state,
-                  **answer}
+                  "tokens": sum(used), **answer}
         watch.finished(key, [result])
         return result
 

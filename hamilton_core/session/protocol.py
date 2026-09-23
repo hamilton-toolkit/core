@@ -53,6 +53,10 @@ WritePolicy = Callable[[str], "str | None"]
 # vendor's tool names.
 OnAction = Callable[[str], None]
 
+# The tokens one task used, told once when it is done -- for the line that
+# reports it, beside how long it took.
+OnTokens = Callable[[int], None]
+
 
 # --- what comes back out of a turn --------------------------------------------
 
@@ -177,11 +181,12 @@ class Judge(Protocol):
     project settings and nothing to resume. `hamilton build`'s review step
     asks it; what it can judge is exactly what the prompt holds.
 
-    `tokens` is what it has used so far, under the step `review`."""
+    `tokens` is what it has used so far, under the step `review`;
+    `on_tokens` is told what this one answer used."""
 
     tokens: dict
 
-    async def ask(self, prompt: str) -> str:
+    async def ask(self, prompt: str, on_tokens: OnTokens | None = None) -> str:
         ...
 
 
@@ -200,13 +205,14 @@ class Worker(Protocol):
     `on_action` is told each thing the worker does, in words, for the row
     the engineer watches. `step` is the kind of work -- `plan`, `tests`,
     `code`, `clarify` -- which an adapter may pick its model by. `tokens` is
-    what the worker has used so far, per step.
+    what the worker has used so far, per step; `on_tokens` is told what this
+    one piece of work used.
     """
 
     tokens: dict
 
     async def run(self, prompt: str, on_action: OnAction | None = None,
-                  step: str = "") -> str:
+                  step: str = "", on_tokens: OnTokens | None = None) -> str:
         ...
 
 

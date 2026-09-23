@@ -38,7 +38,7 @@ class FakeJudge:
         self.reply = reply
         self.prompts = []
 
-    async def ask(self, prompt):
+    async def ask(self, prompt, on_tokens=None):
         self.prompts.append(prompt)
         return self.reply(prompt)
 
@@ -167,7 +167,7 @@ def test_a_result_holds_the_criterion_its_tests_and_the_review(tmp_path):
          "file": "tests/covers.js", "line": 7,
          "state": "no review yet", "verdict": "reject", "covered": [],
          "comments": [{"check": "clause-coverage", "text": "weak"}],
-         "advice": [], "resolved": [], "question": ""}]
+         "advice": [], "resolved": [], "question": "", "tokens": 0}]
 
 
 def test_there_is_no_review_command():
@@ -250,7 +250,7 @@ def test_reviewers_run_side_by_side_up_to_the_cap_and_results_keep_file_order(tm
     running, peak = [0], [0]
 
     class SlowJudge(FakeJudge):
-        async def ask(self, prompt):
+        async def ask(self, prompt, on_tokens=None):
             running[0] += 1
             peak[0] = max(peak[0], running[0])
             await asyncio.sleep(0.01)

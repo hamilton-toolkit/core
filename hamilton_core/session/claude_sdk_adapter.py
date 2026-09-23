@@ -29,7 +29,8 @@ vendor-specific things are contained here on purpose:
     lets the build loop be driven by Hamilton instead of by an agent. Which
     model each kind of build work runs on is decided here too
     (`DEFAULT_MODELS`, overridden by `model.<step>` in `.hamilton/config`),
-    and so is what counts as a token spent (`_spent`).
+    how hard it thinks (`DEFAULT_EFFORTS`, and none at all for a reviewer),
+    and what counts as a token spent (`_spent`).
 
 Anything a future non-SDK harness would do differently belongs in this file.
 """
@@ -327,6 +328,11 @@ async def _foreground_only(hook_input, tool_use_id, context) -> dict:
 # the shape of the code, and keep the CLI's default.
 DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
 
+# How hard each kind of build work thinks, where the CLI's default is too
+# much. Left to itself a test writer spends most of its output thinking --
+# twenty thousand tokens before a single edit, at times.
+DEFAULT_EFFORTS = {"tests": "medium"}
+
 
 def _model(step: str, chosen: dict) -> str | None:
     """The model for `step`: the engineer's choice, else ours, else None --
@@ -350,7 +356,12 @@ class ClaudeSdkJudge:
     """`protocol.Judge` over `claude_agent_sdk`: every `ask` is a fresh
     one-turn session with no tools, no filesystem settings (so no project
     skill, hook or MCP server) and an empty temp dir as its cwd. The prompt is
-    all it has to go on."""
+    all it has to go on.
+
+    It does not think: a review fills in a checklist it is given, and
+    thinking was nine tenths of what a review cost. Nor does it cache its
+    prompt: no later call reads it back, so writing it to the cache only
+    costs more than reading it."""
 
     def __init__(self, model: str | None = None) -> None:
         self._model = _model("review", {"review": model} if model else {})
@@ -365,16 +376,21 @@ class ClaudeSdkJudge:
             strict_mcp_config=True,
             max_turns=1,
             model=self._model,
+            thinking={"type": "disabled"},
+            env={"DISABLE_PROMPT_CACHING": "1"},
         )
 
-    async def ask(self, prompt: str) -> str:
+    async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None) -> str:
         texts, error = [], None
         with tempfile.TemporaryDirectory(prefix="hamilton-review-") as cwd:
             async for msg in query(prompt=prompt, options=self._options(cwd)):
                 if isinstance(msg, AssistantMessage):
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
                 elif isinstance(msg, ResultMessage):
-                    self.tokens["review"] = self.tokens.get("review", 0) + _spent(msg)
+                    spent = _spent(msg)
+                    self.tokens["review"] = self.tokens.get("review", 0) + spent
+                    if on_tokens:
+                        on_tokens(spent)
                     if msg.is_error:
                         error = msg.result or msg.subtype or "the reviewer session failed"
         if error:
@@ -389,7 +405,8 @@ class ClaudeSdkWorker:
     No session and no resume: the prompt Hamilton built is the brief, and
     when the work is done the process is gone. That is what makes a step
     repeatable. The project's own settings are loaded, so its conventions
-    and hooks apply to the work.
+    and hooks apply to the work -- but not its skills: the prompt is the
+    whole brief, and a skill the worker loads is read again on every turn.
     """
 
     def __init__(self, root: str, write_policy: P.WritePolicy,
@@ -412,12 +429,14 @@ class ClaudeSdkWorker:
         return ClaudeAgentOptions(
             cwd=self._root,
             setting_sources=["project"],
+            skills=[],
             can_use_tool=self._can_use_tool,
             model=_model(step, self._models),
+            effort=DEFAULT_EFFORTS.get(step),
         )
 
     async def run(self, prompt: str, on_action: P.OnAction | None = None,
-                  step: str = "") -> str:
+                  step: str = "", on_tokens: P.OnTokens | None = None) -> str:
         texts, error = [], None
         async for msg in query(prompt=prompt, options=self._options(step)):
             if isinstance(msg, AssistantMessage):
@@ -427,7 +446,10 @@ class ClaudeSdkWorker:
                     elif isinstance(block, ToolUseBlock) and on_action:
                         on_action(action(self._root, block.name, block.input))
             elif isinstance(msg, ResultMessage):
-                self.tokens[step] = self.tokens.get(step, 0) + _spent(msg)
+                spent = _spent(msg)
+                self.tokens[step] = self.tokens.get(step, 0) + spent
+                if on_tokens:
+                    on_tokens(spent)
                 if msg.is_error:
                     error = msg.result or msg.subtype or "the task failed"
         if error:

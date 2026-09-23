@@ -137,6 +137,12 @@ def test_the_judge_session_has_no_tools_settings_or_history():
     assert o.max_turns == 1 and o.cwd == "/tmp/empty"
 
 
+def test_the_judge_neither_thinks_nor_caches_its_prompt():
+    o = ClaudeSdkJudge()._options("/tmp/empty")
+    assert o.thinking == {"type": "disabled"}
+    assert o.env == {"DISABLE_PROMPT_CACHING": "1"}
+
+
 # --- the message stream, as Hamilton events --------------------------------
 
 def said(text, parent=None):
@@ -339,6 +345,17 @@ def test_tests_and_review_default_to_a_mid_tier_model():
     assert w._options("tests").model == "sonnet"
     assert w._options("plan").model is None and w._options("code").model is None
     assert ClaudeSdkJudge()._options("/tmp/e").model == "sonnet"
+
+
+def test_a_worker_loads_no_skill():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert all(w._options(step).skills == [] for step in ("plan", "tests", "code"))
+
+
+def test_test_writers_think_less_than_the_cli_default():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    assert w._options("tests").effort == "medium"
+    assert w._options("plan").effort is None and w._options("code").effort is None
 
 
 def test_a_model_named_in_the_config_wins():
