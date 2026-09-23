@@ -92,6 +92,25 @@ def targets(root: str) -> tuple[dict, dict, list]:
     together, because together is how they prove it. Groups come in the
     order of their first test. Raises UsageError when the spec or config is
     missing."""
+    reqs, defined, groups = _groups(root)
+    return reqs, defined, [g for g in groups
+                           if any(c.state != REVIEWED for c in g)]
+
+
+def oversized(root: str) -> dict:
+    """{qual: a result sending its tests back} for each criterion whose tests
+    were all reviewed, but run over `MAX_LINES` -- reviewed before there was
+    a cap, and no less costly to every step that reads them for it. The rest
+    are capped when they come up for review."""
+    reqs, _defined, groups = _groups(root)
+    return {_qual(g[0]): result(reqs, g, too_long(size(g)))
+            for g in groups
+            if all(c.state == REVIEWED for c in g) and size(g) > MAX_LINES}
+
+
+def _groups(root: str) -> tuple[dict, dict, list]:
+    """(reqs, defined, groups): every criterion's counting tags, one group
+    each, in the order of their first test."""
     if not os.path.isfile(os.path.join(root, REQ_REL)):
         raise UsageError(f"{REQ_REL}: not found (run from the project root)")
     paths = method_paths(read_config(root))
@@ -102,8 +121,7 @@ def targets(root: str) -> tuple[dict, dict, list]:
     for c in counted(root, reqs, defined, paths, tags):
         by_ac.setdefault(_qual(c), []).append(c)
     groups = [sorted(g, key=lambda c: (c.tag.file, c.tag.line))
-              for g in by_ac.values()
-              if any(c.state != REVIEWED for c in g)]
+              for g in by_ac.values()]
     groups.sort(key=lambda g: (g[0].tag.file, g[0].tag.line))
     return reqs, defined, groups
 
@@ -381,6 +399,18 @@ def write_suffix(root: str, tag, value: str) -> None:
         fh.write("".join(parts))
 
 
+def result(reqs: dict, group, answer: dict, tokens: int = 0) -> dict:
+    """One criterion's result: which tests, why it was up, and `answer`."""
+    c = group[0]
+    open_ = next((t for t in group if t.state != REVIEWED), c)
+    return {"ac": _qual(c),
+            "criterion": reqs[c.tag.rid]["acs"][c.tag.acid]["text"],
+            "tests": [{"file": t.tag.file, "line": t.tag.line, "state": t.state}
+                      for t in group],
+            "file": c.tag.file, "line": c.tag.line, "state": open_.state,
+            "tokens": tokens, **answer}
+
+
 class _TooLong(Exception):
     """A criterion's tests are over `MAX_LINES`: not put to the judge."""
 
@@ -437,16 +467,9 @@ async def review(root: str, judge, watch: Watch | None = None,
                 answer = {"verdict": "error", "covered": [], "resolved": [],
                           "comments": [{"check": "error", "text": str(exc)}],
                           "advice": [], "question": ""}
-        c = group[0]
-        open_ = next((t for t in group if t.state != REVIEWED), c)
-        result = {"ac": qual,
-                  "criterion": reqs[c.tag.rid]["acs"][c.tag.acid]["text"],
-                  "tests": [{"file": t.tag.file, "line": t.tag.line,
-                             "state": t.state} for t in group],
-                  "file": c.tag.file, "line": c.tag.line, "state": open_.state,
-                  "tokens": sum(used), **answer}
-        watch.finished(key, [result])
-        return result
+        done = result(reqs, group, answer, sum(used))
+        watch.finished(key, [done])
+        return done
 
     results = await asyncio.gather(*(judged(i, g) for i, g in enumerate(groups)))
     for group, r in zip(groups, results):

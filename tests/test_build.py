@@ -395,12 +395,38 @@ def test_a_test_that_only_needed_judging_costs_no_implementation(tmp_path):
     """A tag goes unreviewed when its test is edited. Reviewing it again is
     the whole job: there is nothing to plan and nothing to build."""
     d = project(tmp_path)
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write("run.http=true\nrun.unit=true\n")
     stamp(d)
     body = open(f"{d}/tests/covers.js").read()
     open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
     worker = FakeWorker()
     assert run(d, worker, FakeJudge(passes), console()[0]) == 0
     assert worker.of("implement") == [] and worker.of("plan") == []
+
+
+def test_a_missing_run_command_goes_to_the_planner_once_and_needs_no_coding(tmp_path):
+    """So that a step can run one criterion's tests, not work out the
+    project's runners for itself."""
+    d = project(tmp_path)
+    stamp(d)
+    body = open(f"{d}/tests/covers.js").read()
+    open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
+    worker = FakeWorker()
+    c, out = console()
+    assert run(d, worker, FakeJudge(passes), c) == 0
+    [plan] = worker.of("plan")
+    assert "has no run.http" in plan
+    assert worker.of("implement") == []
+    assert "▸ Planning — the config" in out.getvalue()
+
+
+def test_a_green_gate_is_not_held_up_for_a_run_command(tmp_path):
+    d = project(tmp_path)
+    stamp(d)
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert worker.prompts == []
 
 
 def test_an_error_nothing_expected_is_reported_not_traced(tmp_path, monkeypatch):
@@ -1102,3 +1128,48 @@ def test_a_fix_for_a_failing_suite_is_rechecked_on_its_own_before_the_suite(tmp_
     assert open(f"{d}/ran.txt").read().split() == ["tests/ac2.js", "tests/ac2.js"]
     assert open(f"{d}/suites.txt").read().split() == ["suite", "suite"]
     assert "re-running R-0001/AC2" in out.getvalue()
+
+
+SHORT = ("// @covers R-0001/AC1\nit('rejects an expired token', () => {});\n"
+         "// @covers R-0001/AC2\nit('accepts a skewed token', () => {});\n")
+
+
+def oversized_project(tmp_path):
+    """Both criteria's tests reviewed, in one file whose helpers take them
+    over the cap -- reviewed before there was one."""
+    from hamilton_core import review as R
+    d = project(tmp_path)
+    helpers = "".join(f"const helper{n} = () => {n};\n" for n in range(R.MAX_LINES))
+    open(f"{d}/tests/covers.js", "w").write(helpers + SHORT)
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write("run.http=true\nrun.unit=true\ntest_command=test -f fixed\n")
+    stamp(d)
+    return d
+
+
+def test_reviewed_tests_over_the_cap_are_written_again_before_coding(tmp_path):
+    d = oversized_project(tmp_path)
+    briefs = []
+
+    def act(prompt):
+        if "Write the tests for one acceptance criterion" in prompt:
+            briefs.append(prompt)
+            open(f"{d}/tests/covers.js", "w").write(SHORT)
+        elif "Write the implementation" in prompt:
+            open(f"{d}/fixed", "w").close()
+
+    worker = FakeWorker(act)
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert len(briefs) == 2
+    assert all("sent back unread, for their length" in b for b in briefs)
+    [coding] = worker.of("implement")
+    assert "Criterion: AC1:" in coding and "Criterion: AC2:" in coding
+
+
+def test_a_green_gate_is_not_held_up_for_long_tests(tmp_path):
+    """The cap costs a rewrite only when there is work on the way anyway."""
+    d = oversized_project(tmp_path)
+    open(f"{d}/fixed", "w").close()
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert worker.prompts == []

@@ -66,6 +66,10 @@ Also:
   not a failing test, it is a broken one.
 - **Never write, edit or copy a `#…` review suffix.** Only the reviewer writes
   one, and the guard refuses it.
+- **Scratch files stay out of the test paths** -- a debug script, an
+  extract of a test. A file there that holds a `@covers` tag counts as a
+  test of that criterion. Put them in a git-ignored directory, and delete
+  them before you finish.
 - The reviewer sees the file's preamble (everything above the first `@covers`)
   and your test's own section. It cannot open other files, and judges helpers
   by their names — so name them for what they do.

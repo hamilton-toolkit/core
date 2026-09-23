@@ -639,3 +639,15 @@ def test_a_writer_sent_back_for_length_is_told_its_tests_were_not_read():
     assert "sent back unread, for their length" in text
     assert "The next review checks only these points" not in text
     assert f"At most {R.MAX_LINES} lines" in text
+
+
+def test_only_reviewed_tests_over_the_cap_are_sent_back_outside_a_review(tmp_path):
+    """Unreviewed ones meet the cap at their review."""
+    d = project(tmp_path)                   # AC1 reviewed, AC2 not
+    assert R.oversized(d) == {}
+    long_preamble(d, R.MAX_LINES)
+    stamp(d)
+    over = R.oversized(d)
+    assert sorted(over) == ["R-0001/AC1", "R-0001/AC2"]
+    assert over["R-0001/AC1"]["comments"][0]["check"] == "size"
+    assert over["R-0001/AC1"]["tests"][0]["file"] == "tests/covers.js"

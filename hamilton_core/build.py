@@ -88,6 +88,9 @@ SPEC_RULES = frozenset({"malformed", "dangling-ref", "orphan-requirement",
                         "cyclic-parent", "no-method", "unknown-method",
                         "missing-reference"})
 CONFIG_RULES = frozenset({"no-test-command", "no-method-paths", "retired-config"})
+# Not the gate's: what lets a step run one criterion's tests. The plan step
+# sets it, and nothing needs coding for it.
+RUN_RULES = frozenset({"no-run-command"})
 COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
 SUITE_RULES = frozenset({"tests-failed"})
 # The states of an `unreviewed` tag whose criterion changed. Its tests are
@@ -107,6 +110,7 @@ class Work:
     """One pass's findings, routed to the step that answers them."""
     spec: list = field(default_factory=list)        # build cannot fix these
     config: list = field(default_factory=list)
+    runs: list = field(default_factory=list)        # run commands to set
     cover: list = field(default_factory=list)       # needs a test written
     review: list = field(default_factory=list)      # needs judging only
     suite: list = field(default_factory=list)
@@ -133,6 +137,8 @@ def route(findings: list, skipped) -> Work:
             work.spec.append(f)
         elif f["rule"] in CONFIG_RULES:
             work.config.append(f)
+        elif f["rule"] in RUN_RULES:
+            work.runs.append(f)
         elif f["rule"] in COVER_RULES:
             work.cover.append(f)
         elif f["rule"] in SUITE_RULES:
@@ -311,7 +317,8 @@ def spec_of(reqs: dict, defined: dict, qual: str) -> str:
 def plan_prompt(root: str, work: Work, reqs: dict, defined: dict) -> str:
     quals = work.to_write
     return _template("plan").substitute(
-        findings="\n".join(f"- {f['message']}" for f in work.config + work.cover),
+        findings="\n".join(f"- {f['message']}"
+                            for f in work.config + work.runs + work.cover),
         criteria="\n\n".join(spec_of(reqs, defined, q) for q in quals),
         quals=", ".join(quals) or "(none)",
         config=_config_text(root),
@@ -442,6 +449,7 @@ class Run:
         self.began = time.monotonic()
         self.spent: dict = {}           # SPENT key -> seconds
         self.checks = self.suites = 0
+        self.runs_asked = False         # missing `run.<method>`s put to the plan
         self._open: tuple | None = None # (SPENT key, when it started)
 
     # -- where the time goes --
@@ -521,6 +529,12 @@ class Run:
             failed = _verify.still_failing(ran)
             if failed:
                 findings.append(failed)
+        if findings and not self.runs_asked:
+            # With work to do anyway, a missing `run.<method>` joins it --
+            # once a run: without one, every step works out the project's
+            # runners for itself.
+            findings += _verify.missing_runs(self.root)
+            self.runs_asked = True
         self.checks += 1
         self.suites += suite
         took = f" ({elapsed(time.monotonic() - started)})"
@@ -562,7 +576,8 @@ class Run:
         return answer
 
     async def plan(self, work: Work, reqs: dict, defined: dict) -> tuple[dict, dict]:
-        self.step("plan", _count(len(work.to_write), "criterion", "criteria"))
+        self.step("plan", _count(len(work.to_write), "criterion", "criteria")
+                  if work.to_write else "the config")
         answer = await self.task("plan", "Plan the surfaces",
                                  plan_prompt(self.root, work, reqs, defined), "plan")
         return plan_answer(answer)
@@ -731,7 +746,7 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     state.reviews = _review.forget(state.reviews, changed)
 
     plans, infeasible = {}, {}
-    if work.config or work.cover:
+    if work.config or work.runs or work.cover:
         plans, infeasible = await run.plan(work, reqs, defined)
     # The planner's JSON names criteria in its own words: only one the spec
     # declares can be clarified.
@@ -739,8 +754,13 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     if infeasible:
         await _spec_gaps(run, infeasible, reqs)
 
-    rejected: dict = {}
-    quals = [q for q in work.to_write if q not in state.skipped]
+    # Tests reviewed before there was a cap, and longer than it, are written
+    # again first: every step that works on their criterion reads them.
+    rejected = {q: r for q, r in _review.oversized(root).items()
+                if q not in state.skipped}
+    shortened = list(rejected)
+    quals = [q for q in dict.fromkeys(work.to_write + shortened)
+             if q not in state.skipped]
     while True:
         writable = [q for q in quals if state.round_of(q) < ROUNDS
                     and q not in state.skipped]
@@ -779,7 +799,8 @@ async def _pass(run: "Run", root: str, state: State, console: Console,
     # A changed criterion is implemented too: its wording may ask for more
     # than the code does, whether or not its tests had to change. So is one
     # whose tests the failing suite names.
-    covered = [q for q in dict.fromkeys(work.to_write + changed + failing(work))
+    covered = [q for q in dict.fromkeys(work.to_write + changed + failing(work)
+                                        + shortened)
                if q not in state.skipped]
     if covered or work.suite or work.config:
         await run.code(work, reqs, defined, covered)

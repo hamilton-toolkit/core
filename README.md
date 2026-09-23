@@ -149,6 +149,11 @@ calls an agent only for the parts that need one:
 - **A criterion's tests stay short.** More than 200 lines — counting the
   preamble of each file they are in — and Hamilton sends them back to the
   writer unread, without a reviewer: every later step would read them again.
+  Tests reviewed before the cap and over it are written again the next time
+  a run has work to do.
+- **Each method has a command that runs one criterion's tests**
+  (`run.<method>`). When one is missing and a run has work to do, the
+  planner sets it first, so no step has to work out the project's runners.
 - **Each kind of work runs on its own model.** Writing and reviewing tests —
   many small, tightly briefed tasks — run on a mid-tier model; planning and
   coding on the agent's default. `model.<step>` in `.hamilton/config`

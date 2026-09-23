@@ -854,6 +854,28 @@ def run_criteria(root: str, quals, on_log=None) -> dict:
             "log": log}
 
 
+def missing_runs(root: str) -> list:
+    """A `no-run-command` finding for each method the criteria are verified
+    by that has its paths but no `run.<method>`. Not part of the gate -- a
+    suite passes without one -- but `hamilton build` has it set, so that a
+    step can run one criterion's tests (`run_criteria`) instead of working
+    out the project's runners for itself."""
+    cfg = read_config(root)
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    paths, commands = method_paths(cfg), run_commands(cfg)
+    used = sorted({m for r in reqs.values() for ac in r["acs"].values()
+                   for m in ac["methods"]
+                   if m != MANUAL and m in paths and m not in commands})
+    return [_finding("no-run-command",
+        f"{CONFIG_REL} has no {RUN_PREFIX}{m}, so one criterion's [{m}] tests "
+        f"cannot be run on their own. Expected: a '{RUN_PREFIX}{m}=<command>' "
+        f"line: a command that runs the test files given to it as arguments, "
+        f"starting whatever they need (a server, a container). Found: none. "
+        f"Fix: set it in {CONFIG_REL}, and check it with 'hamilton verify "
+        f"R-nnnn/ACn' on a [{m}] criterion.", CONFIG_REL, 1, methods=[m])
+        for m in used]
+
+
 def still_failing(ran: dict) -> dict | None:
     """A `tests-failed` finding for the criteria a `run_criteria` found
     failing, or None -- what `hamilton build` hands its coder when a fix it
