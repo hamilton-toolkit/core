@@ -373,10 +373,10 @@ def test_files(root: str, quals) -> list:
 
 def code_prompt(work: Work, reqs: dict, defined: dict, quals: list,
                 files: list = (), command: str = "") -> str:
-    """The implementer's brief. A failed suite comes with the end of its own
-    output: the engineer never needs to read it, the implementer does."""
+    """The implementer's brief. A failed suite comes with its failures: the
+    engineer never needs to read them, the implementer does."""
     failures = "\n\n".join(
-        f"The end of the suite's output (the whole of it: {f.get('log') or 'not kept'}):"
+        f"The failures in the suite's output (the whole of it: {f.get('log') or 'not kept'}):"
         f"\n\n```\n{f['output']}\n```" for f in work.suite if f.get("output"))
     return _template("implement").substitute(
         findings="\n".join(f"- {f['message']}" for f in work.suite + work.cover)

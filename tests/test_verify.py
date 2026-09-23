@@ -871,3 +871,38 @@ def test_a_binary_reference_is_hashed_by_its_bytes():
     assert C.ref_digest(b"\xff\x00png") != C.ref_digest(b"\xff\x01png")
     assert C.ref_text(b"\xff\x00png") is None
     assert C.ref_digest(None) == "(missing)"
+
+
+# --- what a failed run hands its fixer ---------------------------------------
+
+def tap(passing_after=300, failing=("the total is wrong",)):
+    """A TAP log: some failures, then a long run of passing tests."""
+    out = ["TAP version 13"]
+    for n, name in enumerate(failing, 1):
+        out += [f"not ok {n} - {name}", "  ---", "  error: 'expected 3, got 4'",
+                "  ..."]
+    for n in range(passing_after):
+        out += [f"ok {n + 100} - passing test {n}"]
+    out += ["1..400", "# pass 399", "# fail 1"]
+    return "\n".join(out)
+
+
+def test_the_failures_are_kept_not_the_end_of_the_output():
+    excerpt = C.failures(tap())
+    assert "not ok 1 - the total is wrong" in excerpt
+    assert "expected 3, got 4" in excerpt
+    assert "# fail 1" in excerpt                 # the summary still closes it
+    assert "passing test 150" not in excerpt
+    assert len(excerpt.splitlines()) <= C.SUITE_TAIL
+
+
+def test_every_failure_is_named_however_many_there_are():
+    names = [f"failure {n}" for n in range(60)]
+    excerpt = C.failures(tap(failing=names))
+    assert all(f"not ok {n + 1} - failure {n}" in excerpt for n in range(60))
+    assert len(excerpt.splitlines()) <= C.SUITE_TAIL
+
+
+def test_output_that_marks_no_failure_is_handed_on_as_its_tail():
+    output = "\n".join(f"line {n}" for n in range(500))
+    assert C.failures(output) == "\n".join(f"line {n}" for n in range(300, 500))

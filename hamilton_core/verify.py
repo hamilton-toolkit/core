@@ -69,7 +69,7 @@ its name and `file:first-last` (`view`) -- then the suite's result, then
 whatever is about no one criterion. While the suite runs, the working
 indicator of `hamilton build` shows. The suite's own output is not shown --
 it goes, as it runs, into a temp file named on failure (a green suite's is
-deleted), and its end travels with the `tests-failed` finding;
+deleted), and its failures travel with the `tests-failed` finding;
 `--suite-output` streams it instead.
 
 The finding messages -- in `--json`, and handed to the agents `hamilton
@@ -389,6 +389,12 @@ def missing_methods(methods, paths: dict, files) -> list:
 
 
 SUITE_TAIL = 200         # lines of a failed suite's output a finding carries
+SUITE_SUMMARY = 15       # of them, the last lines of the output: its summary
+# A line that reports a failure, in the words of the common runners: TAP's
+# `not ok`, PHPUnit's and Jest's `FAIL`/`Failures:`, pytest's `FAILED`, the
+# marks and exception names of the rest.
+FAILURE_RE = re.compile(r"\bnot ok\b|FAIL|\bfailed\b|\bFailures?\b|[✗✖×]|\w*Error\b")
+FAILURE_CONTEXT = (2, 20)   # lines kept before and after one: the details follow
 
 
 SUITE_TIMEOUT = 1800     # seconds before a suite that never ends is stopped
@@ -407,6 +413,50 @@ def follow_hint(log: str) -> str:
     """How to watch a suite that is running: its log, in the runner's own
     words."""
     return f"follow it: tail -f {log}"
+
+
+def failure_blocks(lines: list) -> list:
+    """[(start, stop)] of ``lines``: one per line that reports a failure,
+    with its context -- up to the next such line, so that no failure is
+    folded into the one before it."""
+    before, after = FAILURE_CONTEXT
+    hits = [i for i, line in enumerate(lines) if FAILURE_RE.search(line)]
+    blocks: list = []
+    for n, i in enumerate(hits):
+        start = max(0, i - before, blocks[-1][1] if blocks else 0)
+        stop = min(len(lines), i + after + 1,
+                   hits[n + 1] if n + 1 < len(hits) else len(lines))
+        blocks.append((start, stop))
+    return blocks
+
+
+def failures(output: str) -> str:
+    """What of a failed run's output its fixer needs: the lines that report a
+    failure, with their context, then the run's last lines -- its summary --
+    at most `SUITE_TAIL` lines in all. A tail alone can be nothing but
+    passing tests. Output with no line a runner marks as failed gets the
+    tail."""
+    lines = output.splitlines()
+    blocks = failure_blocks(lines)
+    if not blocks:
+        return "\n".join(lines[-SUITE_TAIL:])
+    summary = max(len(lines) - SUITE_SUMMARY, 0)
+    blocks = [(start, min(stop, summary)) for start, stop in blocks
+              if start < summary]
+    # Every failure gets its share: its first lines say what failed, and a
+    # long one must not crowd out the rest.
+    budget = SUITE_TAIL - SUITE_SUMMARY - len(blocks) - 1
+    share = max(budget // max(len(blocks), 1), 1)
+    kept: list = []
+    shown = 0                       # the line after the last one kept
+    for start, stop in blocks:
+        if start > shown:
+            kept.append("…")
+        shown = min(stop, start + share)
+        kept += lines[start:shown]
+    if summary > 0:
+        kept.append("…")
+    return "\n".join(kept + lines[summary:])
 
 
 def run_tests(root: str, cfg: dict, echo: bool = False, log: str | None = None):
@@ -867,9 +917,9 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
                 f"fails and repair the implementation or the test; or "
                 f"set/correct test_command in {CONFIG_REL}.",
                 CONFIG_REL, cfg_line)
-            # the end of the output, for whoever fixes it (`hamilton build`
-            # hands it to its coding step), and where the whole of it is
-            failed["output"] = "\n".join(output.splitlines()[-SUITE_TAIL:])
+            # the failures, for whoever fixes it (`hamilton build` hands
+            # them to its coding step), and where the whole output is
+            failed["output"] = failures(output)
             failed["log"] = log
             out.append(failed)
 
