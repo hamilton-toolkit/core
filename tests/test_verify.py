@@ -1018,3 +1018,18 @@ def test_tags_without_a_suffix_are_no_copies(tmp_path):
     open(f"{d}/tests/_extract.mjs", "w").write(bare)
     rules = {f["rule"] for f in json.loads(run_verify(d, "--json").stdout)["findings"]}
     assert "copied-suffix" not in rules
+
+
+def test_no_suite_checks_the_spec_and_the_tags_and_runs_nothing(tmp_path):
+    """What a spec session needs to know, without minutes of tests."""
+    d = copy_fixture("clean", tmp_path)
+    configure(d, **{"test_command": "touch suite-ran; false",
+                    "run.http": "touch criterion-ran; false"})
+    proc = run_verify(d, "--no-suite")
+    assert proc.returncode == 0 and "Suite not run (--no-suite)" in proc.stdout
+    one = run_verify(d, "R-0001/AC1", "--no-suite")
+    assert one.returncode == 0 and "Tests not run (--no-suite)" in one.stdout
+    assert "tests" not in json.loads(run_verify(d, "R-0001", "--no-suite", "--json").stdout)
+    assert not os.path.exists(f"{d}/suite-ran") and not os.path.exists(f"{d}/criterion-ran")
+    uncovered = copy_fixture("uncovered", tmp_path)
+    assert run_verify(uncovered, "--no-suite").returncode == 1

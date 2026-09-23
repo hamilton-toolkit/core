@@ -1355,9 +1355,10 @@ def _copied(tags) -> list:
     return out
 
 
-def _one(root: str, only: str, as_json: bool, console) -> int:
+def _one(root: str, only: str, as_json: bool, console, suite: bool = True) -> int:
     """`hamilton verify R-nnnn[/ACn]`: those criteria's status, and their
-    tests run -- only theirs, each method's by its `run.<method>`."""
+    tests run -- only theirs, each method's by its `run.<method>` -- unless
+    `suite` is False."""
     m = _SELECT_RE.fullmatch(only)
     if not m:
         raise UsageError(f"{only!r} is not a requirement or criterion id; give "
@@ -1370,25 +1371,27 @@ def _one(root: str, only: str, as_json: bool, console) -> int:
     acids = [acid] if acid else list(reqs[rid]["acs"])
     quals = [f"{rid}/{a}" for a in acids]
     mine = [f for f in findings if f.get("req") == rid and f.get("ac") in acids]
-    if not as_json:
+    if suite and not as_json:
         console.start_working("Running the tests")
     started = time.monotonic()
-    ran = run_criteria(root, quals, on_log=None if as_json else (
-        lambda log: console.say(console.paint.dim(follow_hint(log)))))
+    ran = (run_criteria(root, quals, on_log=None if as_json else (
+               lambda log: console.say(console.paint.dim(follow_hint(log)))))
+           if suite else None)
     console.stop_working()
-    red = [q for q, r in ran["results"].items() if r in (FAILED, NOT_RUN)]
+    red = [q for q, r in (ran or {"results": {}})["results"].items()
+           if r in (FAILED, NOT_RUN)]
     if as_json:
         print(json.dumps({"ok": not (mine or red), "findings": mine,
                           "manual": [q for q in manual if q in quals],
-                          "tests": ran}))
+                          **({"tests": ran} if ran else {})}))
         return 1 if mine or red else 0
     from hamilton_core.session.console import Paint, elapsed, supports_color
     paint = Paint(supports_color(sys.stdout))
     one = {rid: dict(reqs[rid], acs={a: reqs[rid]["acs"][a] for a in acids})}
     lines, _other = view(mine, one, manual, paint, tested(root, one))
+    lines += (_tests_report(ran, elapsed(time.monotonic() - started), paint)
+              if ran else ["", "Tests not run (--no-suite)"])
     for text in lines:
-        print(text)
-    for text in _tests_report(ran, elapsed(time.monotonic() - started), paint):
         print(text)
     return 1 if mine or red else 0
 
@@ -1472,11 +1475,12 @@ _SELECT_RE = re.compile(r"(R-\d{4})(?:/(AC\d+))?")
 
 
 def main(as_json: bool = False, suite_output: bool = False,
-         only: str | None = None) -> int:
+         only: str | None = None, suite: bool = True) -> int:
     """`only` ("R-nnnn" or "R-nnnn/ACn") narrows the gate to those criteria:
     their tags and reviews, and their own tests run instead of the suite --
     the question a step working on them asks. The full gate is the run
-    without it."""
+    without it. `suite=False` runs no tests at all: the spec, the tags and
+    the reviews only, which is all a spec session changes."""
     from hamilton_core.session.console import Console, Paint, elapsed, supports_color
     root = os.getcwd()
     # While the suite runs, the indicator `hamilton build` shows. Not under
@@ -1485,11 +1489,11 @@ def main(as_json: bool = False, suite_output: bool = False,
     started = time.monotonic()
     try:
         if only is not None:
-            return _one(root, only, as_json, console)
-        if not (as_json or suite_output):
+            return _one(root, only, as_json, console, suite)
+        if suite and not (as_json or suite_output):
             console.start_working("Running the tests")
         findings, warnings, notices, manual, n_reqs, n_acs = run(
-            root, echo=suite_output,
+            root, suite=suite, echo=suite_output,
             on_log=lambda log: console.say(console.paint.dim(follow_hint(log))))
     except UsageError as exc:
         if as_json:
@@ -1518,6 +1522,8 @@ def main(as_json: bool = False, suite_output: bool = False,
     if failed:
         where = f" -- full output: {failed['log']}" if failed.get("log") else ""
         print(f"\nSuite {paint.red('✗')} failed ({took}){where}")
+    elif ran and not suite:
+        print(f"\nSuite not run (--no-suite)")
     elif ran:
         print(f"\nSuite {paint.green('✓')} passed ({took})")
     rest = [f for f in other if f is not failed]

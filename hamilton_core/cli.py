@@ -33,6 +33,9 @@ def main(argv=None) -> int:
                                "of the suite")
     p_verify.add_argument("--json", action="store_true",
                           help="machine-readable output for hooks")
+    p_verify.add_argument("--no-suite", action="store_true",
+                          help="check the spec, tags and reviews only: run no "
+                               "tests (what a spec session needs)")
     p_verify.add_argument("--suite-output", action="store_true",
                           help="stream the test suite's own output as it runs")
     p_init = sub.add_parser("init", help="scaffold a project")
@@ -59,7 +62,7 @@ def main(argv=None) -> int:
 
     if args.cmd == "verify":
         return _verify.main(as_json=args.json, suite_output=args.suite_output,
-                            only=args.ac)
+                            only=args.ac, suite=not args.no_suite)
     if args.cmd == "init":
         return _init.main(args.path)
     if args.cmd == "guard":
