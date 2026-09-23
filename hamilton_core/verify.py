@@ -40,6 +40,9 @@ verified (`[browser]`, `[unit, http]`); a test for it counts only under the
                      exist
   unreviewed         a counting tag has no review suffix, or its AC or its
                      test changed since the review (one finding per tag)
+  copied-suffix      two tags carry the same review suffix: the reviewer wrote
+                     it to one test, so the other is a copy (one finding per
+                     tag)
   malformed          a requirement has no ACs, no Statement, a repeated id,
                      or an unparseable line
 
@@ -1181,6 +1184,8 @@ def run(root: str, suite: bool = True, echo: bool = False, on_log=None):
         else:
             tags.setdefault((req, ac), []).append((file, line))
 
+    out += _copied(scanned)
+
     if suite_failed:
         # the criteria whose tests the failures name, for whoever fixes them
         failed, output = suite_failed
@@ -1325,6 +1330,31 @@ def _unreviewed(c: Counted, ac: dict):
         t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"], state=state)
 
 
+def _copied(tags) -> list:
+    """A `copied-suffix` finding for each tag whose review suffix another tag
+    also carries. A suffix hashes its criterion and the exact test it was
+    written to, so it cannot come about twice: one of them is a copy -- a
+    test file duplicated, say, which carries its suffix along."""
+    by_suffix: dict = {}
+    for t in tags:
+        if t.suffix:
+            by_suffix.setdefault((t.rid, t.acid, t.suffix), []).append(t)
+    out = []
+    for (rid, acid, sfx), same in by_suffix.items():
+        if len(same) < 2:
+            continue
+        for t in same:
+            others = ", ".join(f"{o.file}:{o.line}" for o in same if o is not t)
+            out.append(_finding("copied-suffix",
+                f"the '@covers {rid}/{acid}' tag carries the review suffix "
+                f"#{sfx}, which {others} carries too. Expected: each suffix on "
+                f"the one test the reviewer wrote it to. Found: a copy -- a "
+                f"duplicated test file or section. Fix: delete the copy (a "
+                f"scratch file, an extract of a test), or its tag; never edit "
+                f"a suffix.", t.file, t.line, req=rid, ac=acid))
+    return out
+
+
 def _one(root: str, only: str, as_json: bool, console) -> int:
     """`hamilton verify R-nnnn[/ACn]`: those criteria's status, and their
     tests run -- only theirs, each method's by its `run.<method>`."""
@@ -1393,6 +1423,7 @@ _AC_MARKS = {
     "wrong-method": ("✗", "tested, but not by its method"),
     "no-method": ("✗", "no [method] marker"),
     "unknown-method": ("✗", "names a method the spec does not define"),
+    "copied-suffix": ("✗", "a test's review suffix is copied"),
     "unreviewed": ("?", "not reviewed"),
 }
 

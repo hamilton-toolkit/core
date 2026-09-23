@@ -36,6 +36,9 @@ else broke.
 3. If a tagged test points at a criterion that no longer exists (an
    `orphan-tag` finding), delete the test and whatever only it needed, or
    retarget the tag if the behaviour moved to another requirement.
+4. If a review suffix is copied (a `copied-suffix` finding), delete the copy
+   -- the scratch file or extract that is not the criterion's own test -- or
+   its tag.
 
 ## What you may change, and what you may not
 

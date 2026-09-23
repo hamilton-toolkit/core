@@ -989,3 +989,32 @@ def test_a_failure_outside_the_tagged_tests_names_no_criterion(tmp_path):
     [failed] = [f for f in json.loads(run_verify(d, "--json").stdout)["findings"]
                 if f["rule"] == "tests-failed"]
     assert failed["failed"] == []
+
+
+# --- a copied review suffix ----------------------------------------------------
+
+def test_a_copied_test_file_is_found_by_its_suffix(tmp_path):
+    """A suffix is written to one test; a shell copy carries it along."""
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    assert run_verify(d).returncode == 0
+    open(f"{d}/tests/_extract.mjs", "w").write(open(f"{d}/tests/ac1.js").read())
+    proc = run_verify(d, "--json")
+    copied = [f for f in json.loads(proc.stdout)["findings"]
+              if f["rule"] == "copied-suffix"]
+    assert sorted(f["file"] for f in copied) == ["tests/_extract.mjs", "tests/ac1.js"]
+    assert all(f["req"] == "R-0001" and f["ac"] == "AC1" for f in copied)
+    assert "tests/ac1.js:1 carries too" in next(
+        f["message"] for f in copied if f["file"] == "tests/_extract.mjs")
+    assert "- ✗ AC1 " in run_verify(d).stdout
+
+
+def test_tags_without_a_suffix_are_no_copies(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    body = open(f"{d}/tests/ac1.js").read()
+    bare = re.sub(r" #\S+", "", body)
+    open(f"{d}/tests/ac1.js", "w").write(bare)
+    open(f"{d}/tests/_extract.mjs", "w").write(bare)
+    rules = {f["rule"] for f in json.loads(run_verify(d, "--json").stdout)["findings"]}
+    assert "copied-suffix" not in rules

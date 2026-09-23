@@ -172,6 +172,12 @@ def test_every_rule_reaches_exactly_one_step():
     assert [f["ac"] for f in work.review] == ["AC1", "AC2", "AC3", "AC4"]
 
 
+def test_a_copied_test_goes_to_the_coder_to_delete():
+    work = B.route([finding("copied-suffix", "R-0001", "AC1")], skipped=[])
+    assert [f["rule"] for f in work.suite] == ["copied-suffix"]
+    assert work.to_write == [] and work.open
+
+
 def test_a_missing_reference_goes_back_to_the_spec():
     work = B.route([finding("missing-reference", "R-0001", "AC1")], skipped=[])
     assert [f["rule"] for f in work.spec] == ["missing-reference"]

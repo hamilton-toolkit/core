@@ -370,6 +370,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `dangling-ref` | A `Parent:` or `Actor:` value names an entity that isn't declared. Fix the reference, or add the entity. |
 | `cyclic-parent` | Following `Parent:` links from some requirement loops back on itself. Re-point one `Parent:`. |
 | `unreviewed` | A counting tag has no review suffix, or its criterion (with its `Statement:`, method definition and the spec files it references) or its test changed since the review — the message says which. Run `hamilton build`: it has the test reviewed — against the criterion's current wording, if that changed — and rewritten only if the reviewer rejects it. Never write a suffix by hand. |
+| `copied-suffix` | Two `@covers` tags carry the same review suffix. A suffix is written to one test, so the other is a copy — a duplicated test file, a debug extract. Delete the copy, or its tag. |
 | `missing-reference` | A `Statement:` or criterion names a `spec/<file>` that does not exist. Add the file or correct the path (in spec phase). |
 | `malformed` | A requirement is missing its `Statement`, has no criteria, repeats an id, or has a line that doesn't parse — or the file has no real requirements at all. The message names the line. |
 

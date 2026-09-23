@@ -92,7 +92,9 @@ CONFIG_RULES = frozenset({"no-test-command", "no-method-paths", "retired-config"
 # sets it, and nothing needs coding for it.
 RUN_RULES = frozenset({"no-run-command"})
 COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
-SUITE_RULES = frozenset({"tests-failed"})
+# What the coding step fixes without a test being written: a failing suite,
+# and a copied test, which it deletes.
+SUITE_RULES = frozenset({"tests-failed", "copied-suffix"})
 # The states of an `unreviewed` tag whose criterion changed. Its tests are
 # still reviewed first -- most still prove the new wording, and a review is
 # far cheaper than a rewrite -- but not against what was said of them before.
@@ -626,11 +628,14 @@ class Run:
 
     async def code(self, work: Work, reqs: dict, defined: dict, quals: list) -> None:
         # Why it is coding: the criteria whose tests were just written, a
-        # failing suite, or both.
+        # failing suite, a copied test -- or several of them.
         why = [", ".join(quals) if len(quals) <= 3
                else _count(len(quals), "criterion", "criteria")] if quals else []
-        if work.suite:
+        rules = {f["rule"] for f in work.suite}
+        if "tests-failed" in rules:
             why.append("the suite is failing")
+        if "copied-suffix" in rules:
+            why.append("a test is copied")
         self.step("code", " · ".join(why))
         await self.task("code", "Write the implementation",
                         code_prompt(work, reqs, defined, quals,
