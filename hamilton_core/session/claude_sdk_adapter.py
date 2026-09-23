@@ -29,8 +29,9 @@ vendor-specific things are contained here on purpose:
     lets the build loop be driven by Hamilton instead of by an agent. Which
     model each kind of build work runs on is decided here too
     (`DEFAULT_MODELS`, overridden by `model.<step>` in `.hamilton/config`),
-    how hard it thinks (`DEFAULT_EFFORTS`, and none at all for a reviewer),
-    and what counts as a token spent (`_spent`).
+    how hard it thinks (`DEFAULT_EFFORTS`, overridden by `effort.<step>`; a
+    reviewer does not think at all), and what counts as a token spent
+    (`_spent`).
 
 Anything a future non-SDK harness would do differently belongs in this file.
 """
@@ -342,7 +343,7 @@ DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
 # How hard each kind of build work thinks, where the CLI's default is too
 # much. Left to itself a test writer spends most of its output thinking --
 # twenty thousand tokens before a single edit, at times.
-DEFAULT_EFFORTS = {"tests": "medium"}
+DEFAULT_EFFORTS = {"tests": "medium", "code": "medium"}
 
 # Every build agent caches its prompt for 5 minutes, not the hour a
 # subscription defaults to: a 1-hour cache write costs twice the input, a
@@ -357,6 +358,11 @@ def _model(step: str, chosen: dict) -> str | None:
     """The model for `step`: the engineer's choice, else ours, else None --
     the CLI's own default."""
     return chosen.get(step) or DEFAULT_MODELS.get(step)
+
+
+def _effort(step: str, chosen: dict) -> str | None:
+    """The effort for `step`, the way `_model` picks its model."""
+    return chosen.get(step) or DEFAULT_EFFORTS.get(step)
 
 
 def _spent(msg: ResultMessage) -> int:
@@ -381,8 +387,10 @@ class ClaudeSdkJudge:
     thinking was nine tenths of what a review cost. Its prompt is cached for
     the shortest time there is (`CACHE`): no later call reads it back."""
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None,
+                 effort: str | None = None) -> None:
         self._model = _model("review", {"review": model} if model else {})
+        self._effort = _effort("review", {"review": effort} if effort else {})
         self.tokens: dict = {}
 
     def _options(self, cwd: str) -> ClaudeAgentOptions:
@@ -394,6 +402,7 @@ class ClaudeSdkJudge:
             strict_mcp_config=True,
             max_turns=1,
             model=self._model,
+            effort=self._effort,
             thinking={"type": "disabled"},
             env=CACHE,
         )
@@ -429,10 +438,11 @@ class ClaudeSdkWorker:
     """
 
     def __init__(self, root: str, write_policy: P.WritePolicy,
-                 models: dict | None = None) -> None:
+                 models: dict | None = None, efforts: dict | None = None) -> None:
         self._root = root
         self._write_policy = write_policy
         self._models = models or {}
+        self._efforts = efforts or {}
         self.denials: list[P.ToolDenied] = []
         self.tokens: dict = {}
 
@@ -454,7 +464,7 @@ class ClaudeSdkWorker:
             hooks={"PreToolUse": [HookMatcher(matcher="|".join(BACKGROUND_TOOLS),
                                               hooks=[_foreground(FOREGROUND_TASK)])]},
             model=_model(step, self._models),
-            effort=DEFAULT_EFFORTS.get(step),
+            effort=_effort(step, self._efforts),
         )
 
     async def run(self, prompt: str, on_action: P.OnAction | None = None,

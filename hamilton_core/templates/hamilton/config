@@ -21,6 +21,10 @@
 #               `review`, `code` or `clarify`, e.g. `model.code=opus`. Unset,
 #               test writing and review run on a mid-tier model and the rest
 #               on the agent's default.
+# effort.<step>  how hard a kind of build work thinks: `low`, `medium`,
+#               `high`, `xhigh` or `max`, e.g. `effort.code=high`. Unset,
+#               test writing and coding run at `medium`, the rest at the
+#               agent's default; the reviewer does not think at all.
 # mutation_command  RESERVED. Per-language mutation testing (see concept.md
 #               5.3). Not implemented yet -- if you set it, `hamilton verify`
 #               prints a notice every run and does NOT run it. Leave it unset.

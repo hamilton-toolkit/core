@@ -1028,7 +1028,7 @@ def test_each_task_tells_the_worker_its_kind_of_work(tmp_path):
 def test_models_are_read_from_the_config_as_written():
     cfg = {"model.tests": (" haiku ", 3), "model.code": ("", 4),
            "test_command": ("true", 1)}
-    assert B.models(cfg) == {"tests": "haiku"}
+    assert C.keyed(cfg, B.MODEL_PREFIX) == {"tests": "haiku"}
 
 
 def test_the_run_ends_with_the_tokens_each_kind_of_work_used(tmp_path):

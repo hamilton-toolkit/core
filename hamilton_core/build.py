@@ -60,6 +60,7 @@ from hamilton_core.session.console import Console, Rows, elapsed
 
 STATE_REL = os.path.join(".hamilton", "build")
 MODEL_PREFIX = "model."
+EFFORT_PREFIX = "effort."
 _QUAL_RE = re.compile(r"R-\d{4}/AC\d+")
 SESSION_ENV = "HAMILTON_SESSION"
 
@@ -396,15 +397,6 @@ def _config_text(root: str) -> str:
             return fh.read().strip() or "(empty)"
     except OSError:
         return "(no .hamilton/config)"
-
-
-def models(cfg: dict) -> dict:
-    """{step: model} from the `model.<step>` keys of `.hamilton/config`, as
-    the engineer wrote them: which model a name means is the adapter's
-    business, and so is the default for a step left unset."""
-    return {key[len(MODEL_PREFIX):]: value.strip()
-            for key, (value, _line) in cfg.items()
-            if key.startswith(MODEL_PREFIX) and value.strip()}
 
 
 def plan_answer(answer: str) -> tuple[dict, dict]:
@@ -983,13 +975,18 @@ def main() -> int:
 
     from hamilton_core.session.claude_sdk_adapter import (ClaudeSdkJudge,
                                                           ClaudeSdkWorker)
+    # The model and effort of each step, as the engineer wrote them in
+    # `model.<step>` and `effort.<step>`: what a name means, and the default
+    # for a step left unset, is the adapter's business.
     try:
-        chosen = models(_verify.read_config(root))
+        cfg = _verify.read_config(root)
     except UsageError as exc:
         return refuse(str(exc), 2)
+    models = _verify.keyed(cfg, MODEL_PREFIX)
+    efforts = _verify.keyed(cfg, EFFORT_PREFIX)
     worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target),
-                             chosen)
-    judge = ClaudeSdkJudge(chosen.get("review"))
+                             models, efforts)
+    judge = ClaudeSdkJudge(models.get("review"), efforts.get("review"))
     console.start_working(STEPS["check"])
     try:
         return asyncio.run(build(root, worker, judge, console, state))

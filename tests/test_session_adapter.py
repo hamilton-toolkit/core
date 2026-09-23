@@ -378,10 +378,21 @@ def test_a_worker_loads_no_skill():
     assert all(w._options(step).skills == [] for step in ("plan", "tests", "code"))
 
 
-def test_test_writers_think_less_than_the_cli_default():
+def test_writers_and_coders_think_less_than_the_cli_default():
     w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
     assert w._options("tests").effort == "medium"
-    assert w._options("plan").effort is None and w._options("code").effort is None
+    assert w._options("code").effort == "medium"
+    assert w._options("plan").effort is None
+    assert ClaudeSdkJudge()._options("/tmp/e").effort is None
+
+
+def test_an_effort_named_in_the_config_wins():
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None,
+                        efforts={"code": "high", "plan": "low"})
+    assert w._options("code").effort == "high"
+    assert w._options("plan").effort == "low"
+    assert w._options("tests").effort == "medium"
+    assert ClaudeSdkJudge(effort="low")._options("/tmp/e").effort == "low"
 
 
 def test_a_model_named_in_the_config_wins():

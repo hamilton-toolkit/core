@@ -379,12 +379,17 @@ def method_paths(cfg: dict) -> dict:
     return out
 
 
-def run_commands(cfg: dict) -> dict:
-    """{method: command} from the `run.<method>` keys of the config. A blank
-    value counts as unset."""
-    return {key[len(RUN_PREFIX):]: value.strip()
+def keyed(cfg: dict, prefix: str) -> dict:
+    """{name: value} from the `<prefix><name>` keys of the config, as
+    written. A blank value counts as unset."""
+    return {key[len(prefix):]: value.strip()
             for key, (value, _line) in cfg.items()
-            if key.startswith(RUN_PREFIX) and value.strip()}
+            if key.startswith(prefix) and value.strip()}
+
+
+def run_commands(cfg: dict) -> dict:
+    """{method: command} from the `run.<method>` keys of the config."""
+    return keyed(cfg, RUN_PREFIX)
 
 
 def under(rel: str, dirs) -> bool:
