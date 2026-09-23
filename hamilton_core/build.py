@@ -337,15 +337,20 @@ def test_prompt(qual: str, reqs: dict, defined: dict, brief: str,
         if review["covered"]:
             said += ("\n\nAlready covered -- keep every one of these:\n"
                      + "\n".join(f"- {k}" for k in review["covered"]))
-        said += ("\n\nThe next review checks only these points, across all of "
-                 "the criterion's tests together: that each comment is solved, "
-                 "and that nothing already covered was lost. You may add, split "
-                 "or merge tests to get there. Change nothing the comments do "
-                 "not ask for.")
+        if _review.reviewed(review):
+            said += ("\n\nThe next review checks only these points, across all "
+                     "of the criterion's tests together: that each comment is "
+                     "solved, and that nothing already covered was lost. You may "
+                     "add, split or merge tests to get there. Change nothing the "
+                     "comments do not ask for.")
+        else:
+            said += ("\n\nThey were sent back unread, for their length: the "
+                     "reviewer judges them once they fit.")
     return _template("write_test").substitute(
         qual=qual, name=qual.replace("/", "-"), command=command or "the full suite",
         criterion=spec_of(reqs, defined, qual),
         brief=brief or "(none given -- work it out from the criterion)",
+        budget=_review.MAX_LINES,
         paths=where or "(no path configured for this method)",
         reasons=said or "(this is the first attempt)")
 

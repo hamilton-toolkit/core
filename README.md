@@ -146,6 +146,9 @@ calls an agent only for the parts that need one:
   resolved or not, each covered point still covered or not — and raises
   nothing new. A lost point reopens; a resolved comment becomes a covered
   point. The list only shrinks.
+- **A criterion's tests stay short.** More than 200 lines — counting the
+  preamble of each file they are in — and Hamilton sends them back to the
+  writer unread, without a reviewer: every later step would read them again.
 - **Each kind of work runs on its own model.** Writing and reviewing tests —
   many small, tightly briefed tasks — run on a mid-tier model; planning and
   coding on the agent's default. `model.<step>` in `.hamilton/config`

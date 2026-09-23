@@ -582,3 +582,60 @@ def test_a_writer_is_not_sent_to_act_on_advice():
     text = B.test_prompt("R-0001/AC1", reqs, {"unit": {"description": "x"}}, "",
                          {"unit": ["tests"]}, review)
     assert "loose assertion" in text and "rename the helper" not in text
+
+
+# --- tests too long to review ------------------------------------------------
+
+def long_preamble(d, lines):
+    """AC2's file grows `lines` of helpers above its tests."""
+    body = read(d)
+    open(f"{d}/tests/covers.js", "w").write(
+        "".join(f"const helper{n} = () => {n};\n" for n in range(lines)) + body)
+
+
+def test_tests_too_long_are_sent_back_without_asking_the_reviewer(tmp_path):
+    d = project(tmp_path)
+    long_preamble(d, R.MAX_LINES)
+
+    class Unasked(FakeJudge):
+        async def ask(self, prompt, on_tokens=None):
+            raise AssertionError("the reviewer was asked")
+
+    [r] = [r for r in reviewed(d, Unasked(None)) if r["ac"] == "R-0001/AC2"]
+    assert r["verdict"] == "reject" and r["tokens"] == 0
+    [comment] = r["comments"]
+    assert comment["check"] == "size"
+    assert f"more than the {R.MAX_LINES} a criterion may take" in comment["text"]
+    assert "#" not in next(ln for ln in read(d).splitlines() if "R-0001/AC2" in ln)
+
+
+def test_tests_within_the_cap_are_reviewed(tmp_path):
+    d = project(tmp_path)
+    long_preamble(d, 10)
+    judge = FakeJudge(verdicts("pass"))
+    assert {r["verdict"] for r in reviewed(d, judge)} == {"pass"}
+    assert judge.prompts
+
+
+def test_a_reject_for_length_is_no_review_and_keeps_what_was_open():
+    earlier = {"covered": ["asserts a 401"], "advice": [],
+               "comments": [{"check": "scope", "text": "only one token"}]}
+    r = dict(R.too_long(500, earlier), ac="R-0001/AC1")
+    assert [c["text"] for c in r["comments"]][0] == "only one token"
+    assert r["covered"] == ["asserts a 401"]
+    assert not R.reviewed(r)
+    # nothing of it is remembered: the review it stands in for never happened
+    assert R.remember({"R-0001/AC1": earlier}, [r]) == {"R-0001/AC1": earlier}
+    assert R.remember({}, [r]) == {}
+
+
+def test_a_writer_sent_back_for_length_is_told_its_tests_were_not_read():
+    from hamilton_core import build as B
+    reqs = {"R-0001": {"title": "", "statement": "s.",
+                       "acs": {"AC1": {"text": "a -> b [unit]", "methods": ["unit"]}}}}
+    review = dict(R.too_long(500), tests=[{"file": "t.js", "line": 1}])
+    text = B.test_prompt("R-0001/AC1", reqs, {"unit": {"description": "x"}}, "",
+                         {"unit": ["tests"]}, review)
+    assert "sent back unread, for their length" in text
+    assert "The next review checks only these points" not in text
+    assert f"At most {R.MAX_LINES} lines" in text

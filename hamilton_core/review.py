@@ -24,6 +24,10 @@ verdict per criterion:
            by its method could satisfy it -- a spec defect; the question is
            reported for the engineer
 
+Tests longer than `MAX_LINES`, as the reviewer would be shown them, are not
+put to it: Hamilton rejects them itself, unread, and that is no review --
+nothing of it is remembered, so the next one is a first review.
+
 Only blocking comments reject: a clause of the criterion the tests fail to
 prove. What would merely make the tests better is `advice` -- shown to the
 engineer, never settled, never sent to a writer -- so a review cannot keep a
@@ -75,6 +79,12 @@ DONE = {"pass": "passed", "reject": "rejected", "unclear": "unclear",
 INDENT = "    "
 LABEL = 11              # width of the label column in an unfolded result
 MAX_WIDTH = 100         # longer lines are hard to read, however wide the terminal
+# The most lines of test a criterion may take, as the reviewer is shown them:
+# each file's preamble once, and every tagged section. Longer is sent back
+# unread -- a test that long is a framework, not a proof, and every step
+# after this one would read it again.
+MAX_LINES = 200
+SIZE = "size"           # the check of a comment Hamilton makes, not the reviewer
 def targets(root: str) -> tuple[dict, dict, list]:
     """(reqs, defined, groups): one group per acceptance criterion that needs
     a review -- every counting tag of it, wherever it lies, as soon as one of
@@ -134,10 +144,11 @@ def _referenced(refs: dict) -> str:
             + "\n\n".join(out))
 
 
-def _tests(group) -> str:
-    """Every test of the criterion, file by file: the file's preamble once,
-    then each of its tagged sections. A region is preamble plus section, so
-    the preamble is what comes before the region's first tag line."""
+def _files(group) -> dict:
+    """{file: {"preamble", "sections": {section: its tag line}}}: every test
+    of the criterion, as the reviewer is shown it. A region is preamble plus
+    section, so the preamble is what comes before the region's first tag
+    line."""
     files: dict = {}
     for c in group:
         lines = c.region.splitlines()
@@ -145,8 +156,21 @@ def _tests(group) -> str:
         preamble, section = "\n".join(lines[:first]), "\n".join(lines[first:])
         entry = files.setdefault(c.tag.file, {"preamble": preamble, "sections": {}})
         entry["sections"].setdefault(section, c.tag.line)
+    return files
+
+
+def size(group) -> int:
+    """The lines of test the reviewer would be shown for the criterion."""
+    return sum(len(text.splitlines())
+               for entry in _files(group).values()
+               for text in (entry["preamble"], *entry["sections"]))
+
+
+def _tests(group) -> str:
+    """Every test of the criterion, file by file: the file's preamble once,
+    then each of its tagged sections."""
     out = []
-    for path, entry in files.items():
+    for path, entry in _files(group).items():
         out.append(f"### `{path}`\n\nPreamble (everything above its first "
                    f"`@covers` tag):\n\n```\n{entry['preamble']}\n```")
         for section, line in entry["sections"].items():
@@ -291,16 +315,39 @@ def settle(earlier: dict, answer: dict) -> dict:
             "question": question, "verdict": verdict(comments, question)}
 
 
+def too_long(lines: int, earlier: dict | None = None) -> dict:
+    """Hamilton's own reject of tests too long to review: no reviewer reads
+    them, so this is no review. What an earlier review left open stays in
+    view, for the writer to keep solving."""
+    earlier = earlier or {}
+    return {"verdict": "reject", "covered": list(earlier.get("covered", [])),
+            "resolved": [], "advice": list(earlier.get("advice", [])),
+            "question": earlier.get("question", ""),
+            "comments": [*earlier.get("comments", []), {"check": SIZE, "text":
+                f"{lines} lines of test, counting each file's preamble -- more "
+                f"than the {MAX_LINES} a criterion may take. Prove it with "
+                f"fewer, plainer tests: no generic discovery, crawling or "
+                f"comparison framework, only what the criterion names."}]}
+
+
+
+def reviewed(r: dict) -> bool:
+    """Whether a result is a review: not an error, and not tests sent back
+    for their length unread."""
+    return r.get("verdict") != "error" and not any(
+        c.get("check") == SIZE for c in r["comments"])
+
+
 def remember(memory: dict, results: list) -> dict:
     """The memory after `results`, one entry per criterion: a criterion that
     passed is forgotten, one that did not keeps what its tests cover, what is
-    still open and the question it raised. An error changes nothing -- it is
-    not a review."""
+    still open and the question it raised. What is no review -- an error,
+    tests sent back unread -- changes nothing."""
     out = dict(memory)
     for r in results:
         if r["verdict"] == "pass":
             out.pop(r["ac"], None)
-        elif r["verdict"] != "error":
+        elif reviewed(r):
             out[r["ac"]] = {"covered": r["covered"], "comments": r["comments"],
                             "advice": r["advice"]}
             if r["question"]:
@@ -334,6 +381,10 @@ def write_suffix(root: str, tag, value: str) -> None:
         fh.write("".join(parts))
 
 
+class _TooLong(Exception):
+    """A criterion's tests are over `MAX_LINES`: not put to the judge."""
+
+
 class Watch:
     """What `review` reports while it runs. This one ignores it."""
 
@@ -364,11 +415,14 @@ async def review(root: str, judge, watch: Watch | None = None,
         if earlier and not (earlier["covered"] or earlier["comments"]
                             or earlier.get("question")):
             earlier = None      # nothing to settle: a re-review would pass it unseen
+        lines = size(group)
         async with slots:
             files = sorted({os.path.basename(c.tag.file) for c in group})
             watch.started(key, f"{qual} · {', '.join(files)}")
             used: list = []
             try:
+                if lines > MAX_LINES:
+                    raise _TooLong(lines)
                 reply = await judge.ask(prompt(reqs, defined, group, earlier),
                                         on_tokens=used.append)
                 if earlier:
@@ -377,6 +431,8 @@ async def review(root: str, judge, watch: Watch | None = None,
                     a = parse_first(reply, [qual])[qual]
                     answer = dict(a, resolved=[],
                                   verdict=verdict(a["comments"], a["question"]))
+            except _TooLong:
+                answer = too_long(lines, earlier)
             except Exception as exc:      # the judge failed, or answered badly
                 answer = {"verdict": "error", "covered": [], "resolved": [],
                           "comments": [{"check": "error", "text": str(exc)}],

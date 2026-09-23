@@ -73,7 +73,9 @@ Also:
   plainest tests that do it: one per case it names. No generic discovery,
   crawling or comparison frameworks, no guarding against markup or content
   the specification does not name. A long test is not a thorough one -- it is
-  one the reviewer has more to find in.
+  one the reviewer has more to find in. **At most $budget lines** for the
+  criterion, counting the preamble of each file its tests are in: longer is
+  sent back unread.
 - Write only test files. Do not touch the implementation, and do not make
   the test pass by changing what it tests.
 - **Run it -- and only it -- with `hamilton verify $qual`.** It runs this
