@@ -142,10 +142,17 @@ def test_the_judge_does_not_think():
 
 
 def test_every_build_agent_caches_for_five_minutes():
-    five = {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
-    assert ClaudeSdkJudge()._options("/tmp/empty").env == five
+    ttl = ("CLAUDE_CODE_PROMPT_CACHE_TTL", "5m")
+    assert ttl in ClaudeSdkJudge()._options("/tmp/empty").env.items()
     w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
-    assert all(w._options(step).env == five for step in ("plan", "tests", "code"))
+    assert all(ttl in w._options(step).env.items() for step in ("plan", "tests", "code"))
+
+
+def test_a_worker_s_long_command_is_not_moved_to_the_background():
+    """The CLI does that after two minutes; a browser test file takes longer."""
+    env = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)._options("code").env
+    assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert int(env["BASH_DEFAULT_TIMEOUT_MS"]) >= 600_000
 
 
 # --- the message stream, as Hamilton events --------------------------------

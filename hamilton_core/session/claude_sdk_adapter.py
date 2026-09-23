@@ -353,6 +353,14 @@ DEFAULT_EFFORTS = {"tests": "medium", "code": "medium"}
 # client's markers gone the server still caches, for 5 minutes.
 CACHE = {"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"}
 
+# A worker's command runs to its end where the worker waits for it. Left to
+# itself the CLI moves a command still running after two minutes -- a
+# browser test file, say -- into the background, and the task, which ends
+# when it answers, either waits turn after turn or never hears back.
+FOREGROUND_ENV = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                  "BASH_DEFAULT_TIMEOUT_MS": "900000",
+                  "BASH_MAX_TIMEOUT_MS": "900000"}
+
 
 def _model(step: str, chosen: dict) -> str | None:
     """The model for `step`: the engineer's choice, else ours, else None --
@@ -458,7 +466,7 @@ class ClaudeSdkWorker:
         return ClaudeAgentOptions(
             cwd=self._root,
             setting_sources=["project"],
-            env=CACHE,
+            env={**CACHE, **FOREGROUND_ENV},
             skills=[],
             can_use_tool=self._can_use_tool,
             hooks={"PreToolUse": [HookMatcher(matcher="|".join(BACKGROUND_TOOLS),
