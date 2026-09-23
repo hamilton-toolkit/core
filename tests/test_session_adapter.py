@@ -276,6 +276,13 @@ def test_a_failed_result_is_a_session_error():
         P.SessionError("out of budget"), P.TurnEnded(False)]
 
 
+def test_a_turn_s_end_carries_what_it_spent():
+    spent = ResultMessage("success", 1, 1, False, 1, "s",
+                          usage={"input_tokens": 10, "output_tokens": 5,
+                                 "cache_creation_input_tokens": 100})
+    assert translate(spent) == [P.TurnEnded(False, 115)]
+
+
 def foreground_hook(options, tool_name):
     """The first PreToolUse hook `options` runs for `tool_name`, as a
     callable."""

@@ -316,7 +316,7 @@ def _translate(msg, tasks: Tasks) -> list[P.StreamEvent]:
                                       or "the agent session failed"))
         # Ours, or one the CLI started itself to report a finished task.
         by_agent = not (msg.origin is None or msg.origin.get("kind") == "human")
-        out.append(P.TurnEnded(by_agent))
+        out.append(P.TurnEnded(by_agent, _spent(msg)))
         return out
     return []
 

@@ -138,6 +138,14 @@ def markdown(text: str, paint: Paint) -> str:
     return "\n".join(lines)
 
 
+def tokens(n: int) -> str:
+    """1234 -> 1.2k, 2345678 -> 2.3M."""
+    for size, unit in ((1_000_000, "M"), (1_000, "k")):
+        if n >= size:
+            return f"{n / size:.1f}{unit}"
+    return str(n)
+
+
 def elapsed(seconds: float) -> str:
     s = int(seconds)
     return f"{s}s" if s < 60 else f"{s // 60}m{s % 60:02d}s"

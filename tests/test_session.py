@@ -306,3 +306,31 @@ def test_reverse_refuses_a_spec_that_already_has_content(tmp_path):
     assert reverse.precheck(str(tmp_path)) is None     # no spec yet: fine
     populated = Path(__file__).parent / "fixtures" / "clean"
     assert "already has" in reverse.precheck(str(populated))
+
+
+class Spending(FakeAdapter):
+    """Ends each turn having used `per_turn` tokens."""
+
+    def __init__(self, *turns, per_turn=12_300, **kw):
+        super().__init__(*turns, **kw)
+        self.per_turn = per_turn
+
+    async def send(self, text):
+        self.sent.append(text)
+        for ev in (self._turns.pop(0) if self._turns else []):
+            self._stream.put_nowait(ev)
+        self._stream.put_nowait(P.TurnEnded(tokens=self.per_turn))
+
+
+def test_each_turn_shows_its_tokens_and_the_session_its_total(tmp_path):
+    a = Spending([P.AgentText("summary"), DONE],
+                 [P.AgentText("on to the next thing"), DONE], session_ref="s1")
+    rc, out, _cp = drive(tmp_path, a, keys="1\n" + "\n" + FINISH)
+    assert "12.3k tokens · 12.3k this session" in out
+    assert "12.3k tokens · 24.6k this session" in out
+    assert out.rstrip().endswith("Tokens 24.6k this session")
+
+
+def test_a_session_that_used_nothing_shows_no_tokens(tmp_path):
+    rc, out, _cp = drive(tmp_path, FakeAdapter([P.AgentText("summary"), DONE]), keys=FINISH)
+    assert "tokens" not in out.lower()

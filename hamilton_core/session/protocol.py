@@ -91,7 +91,14 @@ class SubagentDone:
     elapsed: float
 
 
-Event = AgentText | ToolDenied | PhaseDone | SessionError | SubagentDone
+@dataclass(frozen=True)
+class Spent:
+    """The tokens a turn used, told once it is over. Raised by `agent.Agent`
+    from what the adapter's `TurnEnded`s carried."""
+    tokens: int
+
+
+Event = AgentText | ToolDenied | PhaseDone | SessionError | SubagentDone | Spent
 
 
 # --- what an adapter reports besides that -------------------------------------
@@ -101,8 +108,10 @@ class TurnEnded:
     """A turn the agent ran is finished. `by_agent` marks one the agent
     started itself -- a task reporting back, say -- rather than the turn the
     engineer's message started. Which of them hands the engineer their prompt
-    back is `agent.Agent`'s decision, not an adapter's."""
+    back is `agent.Agent`'s decision, not an adapter's. `tokens` is what the
+    turn used, as the adapter counts it."""
     by_agent: bool = False
+    tokens: int = 0
 
 
 @dataclass(frozen=True)

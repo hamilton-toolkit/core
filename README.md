@@ -103,6 +103,10 @@ able to see what is happening:
   each subagent the agent runs — a test writer, say — is a live row: what it
   does, for how long, and its latest tool. When it finishes, one `✓` line stays
   behind.
+- **You can see what it costs.** After each turn a dim line gives the tokens
+  it used and the session's total so far — `12.3k tokens · 84.0k this
+  session` — and the session ends with its total, counted the way a build
+  run counts them.
 - **Finishing a piece of work is not the end of the session.** When the agent
   gives its closing summary, Hamilton shows you the next step — another change,
   a change to requirements you pick from the tree, a decomposition or a

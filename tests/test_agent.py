@@ -195,3 +195,19 @@ def test_a_subagent_that_stops_reporting_does_not_strand_the_engineer():
     seen, still_running = run(go())      # STALLED is a blink in the tests
     assert seen == [P.AgentText("launched")]
     assert [r.label for r in still_running] == ["Write test"]
+
+
+def test_a_turn_ends_with_what_it_spent_turns_the_agent_started_included():
+    async def go():
+        adapter = ScriptedAdapter([P.AgentText("first")], [P.AgentText("second")])
+        a = Agent(adapter)
+        first = await turn(a)
+        # between turns, the agent reports a finished task in a turn of its own
+        adapter.stream.put_nowait(P.TurnEnded(by_agent=True, tokens=500))
+        await asyncio.sleep(0)
+        adapter.replies[0].append(P.TurnEnded(tokens=1_000))
+        return first, await turn(a, "next")
+
+    first, second = run(go())
+    assert first == [P.AgentText("first")]              # a turn that spent nothing says so
+    assert second == [P.AgentText("second"), P.Spent(1_500)]

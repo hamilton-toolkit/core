@@ -56,7 +56,7 @@ from hamilton_core import review as _review
 from hamilton_core import status as _status
 from hamilton_core.verify import REQ_REL, UsageError
 from hamilton_core.session import protocol as P
-from hamilton_core.session.console import Console, Rows, elapsed
+from hamilton_core.session.console import Console, Rows, elapsed, tokens as _tokens
 
 STATE_REL = os.path.join(".hamilton", "build")
 MODEL_PREFIX = "model."
@@ -641,14 +641,6 @@ class Run:
                         code_prompt(work, reqs, defined, quals,
                                     test_files(self.root, quals), self.command),
                         "code")
-
-
-def _tokens(n: int) -> str:
-    """1234 -> 1.2k, 2345678 -> 2.3M."""
-    for size, unit in ((1_000_000, "M"), (1_000, "k")):
-        if n >= size:
-            return f"{n / size:.1f}{unit}"
-    return str(n)
 
 
 def _cost(seconds: float, tokens: int) -> str:

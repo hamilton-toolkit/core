@@ -42,7 +42,7 @@ from hamilton_core import status as _status
 from hamilton_core.session import protocol as P
 from hamilton_core.session.agent import Agent
 from hamilton_core.session.claude_sdk_adapter import ClaudeSdkAdapter
-from hamilton_core.session.console import Console
+from hamilton_core.session.console import Console, tokens
 from hamilton_core.session.modes import Mode, Step
 
 SESSION_ENV = "HAMILTON_SESSION"
@@ -111,6 +111,7 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
     cp = P.Checkpoint(phase=mode.phase, session_ref=agent.session_ref)
     text: str | None = kickoff
     rc = 0
+    spent = 0                           # the session's tokens so far
     try:
         while text is not None:
             done = False
@@ -133,6 +134,10 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
                     rc = 1
                 elif isinstance(ev, P.PhaseDone):
                     done = True
+                elif isinstance(ev, P.Spent):
+                    spent += ev.tokens
+                    console.say(console.paint.dim(
+                        f"  {tokens(ev.tokens)} tokens · {tokens(spent)} this session"))
 
             console.stop_working()
             cp.session_ref = agent.session_ref
@@ -155,6 +160,9 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
     finally:
         console.stop_working()
         await agent.close()
+        if spent:
+            console.say()
+            console.say(console.paint.dim(f"Tokens {tokens(spent)} this session"))
     return rc
 
 
