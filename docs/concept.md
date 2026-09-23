@@ -368,7 +368,7 @@ rules the agent is meant to follow — an agent must not relax what constrains i
 (Hamilton writes `.hamilton/phase` itself, as a subprocess, not through a
 hooked tool). The one exception is `.hamilton/config`: which test
 framework runs and where each method's tests live (`test_command`,
-`paths.<method>`) are build-time decisions, so the file is writable in `build`. A path hook cannot
+`paths.<method>`, `run.<method>`) are build-time decisions, so the file is writable in `build`. A path hook cannot
 lock individual lines, so the whole file is writable there — and visible in the
 config diff a reviewer sees.
 

@@ -640,16 +640,32 @@ def test_the_suite_s_output_can_still_be_streamed(tmp_path):
     assert "running 61 tests" in run_verify(d, "--suite-output").stderr
 
 
-# --- one criterion's status ------------------------------------------------------
+# --- one criterion: its status, and its own tests run ---------------------------
+
+def configure(d, **keys):
+    """Set `.hamilton/config` keys, replacing any already there."""
+    with open(f"{d}/.hamilton/config") as fh:
+        lines = [ln for ln in fh.read().splitlines()
+                 if ln.partition("=")[0] not in keys]
+    with open(f"{d}/.hamilton/config", "w") as fh:
+        fh.write("\n".join(lines + [f"{k}={v}" for k, v in keys.items()]) + "\n")
+
+
+def two_files(d):
+    """AC1's test and AC2's test, each in a file of its own, both reviewed."""
+    os.remove(f"{d}/tests/covers.js")
+    with open(f"{d}/tests/ac1.js", "w") as fh:
+        fh.write("// @covers R-0001/AC1\nit('rejects an expired token', () => {});\n")
+    with open(f"{d}/tests/ac2.js", "w") as fh:
+        fh.write("// @covers R-0001/AC2\nit('accepts a skewed token', () => {});\n")
+    stamp(d)
+
 
 def test_one_criterion_s_status_needs_no_suite(tmp_path):
-    """A step working on a criterion asks whether it is covered and reviewed;
-    that must not cost a ten-minute suite."""
+    """A step working on a criterion asks whether it is covered, reviewed
+    and passing; that must not cost a ten-minute suite."""
     d = copy_fixture("multi-violation", tmp_path)
-    with open(f"{d}/.hamilton/config") as fh:
-        cfg = fh.read()
-    with open(f"{d}/.hamilton/config", "w") as fh:     # a suite that would fail
-        fh.write(re.sub(r"test_command=.*", "test_command=false", cfg))
+    configure(d, **{"test_command": "false", "run.http": "true", "run.unit": "true"})
     ok = run_verify(d, "R-0001/AC1")
     assert ok.returncode == 0
     assert "- ✓ AC1 " in ok.stdout and "AC2" not in ok.stdout and "Suite" not in ok.stdout
@@ -659,10 +675,60 @@ def test_one_criterion_s_status_needs_no_suite(tmp_path):
     assert [f["rule"] for f in payload["findings"]] == ["uncovered"]
 
 
-@pytest.mark.parametrize("only", ["R-0001", "R-0001/AC9"])
+@pytest.mark.parametrize("only", ["R-0009", "R-0001/AC9", "AC1", "R-0001/"])
 def test_one_criterion_must_be_one_that_exists(tmp_path, only):
     d = copy_fixture("clean", tmp_path)
     assert run_verify(d, only).returncode == 2
+
+
+def test_a_criterion_s_own_files_are_run_by_its_method_s_command(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"test_command": "false",
+                    "run.http": "sh -c 'echo \"$0 $*\" > ran.txt'"})
+    proc = run_verify(d, "R-0001/AC1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert open(f"{d}/ran.txt").read().split() == ["tests/ac1.js"]
+    assert re.search(r"Tests ✓ passed \(\d+s\)", proc.stdout)
+
+
+def test_a_requirement_runs_every_criterion_s_tests_at_once(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"run.http": "sh -c 'echo \"$0 $*\" > ran.txt'"})
+    assert run_verify(d, "R-0001").returncode == 0
+    assert open(f"{d}/ran.txt").read().split() == ["tests/ac1.js", "tests/ac2.js"]
+
+
+def test_a_failure_is_put_down_to_the_criterion_whose_file_it_names(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"run.http": "sh -c 'echo \"not ok 1 - expired at tests/ac2.js:2\"; exit 1'"})
+    proc = run_verify(d, "R-0001")
+    assert proc.returncode == 1
+    assert re.search(r"Tests ✗ R-0001/AC2 failed \(\d+s\) -- full output: ", proc.stdout)
+    assert "not ok 1 - expired at tests/ac2.js:2" in proc.stdout
+    ran = json.loads(run_verify(d, "R-0001", "--json").stdout)["tests"]
+    assert ran["results"] == {"R-0001/AC1": "passed", "R-0001/AC2": "failed"}
+    assert "not ok 1" in open(ran["log"]).read()
+
+
+def test_a_failure_that_names_no_file_fails_every_criterion_it_ran(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    two_files(d)
+    configure(d, **{"run.http": "sh -c 'echo \"not ok 1 - something\"; exit 1'"})
+    ran = json.loads(run_verify(d, "R-0001", "--json").stdout)["tests"]
+    assert ran["results"] == {"R-0001/AC1": "failed", "R-0001/AC2": "failed"}
+
+
+def test_a_method_without_a_run_command_is_named_not_guessed(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    proc = run_verify(d, "R-0001/AC1")
+    assert proc.returncode == 1
+    assert "not run for [http]: .hamilton/config has no run.http" in proc.stdout
+    ran = json.loads(run_verify(d, "R-0001/AC1", "--json").stdout)["tests"]
+    assert ran == {"results": {"R-0001/AC1": "not run"}, "missing": ["http"],
+                   "output": "", "log": ""}
 
 
 

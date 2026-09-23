@@ -356,19 +356,10 @@ def rejected_by_criterion(results: list, skipped) -> dict:
             if r["verdict"] == "reject" and r["ac"] not in skipped}
 
 
-def tagged_files(root: str, quals) -> dict:
-    """{qual: the files holding a `@covers` tag for it}."""
-    paths = _verify.method_paths(_verify.read_config(root))
-    out: dict = {q: set() for q in quals}
-    for t in _verify.scan(root, [d for ds in paths.values() for d in ds]):
-        out.get(f"{t.rid}/{t.acid}", set()).add(t.file)
-    return out
-
-
 def test_files(root: str, quals) -> list:
     """The files holding a `@covers` tag for any of these criteria -- what a
     step working on them runs, instead of the whole suite."""
-    return sorted(set().union(*tagged_files(root, quals).values()))
+    return sorted(set().union(*_verify.tagged_files(root, quals).values()))
 
 
 def code_prompt(work: Work, reqs: dict, defined: dict, quals: list,
@@ -568,7 +559,7 @@ class Run:
                   _count(len(quals), "criterion", "criteria"))
         slots = asyncio.Semaphore(WRITERS)
         files: dict = {}
-        tagged = tagged_files(self.root, quals)
+        tagged = _verify.tagged_files(self.root, quals)
 
         async def write(qual: str) -> None:
             mine = sorted(tagged[qual] | {t["file"] for t in

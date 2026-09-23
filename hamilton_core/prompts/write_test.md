@@ -76,14 +76,16 @@ Also:
   one the reviewer has more to find in.
 - Write only test files. Do not touch the implementation, and do not make
   the test pass by changing what it tests.
-- **Run it -- and only it.** Run this criterion's test file(s) and nothing
-  else, with the project's runner for that file (`phpunit <file>`,
-  `npx playwright test <file>`, `node --test <file>`, `pytest <file>` …).
-  **Never run the full suite** (`$command`): it runs every criterion's tests
-  and takes minutes; Hamilton runs it once, at the end. For behaviour that
-  does not exist yet your test must fail -- against the scaffold, for the
-  reason the criterion names. A test for new behaviour that passes before
-  anything is implemented proves nothing: fix it.
+- **Run it -- and only it -- with `hamilton verify $qual`.** It runs this
+  criterion's test files and nothing else, and shows the failures. If it
+  says a `run.<method>` is not set, set it in `.hamilton/config` -- a command
+  that runs the test files given to it as arguments, starting whatever they
+  need -- and run it again. **Never run the full suite** (`$command`): it
+  runs every criterion's tests and takes minutes; Hamilton runs it once, at
+  the end. For behaviour that does not exist yet your test must fail --
+  against the scaffold, for the reason the criterion names. A test for new
+  behaviour that passes before anything is implemented proves nothing: fix
+  it.
 
 Finish with one line saying what you wrote and where, and whether it failed
 or passed when you ran it.

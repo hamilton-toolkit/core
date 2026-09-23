@@ -28,8 +28,9 @@ def main(argv=None) -> int:
 
     p_verify = sub.add_parser("verify", help="run the verification gate")
     p_verify.add_argument("ac", nargs="?", default=None,
-                          help="only this criterion's status, R-nnnn/ACn "
-                               "(the suite is not run)")
+                          help="only these criteria, R-nnnn or R-nnnn/ACn: "
+                               "their status, and their own tests run instead "
+                               "of the suite")
     p_verify.add_argument("--json", action="store_true",
                           help="machine-readable output for hooks")
     p_verify.add_argument("--suite-output", action="store_true",

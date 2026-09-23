@@ -21,7 +21,8 @@ path) a Write / Edit / MultiEdit / NotebookEdit whose target the current
 
   build phase exception: `.hamilton/config` IS writable. Which test framework
   runs and where the tests for each verification method live are build-time
-  decisions, and those are its keys (`test_command`, `paths.<method>`). A
+  decisions, and those are its keys (`test_command`, `paths.<method>`,
+  `run.<method>`). A
   path hook cannot lock individual lines, so the whole file is writable in
   `build`. The trade is deliberate;
   `hamilton verify` in CI, reviewed against the config diff, is the backstop.
@@ -77,7 +78,7 @@ def decide(root: str, target: str) -> str | None:
     # build
     if any(os.path.realpath(target) == os.path.realpath(os.path.join(root, w))
            for w in BUILD_WRITABLE):
-        return None  # test_command / paths.<method> are build-time decisions
+        return None  # test_command, paths.<method>, run.<method>: build-time decisions
     locked = next((d for d in LOCKED_IN_BUILD_DIRS
                    if _inside(os.path.join(root, d), target)), None)
     if locked is None and os.path.basename(target) in LOCKED_IN_BUILD_FILES:

@@ -794,7 +794,7 @@ def test_a_writer_runs_only_its_own_tests(tmp_path):
     worker = FakeWorker(writes_a_test(d))
     run(d, worker, FakeJudge(passes), console()[0])
     brief = worker.of("write_test")[0]
-    assert "Run it -- and only it." in brief
+    assert "with `hamilton verify R-0001/AC2`" in brief
     assert "Never run the full suite** (`true`)" in brief     # the fixture's test_command
 
 
@@ -804,7 +804,8 @@ def test_the_coder_is_given_the_tests_to_run(tmp_path):
     run(d, worker, FakeJudge(passes), console()[0])
     [coding] = worker.of("implement")
     assert "- tests/R-0001_AC2.js" in coding
-    assert "Do **not** run the\nfull suite (`true`)" in coding
+    assert "`hamilton verify <criterion>`" in coding
+    assert "Do **not** run the full suite\n(`true`)" in coding
 
 
 def test_a_run_ends_with_where_its_time_went(tmp_path):

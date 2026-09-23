@@ -84,6 +84,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -125,6 +126,10 @@ _METHOD_DEF_RE = re.compile(rf"-\s+\*\*({_METHOD_NAME})\*\*\s*[—–:-]\s*(.+)$
 _METHOD_MARKER_RE = re.compile(
     rf"\[\s*({_METHOD_NAME}(?:\s*,\s*{_METHOD_NAME})*)\s*\]$")
 PATHS_PREFIX = "paths."
+# `run.browser=tools/run-browser.sh`: the command that runs the test files of
+# one method given to it as arguments -- how `hamilton verify R-nnnn/ACn`
+# runs one criterion's tests without the whole suite.
+RUN_PREFIX = "run."
 # a supporting spec file named in a Statement or AC: `spec/price_model.md`. It
 # ends in a word character, so the "." closing a sentence is not part of it.
 REF_RE = re.compile(r"(?<![\w/])spec/[\w./-]*\w")
@@ -374,6 +379,14 @@ def method_paths(cfg: dict) -> dict:
     return out
 
 
+def run_commands(cfg: dict) -> dict:
+    """{method: command} from the `run.<method>` keys of the config. A blank
+    value counts as unset."""
+    return {key[len(RUN_PREFIX):]: value.strip()
+            for key, (value, _line) in cfg.items()
+            if key.startswith(RUN_PREFIX) and value.strip()}
+
+
 def under(rel: str, dirs) -> bool:
     """True if repo-relative path ``rel`` lies in one of ``dirs``."""
     r = rel.replace("\\", "/")
@@ -430,6 +443,13 @@ def failure_blocks(lines: list) -> list:
     return blocks
 
 
+def failure_text(output: str) -> str:
+    """Every line of ``output`` that reports a failure, with its context, and
+    nothing else -- uncut, for finding out what failed."""
+    lines = output.splitlines()
+    return "\n".join("\n".join(lines[a:b]) for a, b in failure_blocks(lines))
+
+
 def failures(output: str) -> str:
     """What of a failed run's output its fixer needs: the lines that report a
     failure, with their context, then the run's last lines -- its summary --
@@ -475,27 +495,35 @@ def run_tests(root: str, cfg: dict, echo: bool = False, log: str | None = None):
     try:
         if echo:
             print(f"hamilton verify: running test_command: {cmd.strip()}", file=sys.stderr)
-            p = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr,
-                               timeout=SUITE_TIMEOUT)
+            returncode = subprocess.run(cmd, shell=True, cwd=root, stdout=sys.stderr,
+                                        timeout=SUITE_TIMEOUT).returncode
             output = ""
         else:
-            log = log or new_log()
-            with open(log, "w", encoding="utf-8") as fh:
-                p = subprocess.Popen(cmd, shell=True, cwd=root, stdout=fh,
-                                     stderr=subprocess.STDOUT)
-                try:
-                    p.wait(timeout=SUITE_TIMEOUT)
-                except subprocess.TimeoutExpired:
-                    p.kill()
-                    p.wait()
-                    raise
-            with open(log, encoding="utf-8", errors="replace") as fh:
-                output = fh.read()
+            returncode, output = _run_logged(root, cmd, log or new_log())
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"test_command could not be run ({exc})", lineno, ""
-    if p.returncode == 0:
+    if returncode == 0:
         return True, "", lineno, output
-    return False, f"test_command {cmd.strip()!r} exited {p.returncode}", lineno, output
+    return False, f"test_command {cmd.strip()!r} exited {returncode}", lineno, output
+
+
+def _run_logged(root: str, cmd: str, log: str, mode: str = "w") -> tuple[int, str]:
+    """Run ``cmd`` in ``root`` with its output going, as it comes, into
+    ``log`` (appended with mode "a"). Returns (exit code, its output)."""
+    with open(log, mode, encoding="utf-8") as fh:
+        start = fh.tell()
+        fh.flush()
+        p = subprocess.Popen(cmd, shell=True, cwd=root, stdout=fh,
+                             stderr=subprocess.STDOUT)
+        try:
+            p.wait(timeout=SUITE_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            raise
+    with open(log, encoding="utf-8", errors="replace") as fh:
+        fh.seek(start)
+        return p.returncode, fh.read()
 
 
 def spec_lines(path: str):
@@ -745,6 +773,80 @@ def tested(root: str, reqs: dict) -> dict:
     for mine in out.values():
         mine.sort(key=lambda f: (f[0], f[1].first))
     return out
+
+
+def tagged_files(root: str, quals) -> dict:
+    """{qual: the files holding a `@covers` tag for it}, under any method's
+    paths."""
+    paths = method_paths(read_config(root))
+    out: dict = {q: set() for q in quals}
+    for t in scan(root, [d for ds in paths.values() for d in ds]):
+        out.get(f"{t.rid}/{t.acid}", set()).add(t.file)
+    return out
+
+
+def named(text: str, files: dict) -> set:
+    """The criteria of ``files`` ({file: quals}) whose file ``text`` names --
+    by its path, or by its file name, as a runner reports where a test
+    failed."""
+    return {q for f, quals in files.items()
+            if f in text or os.path.basename(f) in text for q in quals}
+
+
+# How one criterion's tests came out in `run_criteria`.
+PASSED, FAILED, NOT_RUN, NO_TEST = "passed", "failed", "not run", "no test"
+
+
+def run_criteria(root: str, quals, on_log=None) -> dict:
+    """Run the tests of these criteria, and only those: each method's tagged
+    files, by its `run.<method>` command with the files as arguments.
+    Returns {"results": {qual: PASSED | FAILED | NOT_RUN | NO_TEST},
+    "missing": [the methods with no run command], "output": the failures,
+    "log": the whole output, kept only when something failed}.
+
+    A failed run names the criteria whose files its failures mention; when
+    it names none, every criterion it ran failed. `on_log` is told the log
+    before the first run starts."""
+    cfg = read_config(root)
+    reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
+    defined = extract_methods(os.path.join(root, REQ_REL))
+    paths, commands = method_paths(cfg), run_commands(cfg)
+    tags = scan(root, [d for ds in paths.values() for d in ds])
+    runs: dict = {}                 # method -> {file: {qual, ...}}
+    results = {q: NO_TEST for q in quals}
+    for c in counted(root, reqs, defined, paths, tags):
+        qual = f"{c.tag.rid}/{c.tag.acid}"
+        if qual in results:
+            runs.setdefault(c.methods[0], {}).setdefault(c.tag.file, set()).add(qual)
+            results[qual] = PASSED
+    log, failed = "", []
+    for method, files in sorted(runs.items()):
+        if method not in commands:
+            for q in set().union(*files.values()):
+                if results[q] != FAILED:
+                    results[q] = NOT_RUN
+            continue
+        if not log:
+            log = new_log()
+            if on_log is not None:
+                on_log(log)
+        cmd = f"{commands[method]} {' '.join(shlex.quote(f) for f in sorted(files))}"
+        with open(log, "a", encoding="utf-8") as fh:
+            fh.write(f"$ {cmd}\n")
+        code, output = _run_logged(root, cmd, log, "a")
+        if code == 0:
+            continue
+        failed.append(output)
+        for q in (named(failure_text(output), files)
+                  or set().union(*files.values())):
+            results[q] = FAILED
+    if log and not failed:
+        os.remove(log)                  # nothing failed: nothing to read
+        log = ""
+    return {"results": results,
+            "missing": sorted(m for m in runs if m not in commands),
+            "output": failures("\n".join(failed)) if failed else "",
+            "log": log}
 
 
 def _sample(ids, limit=8):
@@ -1167,29 +1269,65 @@ def _unreviewed(c: Counted, ac: dict):
         t.file, t.line, req=t.rid, ac=t.acid, methods=ac["methods"], state=state)
 
 
-def _one(root: str, only: str, as_json: bool) -> int:
-    m = _QUAL_RE.fullmatch(only)
+def _one(root: str, only: str, as_json: bool, console) -> int:
+    """`hamilton verify R-nnnn[/ACn]`: those criteria's status, and their
+    tests run -- only theirs, each method's by its `run.<method>`."""
+    m = _SELECT_RE.fullmatch(only)
     if not m:
-        raise UsageError(f"{only!r} is not an acceptance criterion id; give it "
-                         f"as R-nnnn/ACn, e.g. R-0001/AC2")
+        raise UsageError(f"{only!r} is not a requirement or criterion id; give "
+                         f"it as R-nnnn or R-nnnn/ACn, e.g. R-0001 or R-0001/AC2")
     rid, acid = m.groups()
     findings, _w, _n, manual, _nr, _na = run(root, suite=False)
     reqs, _dupes, _malformed = extract(os.path.join(root, REQ_REL))
-    if acid not in reqs.get(rid, {}).get("acs", {}):
+    if rid not in reqs or (acid and acid not in reqs[rid]["acs"]):
         raise UsageError(f"{only} is not declared in {REQ_REL}")
-    mine = [f for f in findings if (f.get("req"), f.get("ac")) == (rid, acid)]
+    acids = [acid] if acid else list(reqs[rid]["acs"])
+    quals = [f"{rid}/{a}" for a in acids]
+    mine = [f for f in findings if f.get("req") == rid and f.get("ac") in acids]
+    if not as_json:
+        console.start_working("Running the tests")
+    started = time.monotonic()
+    ran = run_criteria(root, quals, on_log=None if as_json else (
+        lambda log: console.say(console.paint.dim(follow_hint(log)))))
+    console.stop_working()
+    red = [q for q, r in ran["results"].items() if r in (FAILED, NOT_RUN)]
     if as_json:
-        print(json.dumps({"ok": not mine, "findings": mine,
-                          "manual": [q for q in manual if q == only]}))
-        return 1 if mine else 0
-    from hamilton_core.session.console import Paint, supports_color
-    one = {rid: dict(reqs[rid], acs={acid: reqs[rid]["acs"][acid]})}
-    lines, _other = view(mine, one, manual, Paint(supports_color(sys.stdout)),
-                         tested(root, one))
+        print(json.dumps({"ok": not (mine or red), "findings": mine,
+                          "manual": [q for q in manual if q in quals],
+                          "tests": ran}))
+        return 1 if mine or red else 0
+    from hamilton_core.session.console import Paint, elapsed, supports_color
+    paint = Paint(supports_color(sys.stdout))
+    one = {rid: dict(reqs[rid], acs={a: reqs[rid]["acs"][a] for a in acids})}
+    lines, _other = view(mine, one, manual, paint, tested(root, one))
     for text in lines:
         print(text)
-    print(f"hamilton verify: {only} only -- the suite was not run", file=sys.stderr)
-    return 1 if mine else 0
+    for text in _tests_report(ran, elapsed(time.monotonic() - started), paint):
+        print(text)
+    return 1 if mine or red else 0
+
+
+def _tests_report(ran: dict, took: str, paint) -> list:
+    """How the criteria's own tests came out: what failed, with its
+    failures, and which method has no command to run its tests by."""
+    results = ran["results"]
+    failed = [q for q, r in results.items() if r == FAILED]
+    passed = [q for q, r in results.items() if r == PASSED]
+    out = [""]
+    if failed:
+        where = f" -- full output: {ran['log']}" if ran["log"] else ""
+        out.append(f"Tests {paint.red('✗')} {', '.join(failed)} failed ({took}){where}")
+        out += ["", ran["output"]]
+    elif passed:
+        out.append(f"Tests {paint.green('✓')} passed ({took})")
+    elif not ran["missing"]:
+        out.append("Tests: none tagged yet, nothing to run")
+    for method in ran["missing"]:
+        out.append(f"Tests {paint.yellow('?')} not run for [{method}]: {CONFIG_REL} "
+                   f"has no {RUN_PREFIX}{method}. Set it to a command that runs "
+                   f"the test files given to it as arguments, e.g. "
+                   f"'{RUN_PREFIX}{method}=npx playwright test'.")
+    return out
 
 
 # How a criterion reads in the human view, decided by the worst finding for
@@ -1243,14 +1381,14 @@ def view(findings: list, reqs: dict, manual: list, paint,
     return lines, other
 
 
-_QUAL_RE = re.compile(r"(R-\d{4})/(AC\d+)")
+_SELECT_RE = re.compile(r"(R-\d{4})(?:/(AC\d+))?")
 
 
 def main(as_json: bool = False, suite_output: bool = False,
          only: str | None = None) -> int:
-    """`only` ("R-nnnn/ACn") narrows the gate to one criterion's status -- its
-    tags and reviews -- without running the suite: the question a step working
-    on that criterion asks, answered in a second. The full gate is the run
+    """`only` ("R-nnnn" or "R-nnnn/ACn") narrows the gate to those criteria:
+    their tags and reviews, and their own tests run instead of the suite --
+    the question a step working on them asks. The full gate is the run
     without it."""
     from hamilton_core.session.console import Console, Paint, elapsed, supports_color
     root = os.getcwd()
@@ -1260,7 +1398,7 @@ def main(as_json: bool = False, suite_output: bool = False,
     started = time.monotonic()
     try:
         if only is not None:
-            return _one(root, only, as_json)
+            return _one(root, only, as_json, console)
         if not (as_json or suite_output):
             console.start_working("Running the tests")
         findings, warnings, notices, manual, n_reqs, n_acs = run(
