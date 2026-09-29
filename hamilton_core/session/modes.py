@@ -25,10 +25,13 @@ class Step:
     """A step offered after an iteration. `instruction` is what the agent is
     sent. A step that `picks_requirements` first lets the engineer choose
     requirements from the tree and describe the change; its instruction is a
-    template with `{requirements}` and `{change}`."""
+    template with `{requirements}` and `{change}`. A step with a `template`
+    works on that scaffold file, and Hamilton scaffolds it first when the
+    project was initialised before it existed."""
     label: str
     instruction: str
     picks_requirements: bool = False
+    template: str = ""
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,11 @@ _SPEC_STEPS: tuple[Step, ...] = (
          "Render `hamilton show` and read it upward: for each parent, ask "
          "whether its children add up to it. Report any gap you find, then "
          "run the review protocol for whatever the engineer decides to fix."),
+    Step("Specify the presentation",
+         "The engineer wants to describe how the software should look and "
+         "feel. Run the `hamilton` skill's Specify presentation workflow on "
+         "`spec/design-guide.md`.",
+         template="spec/design-guide.md"),
 )
 
 
@@ -89,8 +97,9 @@ DESIGN = Mode(
         "current spec state; if the spec is empty and `spec/vision.md` is still "
         "the scaffold, offer to help me draft the vision first, then move on to "
         "the root requirements; otherwise ask whether I want to draft the "
-        "initial spec or modify/extend existing requirements. Then run the "
-        "review protocol."
+        "initial spec, modify/extend existing requirements, or describe the "
+        "presentation in the design guide. Then run the review protocol, or "
+        "the Specify presentation workflow."
     ),
     footer=("hamilton design: session ended (phase 'spec'). Run `hamilton "
             "build` to implement the changes, or `hamilton design` again to "

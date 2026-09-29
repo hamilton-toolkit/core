@@ -8,6 +8,11 @@ rules for any coding agent working here; Hamilton's commands (`hamilton design`,
 - Specification is top-down: ratify the root layer of actor goals before
   decomposing them into child requirements.
 - If a write to `spec/` is denied, stop and report. Never work around it.
+- Presentation — how the software looks and feels — is intent in
+  `spec/design-guide.md`: realised as well as you can, validated by the
+  engineer, never verified. Keep it in its own layer (templates, styles,
+  components), apart from behaviour, and leave existing presentation alone
+  unless a criterion or a change to the guide asks for it.
 - `spec/requirements.md` is the whole model: one `Parent:` tree. A root names an
   `Actor:`; every other requirement names a `Parent:`. Every acceptance
   criterion ends in its verification method, e.g. `[browser]`, defined once

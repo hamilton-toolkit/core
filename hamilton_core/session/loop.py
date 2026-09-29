@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from hamilton_core import guard as _guard
+from hamilton_core import init as _init
 from hamilton_core import phase as _phase
 from hamilton_core import show as _show
 from hamilton_core import status as _status
@@ -90,6 +91,8 @@ def next_step(console: Console, mode: Mode, root: str) -> str | None:
         if answer is None:
             return None
         step = steps[answer]
+        if step.template and _init.ensure(root, step.template):
+            console.note(f"{step.template} scaffolded from the template.")
         if not step.picks_requirements:
             return step.instruction
         instruction = _change_picked_requirements(console, step, root)

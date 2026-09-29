@@ -22,6 +22,7 @@ LAYOUT = {
     "spec/vision.md": "spec/vision.md",
     "spec/actors.md": "spec/actors.md",
     "spec/requirements.md": "spec/requirements.md",
+    "spec/design-guide.md": "spec/design-guide.md",
     "hamilton/phase": ".hamilton/phase",
     "hamilton/config": ".hamilton/config",
     # Agent instructions: AGENTS.md holds the rules, CLAUDE.md points at it.
@@ -29,6 +30,26 @@ LAYOUT = {
     "CLAUDE.md": "CLAUDE.md",
     "claude/settings.json": ".claude/settings.json",
 }
+
+
+def _write(root: str, src: str) -> None:
+    with open(os.path.join(TEMPLATES, src), "r", encoding="utf-8") as fh:
+        body = fh.read()
+    target = os.path.join(root, LAYOUT[src])
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(body)
+
+
+def ensure(root: str, dst: str) -> bool:
+    """Scaffold the one file `dst` if the project does not have it -- a file
+    added to the scaffold after the project was initialised. Returns whether
+    it was written."""
+    if os.path.exists(os.path.join(root, dst)):
+        return False
+    _write(root, next(src for src, d in LAYOUT.items() if d == dst))
+    return True
+
 
 def main(path: str | None = None) -> int:
     root = os.path.abspath(path or ".")
@@ -38,13 +59,8 @@ def main(path: str | None = None) -> int:
               f".hamilton/ by hand to re-scaffold.", file=sys.stderr)
         return 1
 
-    for src, dst in LAYOUT.items():
-        with open(os.path.join(TEMPLATES, src), "r", encoding="utf-8") as fh:
-            body = fh.read()
-        target = os.path.join(root, dst)
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "w", encoding="utf-8") as fh:
-            fh.write(body)
+    for src in LAYOUT:
+        _write(root, src)
 
     print(f"hamilton init: scaffolded {root}\n\n"
           f"Run `hamilton design` to write the specification with an AI agent's "

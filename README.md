@@ -425,9 +425,9 @@ key is reserved for future mutation testing and is not implemented — unset it.
 
 ## The spec files
 
-`hamilton init` writes three files under `spec/`. Each opens with a fenced
-example that `hamilton verify` ignores; you replace it with your own content
-below the fence. `spec/` is writable in spec phase, read-only in build.
+`hamilton init` writes four files under `spec/`. The model files open with a
+fenced example that `hamilton verify` ignores; you replace it with your own
+content below the fence. `spec/` is writable in spec phase, read-only in build.
 
 ### `spec/vision.md`
 
@@ -438,6 +438,18 @@ that are deliberately out of scope, each with why). The non-goals are the
 load-bearing part: they are what lets a reviewer, and a future agent, tell a
 requested change from an unrequested feature. On a brand-new project
 `hamilton design` offers to draft this with you first.
+
+### `spec/design-guide.md`
+
+How the software should look and feel — its presentation, as intent: the
+impression it should make, look and feel, layout on small and large screens,
+components and their states, the tone of copy. Presentation can be validated
+but not verified, so no criterion references the guide and no test asserts
+it: the build agents realise it as well as they can — `hamilton build`
+applies what changed in it since the last build — and you judge the result
+in `hamilton validate`. A mockup or screenshot that says more than words goes
+under `spec/design/` and is named in the guide by path. `hamilton design`
+drafts it with you under *Specify the presentation*.
 
 ### `spec/actors.md`
 

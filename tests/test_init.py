@@ -19,6 +19,7 @@ SCAFFOLD = [
     "spec/vision.md",
     "spec/actors.md",
     "spec/requirements.md",
+    "spec/design-guide.md",
     ".hamilton/phase",
     ".hamilton/config",
     "AGENTS.md",

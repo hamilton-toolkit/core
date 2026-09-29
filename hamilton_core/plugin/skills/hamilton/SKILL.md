@@ -89,8 +89,9 @@ offer to draft the vision first — see **Drafting the vision** below. If the
 engineer declines, write nothing to `spec/vision.md` and go straight to the one
 question below, taking the answer as "initial spec".
 
-**Otherwise**, ask **one** question: are they drafting the initial spec, or
-modifying / extending existing requirements, and what is the change? Wait for the
+**Otherwise**, ask **one** question: are they drafting the initial spec,
+modifying / extending existing requirements, or describing the presentation
+(**Specify presentation**, below) — and what is the change? Wait for the
 answer before Phase 1.
 
 ### Drafting the vision (first run only)
@@ -118,6 +119,37 @@ description, you write the clean version, you ask where it is unclear:
 Keep it short: when the description is solid and nothing needs a question, one
 round is enough. This is orientation, not a spec — do not expand it toward
 requirements.
+
+### Specify presentation
+
+Behaviour can be specified and verified; presentation — how the software
+looks and feels — cannot. It is written as intent in `spec/design-guide.md`,
+which the build agents realise as well as they can and the engineer judges by
+trying the software in `hamilton validate`. `hamilton verify` never reads it.
+
+- **Draft it the way you draft the vision**: ask for a coarse description —
+  the impression the software should make, the look and feel, the layout on
+  small and large screens, recurring components, the tone of copy — then
+  write the clean version into the guide's sections and ask where it is
+  unclear, one focused question at a time. Show the full draft, or the
+  changed passages before and after, and write only on confirmation.
+- **Intent, not measurements.** "Calm, generous white space, one accent
+  colour" is a guide; a pixel grid nobody asked for is not. Keep what the
+  engineer said, and name the few properties that matter most.
+- **References.** A mockup, a screenshot, a logo or a palette goes under
+  `spec/design/` and is named in the guide by path —
+  `spec/design/home.png`, and what to take from it. Ask the engineer to put
+  the files there; you cannot make them up.
+- **Never behaviour.** What an actor can do or observe — a button that
+  subscribes, an error that is shown — is a requirement. If the engineer
+  describes one, say so, and take it through the review protocol.
+- **Never referenced from the model.** No Statement or AC names
+  `spec/design-guide.md` or a file under `spec/design/`: that would make it
+  part of the criterion and of every review of its tests, which is exactly
+  what presentation is not.
+- **Changing it has a consequence**: the next `hamilton build` realises the
+  changed passages in the presentation, and nothing else. Say so in the
+  summary.
 
 ### From vision to requirements
 
@@ -213,13 +245,14 @@ observes, never by what is cheapest to test:
 - a calculation or rule without I/O -> `unit`;
 - data crossing to an external system -> `http`, with the stub's received calls
   asserted;
-- a subjective quality (looks, feel) -> first make it checkable, e.g. a
-  screenshot compared against an approved reference kept in `spec/`; `manual`
-  only as a last resort. Never "any page matches spec/<reference>": no bounded
-  test proves it, so the build keeps writing ever larger tests around it.
-  Name the properties the reference fixes — the palette, the fonts, a
-  breakpoint — one AC each. `manual` is reserved: it needs no definition and no
-  test, and `hamilton verify` lists it as not machine-verified.
+- how it looks or reads (layout, colour, type, imagery, tone) -> **not an
+  AC**. Presentation is intent, written in `spec/design-guide.md` (see
+  **Specify presentation**) and validated by the engineer in `hamilton
+  validate` — never verified. An AC holds what the actor can do and observe:
+  that the page offers a "Subscribe" button, not what colour it is. A
+  criterion a person must judge that is *not* presentation is `manual`, as a
+  last resort; `manual` is reserved: it needs no definition and no test, and
+  `hamilton verify` lists it as not machine-verified.
 - **every root needs at least one AC with an actor-facing method.** A root
   whose ACs are all `unit` proves the parts, never the goal — `hamilton verify`
   warns `root-unit-only`. If no actor-facing method fits, ask the engineer.
