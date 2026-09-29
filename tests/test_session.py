@@ -241,6 +241,37 @@ def test_the_adapter_is_closed_even_when_a_turn_raises(tmp_path):
     assert a.closed is True
 
 
+# --- what a mode does between turns ---------------------------------------------
+
+def test_what_after_turn_says_is_sent_instead_of_asking_the_engineer(tmp_path):
+    told = []
+
+    async def after_turn(done):
+        told.append(done)
+        return "the build is green" if len(told) == 1 else None
+
+    a = FakeAdapter([P.AgentText("fixed"), DONE], [P.AgentText("noted"), DONE],
+                    session_ref="s1")
+    c, out = console(FINISH)
+    asyncio.run(L.drive(str(tmp_path), DESIGN, "KICKOFF", a, c, after_turn))
+    assert a.sent == ["KICKOFF", "the build is green"]
+    assert told == [True, True]
+    assert out.getvalue().count("Iteration complete") == 1
+
+
+def test_the_agents_rows_are_drawn_again_after_after_turn(tmp_path):
+    c, _ = console("\n")
+    c.follow(lambda: ())
+
+    async def after_turn(done):
+        c.follow(lambda: ("a build row",))     # what a build does
+        return None
+
+    asyncio.run(L.drive(str(tmp_path), DESIGN, "KICKOFF",
+                        FakeAdapter([P.AgentText("x")]), c, after_turn))
+    assert c._activity() == ()
+
+
 # --- changing specific requirements ---------------------------------------------
 
 def test_picked_requirements_and_the_change_are_sent_to_the_agent(tmp_path):

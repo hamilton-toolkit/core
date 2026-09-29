@@ -1,4 +1,5 @@
-"""`hamilton design` / `hamilton reverse` -- the session driver. The rendering
+"""`hamilton design` / `hamilton reverse` / `hamilton validate` -- the session
+driver. The rendering
 it drives lives in `console`.
 
 Hamilton sets `.hamilton/phase`, prints a status banner, then drives the agent
@@ -12,7 +13,9 @@ what makes three things possible:
   * an interrupted session is not lost -> every turn boundary writes a
     `Checkpoint`, and the next launch offers to resume it.
 
-This drives the spec-phase modes. Build is not a session: `hamilton build` is
+This drives the modes. A mode that needs more than the conversation --
+`hamilton validate` runs the build between turns -- brings it as `Extras`.
+Build is not a session: `hamilton build` is
 a loop Hamilton runs itself (`hamilton_core.build`), because what comes next
 there follows from `hamilton verify`, not from an agent's judgement.
 
@@ -34,6 +37,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
+from typing import Awaitable, Callable
 
 from hamilton_core import guard as _guard
 from hamilton_core import phase as _phase
@@ -55,6 +60,20 @@ RESUME_KICKOFF = (
     "one or two lines where we had got to, and carry on from there -- do not "
     "restart the workflow from the top."
 )
+
+
+@dataclass
+class Extras:
+    """What a mode adds to its session besides the conversation.
+
+    `tools` are offered to the agent beside `ask_engineer`. `after_turn` is
+    awaited after every turn, told whether the agent closed an iteration; the
+    text it returns is sent to the agent next, instead of asking the engineer.
+    `at_end` is awaited once the engineer has finished, and returns the exit
+    code, or None to keep the session's own."""
+    tools: tuple[P.Tool, ...] = ()
+    after_turn: Callable[[bool], Awaitable[str | None]] | None = None
+    at_end: Callable[[], Awaitable[int | None]] | None = None
 
 
 def next_step(console: Console, mode: Mode, root: str) -> str | None:
@@ -98,13 +117,14 @@ def _change_picked_requirements(console: Console, step: Step, root: str) -> str 
 
 
 async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
-                console: Console) -> int:
+                console: Console, after_turn=None) -> int:
     """Run turns until the engineer finishes or ends the session.
 
     A `PhaseDone` is an *iteration* boundary, not the end: the agent has given
     its summary, and the engineer is offered the next step with the session --
     and everything the agent has already read and ratified -- still live.
-    Checkpoints after every turn; that is the resume path.
+    Checkpoints after every turn; that is the resume path. `after_turn` is
+    `Extras.after_turn`.
     """
     agent = Agent(adapter)
     console.follow(agent.activity)
@@ -149,6 +169,14 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
                 cp.save(root)
                 break
 
+            if after_turn is not None:
+                cp.save(root)
+                follow_up = await after_turn(done)
+                console.follow(agent.activity)  # what it ran drew its own rows
+                if follow_up is not None:
+                    text = follow_up
+                    continue
+
             if done:
                 text = await asyncio.to_thread(next_step, console, mode, root)
                 cp.done = text is None  # only a chosen finish completes it
@@ -167,8 +195,14 @@ async def drive(root: str, mode: Mode, kickoff: str, adapter: P.AgentAdapter,
 
 
 def main(mode: Mode) -> int:
-    root = os.getcwd()
-    console = Console()
+    return session(os.getcwd(), mode, Console())
+
+
+def session(root: str, mode: Mode, console: Console,
+            extras: Callable[[], Extras] | None = None) -> int:
+    """Launch `mode` in `root`: the checks, the phase, the banner, the
+    resume offer, then the turns. `extras` is called once the checks have
+    passed, for what the mode adds."""
 
     def refuse(message: str, rc: int = 1) -> int:
         console.error(f"{mode.name}: {message}")
@@ -204,14 +238,24 @@ def main(mode: Mode) -> int:
     console.note(f"hamilton {mode.name}: phase is '{mode.phase}'; "
                  f"{'resumed' if resume_ref else 'new'} session.")
 
+    more = extras() if extras else Extras()
     adapter = ClaudeSdkAdapter(
         root=root,
         answerer=console.ask,
         write_policy=lambda target: _guard.decide(root, target),
         resume_ref=resume_ref,
+        tools=more.tools,
     )
+
+    async def run() -> int:
+        rc = await drive(root, mode, kickoff, adapter, console, more.after_turn)
+        if rc == 0 and more.at_end is not None:
+            ended = await more.at_end()
+            rc = rc if ended is None else ended
+        return rc
+
     try:
-        rc = asyncio.run(drive(root, mode, kickoff, adapter, console))
+        rc = asyncio.run(run())
     except KeyboardInterrupt:
         console.error("interrupted -- the checkpoint is kept, "
                       f"`hamilton {mode.name}` will offer to resume.")

@@ -49,8 +49,15 @@ point that it deserved to be taken as seriously as any other kind.
    method names. Reword a criterion or edit its test and it goes red again
    until the test is reviewed against the current wording.
 
+5. **You validate.** Verified is not the same as right. `hamilton run` starts
+   the software, and in a `hamilton validate` session you try it by hand and
+   report what you find. A presentation problem is fixed on the spot; a bug
+   gets a test tagged to the criterion it breaks, then the fix; a gap in the
+   spec is specified in the same session, then built, and you carry on.
+
 The acceptance criteria are yours. The rigorous tests that bind to them are the
-agent's. `hamilton verify` is what keeps the two honest.
+agent's. `hamilton verify` is what keeps the two honest, and `hamilton
+validate` is where you check that they were the right ones.
 
 ## The two phases
 
@@ -75,6 +82,12 @@ Hamilton drives itself (below). Either way the phase is fixed while it runs:
 it exports `HAMILTON_SESSION`, and both refuse to start when that is already
 set, so an agent can't relaunch itself into the other phase. Writes to
 read-only paths are refused as fast feedback.
+
+**`hamilton validate`** runs in build phase: it fixes what you find in the
+running software. When a finding needs the spec changed, it asks you, and on
+your word Hamilton switches the phase to spec for that change — the same
+conversation runs the spec review protocol — then back to build, and runs the
+build before you go on.
 
 None of this is unbypassable — unset the variable, edit the phase file by hand,
 or run an agent directly and you are outside it. It stops drift, not a
@@ -287,6 +300,26 @@ tagged test; `1` on any finding; `2` if it cannot run at all. It never writes
 anything. Wire the same command into your pipeline — that CI run, outside the
 agent, is the real gate.
 
+### 5. Try it, and validate
+
+```
+$ hamilton run         # in a second terminal: start the whole software (start_command)
+$ hamilton validate    # build phase: report what you find while you try it
+```
+
+Each finding is one of three kinds. **Presentation** — how it looks or reads
+— is fixed in the session; it is validated, never verified. A **bug** — the
+spec is right, the code is not — gets a test tagged to the criterion it
+breaks, failing first, then the fix. A **spec that is wrong or incomplete**
+is changed in the same session: the agent names the missing or wrong
+requirement and asks; on your word the phase switches to spec, the change
+goes through the review protocol one item at a time, and the phase switches
+back. After any turn that leaves the gate with findings — a spec change, a
+new test — Hamilton runs the build before you go on; a presentation fix costs
+none. A session that changed the project ends with one more build, so the
+suite has seen everything. `validate` starts only from a green gate and a
+`start_command`.
+
 ### Following along without an agent
 
 Every step `hamilton design` / `hamilton build` drive can be done by hand to
@@ -354,6 +387,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton build` | sets **build** | Get the gate green, as a loop Hamilton drives rather than a session an agent drives: `hamilton verify` is the work list; a planner scaffolds each new surface as a contract; a writer per criterion writes its tests against it, in a file of their own (and may read the code); a reviewer that sees only the spec and the criterion's tests, judged together, lists what they cover and what is wrong; revisions are re-reviewed against that list only, until it is settled; then the implementation is written against the tests. Each step names itself and shows what is running. The one question it asks is a clarification: a criterion the spec cannot settle, answered by you and written into the spec on your approval. Without a terminal it reports and exits non-zero. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
 | `hamilton verify [R-nnnn[/ACn]] [--no-suite] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — and under it each test that verifies it, by name and `file:lines`, then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton verify R-nnnn/ACn` (or `R-nnnn`, for all of a requirement's criteria) shows those criteria's status and runs only their tests, each method's files by its `run.<method>` command, instead of the suite — how an agent in `hamilton build` runs the tests it works on, without working out the project's runners itself. A failure is put down to the criterion whose file it names. `--no-suite` runs no tests at all — the spec, the tags and the reviews only, in a second — which is what a spec session checks. Writes nothing to the project. This is the gate — run it in CI. |
+| `hamilton validate` | sets **build** | Run a validation session: you try the software `hamilton run` keeps running and report findings. Presentation is fixed in the session; a bug gets a test tagged to its criterion, failing first, then the fix; a wrong or missing requirement is specified in the same conversation — the phase switches to spec on your word and back when it is written. After each turn that leaves `hamilton verify --no-suite` with findings, Hamilton runs the build loop before you go on; a session that changed the project ends with one more. Refuses without a `start_command` or on a red gate. Offers to resume an unfinished validation session. |
 | `hamilton run` | ignores phase | Start the whole software for you to try it by hand: `start_command` from `.hamilton/config` (a dev server, a compose stack, the app), in the foreground, from the project root, until Ctrl+C. `hamilton build` sets the key when it is missing. Writes nothing. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton show [ID] [--json]` | read-only | Without an id, the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. On a terminal it is interactive: ↑/↓ move, ←/→ fold or unfold, Enter opens the selected requirement in full; without one it is printed. With an id, print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |

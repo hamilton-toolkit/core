@@ -999,20 +999,10 @@ def main() -> int:
         State.clear(root)
         state = State()
 
-    from hamilton_core.session.claude_sdk_adapter import (ClaudeSdkJudge,
-                                                          ClaudeSdkWorker)
-    # The model and effort of each step, as the engineer wrote them in
-    # `model.<step>` and `effort.<step>`: what a name means, and the default
-    # for a step left unset, is the adapter's business.
     try:
-        cfg = _verify.read_config(root)
+        worker, judge = agents(root)
     except UsageError as exc:
         return refuse(str(exc), 2)
-    models = _verify.keyed(cfg, MODEL_PREFIX)
-    efforts = _verify.keyed(cfg, EFFORT_PREFIX)
-    worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target),
-                             models, efforts)
-    judge = ClaudeSdkJudge(models.get("review"), efforts.get("review"))
     console.start_working(STEPS["check"])
     try:
         return asyncio.run(build(root, worker, judge, console, state))
@@ -1028,6 +1018,23 @@ def main() -> int:
         return 1
     finally:
         console.stop_working()
+
+
+def agents(root: str) -> tuple[P.Worker, P.Judge]:
+    """The worker and the judge a build runs its steps with. Raises
+    UsageError when there is no `.hamilton/config` to read them from."""
+    from hamilton_core.session.claude_sdk_adapter import (ClaudeSdkJudge,
+                                                          ClaudeSdkWorker)
+    # The model and effort of each step, as the engineer wrote them in
+    # `model.<step>` and `effort.<step>`: what a name means, and the default
+    # for a step left unset, is the adapter's business.
+    cfg = _verify.read_config(root)
+    models = _verify.keyed(cfg, MODEL_PREFIX)
+    efforts = _verify.keyed(cfg, EFFORT_PREFIX)
+    worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target),
+                             models, efforts)
+    judge = ClaudeSdkJudge(models.get("review"), efforts.get("review"))
+    return worker, judge
 
 
 def _keep(console: Console, state: State) -> bool:

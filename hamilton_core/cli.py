@@ -74,6 +74,9 @@ def main(argv=None) -> int:
     if args.cmd == "build":
         from hamilton_core import build as _build
         return _build.main()
+    if args.cmd == "validate":
+        from hamilton_core import validate as _validate
+        return _validate.main()
     if args.cmd in MODES:
         return _session().main(MODES[args.cmd])
     if args.cmd == "run":

@@ -44,6 +44,19 @@ class Question:
 # sent" lives: nothing reaches the model until this returns.
 Answerer = Callable[[Question], str]
 
+@dataclass(frozen=True)
+class Tool:
+    """A tool a mode offers its session's agent besides `ask_engineer` --
+    what `hamilton validate` asks a spec change through, say. `params` maps
+    each argument's name to its type; `run` is given the arguments and
+    returns what the agent is told. An adapter wraps it in its vendor's tool
+    mechanism; nothing else here knows that mechanism."""
+    name: str
+    description: str
+    params: dict
+    run: Callable[[dict], Awaitable[str]]
+
+
 # Given a path a tool wants to write, return None to allow or the denial
 # message. `hamilton_core.guard.decide` is the implementation.
 WritePolicy = Callable[[str], "str | None"]
