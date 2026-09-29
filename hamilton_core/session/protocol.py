@@ -201,14 +201,16 @@ class AgentAdapter(Protocol):
 class Judge(Protocol):
     """One prompt in, one answer out, from a fresh session with no tools, no
     project settings and nothing to resume. `hamilton build`'s review step
-    asks it; what it can judge is exactly what the prompt holds.
+    asks it, and so does its check of a coding step's presentation (`drift`);
+    what it can judge is exactly what the prompt holds.
 
-    `tokens` is what it has used so far, under the step `review`;
-    `on_tokens` is told what this one answer used."""
+    `tokens` is what it has used so far, per `step`; `on_tokens` is told
+    what this one answer used."""
 
     tokens: dict
 
-    async def ask(self, prompt: str, on_tokens: OnTokens | None = None) -> str:
+    async def ask(self, prompt: str, on_tokens: OnTokens | None = None,
+                  step: str = "review") -> str:
         ...
 
 

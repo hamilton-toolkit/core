@@ -105,6 +105,16 @@ def test_a_spec_change_that_leaves_nothing_to_build_says_so(tmp_path):
     assert "nothing to build" in told and judge.asked == []
 
 
+def test_a_changed_design_guide_is_built_though_the_gate_is_green(tmp_path):
+    d = project(tmp_path)
+    phase.write(d, "spec")
+    with open(f"{d}/spec/design-guide.md", "w") as fh:
+        fh.write("# Design guide\n\nCalm, one accent colour.\n")
+    v, worker, judge, _ = validation(d)
+    told = asyncio.run(v.after_turn(True))
+    assert worker.of("present") and "gate is green" in told
+
+
 # --- a bug, and a presentation fix ---------------------------------------------------
 
 def test_a_new_test_is_built_before_the_engineer_goes_on(tmp_path):

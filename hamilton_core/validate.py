@@ -16,7 +16,8 @@ finding the way the `hamilton` skill's Validate workflow says:
 
 What comes after a turn follows from `hamilton verify`, not from the agent:
 when the gate without the suite has findings -- a spec change, a new test --
-Hamilton runs the build loop in process before the engineer goes on, and
+or the design guide changed, Hamilton runs the build loop in process before
+the engineer goes on, and
 tells the agent how it went. A presentation fix leaves the gate as it was
 and costs no build. When the engineer finishes, a session that changed the
 project since the last build ends with one more, so the suite has checked
@@ -31,6 +32,7 @@ import asyncio
 import os
 
 from hamilton_core import build as _build
+from hamilton_core import design as _design
 from hamilton_core import phase as _phase
 from hamilton_core import tree as _tree
 from hamilton_core import verify as _verify
@@ -109,7 +111,7 @@ class Validation:
             _phase.write(self.root, "build")
             said = "The spec change is done and the phase is 'build' again. "
         findings = await asyncio.to_thread(self._gate)
-        if not findings:
+        if not findings and not _design.changed(self.root):
             if not said:
                 return None
             return (said + "It leaves nothing to build. Tell the engineer in a "

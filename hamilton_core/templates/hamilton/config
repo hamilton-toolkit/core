@@ -22,13 +22,15 @@
 #               the `paths.*` and `run.*` keys and `start_command` are the
 #               keys the agent MAY edit during a `build` session.
 # model.<step>  which model a kind of build work runs on: `plan`, `tests`,
-#               `review`, `code` or `clarify`, e.g. `model.code=opus`. Unset,
-#               test writing and review run on a mid-tier model and the rest
-#               on the agent's default.
+#               `review`, `code`, `present` or `clarify`, e.g.
+#               `model.code=opus`. Unset, test writing and review run on a
+#               mid-tier model and the rest on the agent's default. The check
+#               of a coding step's presentation runs on the reviewer's model.
 # effort.<step>  how hard a kind of build work thinks: `low`, `medium`,
 #               `high`, `xhigh` or `max`, e.g. `effort.code=high`. Unset,
-#               planning, test writing and coding run at `medium`, the rest
-#               at the agent's default; the reviewer does not think at all.
+#               planning, test writing, coding and realising the design guide
+#               run at `medium`, the rest at the agent's default; the reviewer
+#               does not think at all.
 # mutation_command  RESERVED. Per-language mutation testing (see concept.md
 #               5.3). Not implemented yet -- if you set it, `hamilton verify`
 #               prints a notice every run and does NOT run it. Leave it unset.

@@ -354,7 +354,8 @@ DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
 # much. Left to itself a test writer spends most of its output thinking --
 # twenty thousand tokens before a single edit, at times -- and a planner
 # three quarters of it.
-DEFAULT_EFFORTS = {"plan": "medium", "tests": "medium", "code": "medium"}
+DEFAULT_EFFORTS = {"plan": "medium", "tests": "medium", "code": "medium",
+                   "present": "medium"}
 
 # Every build agent caches its prompt for 5 minutes, not the hour a
 # subscription defaults to: a 1-hour cache write costs twice the input, a
@@ -426,7 +427,8 @@ class ClaudeSdkJudge:
             env=CACHE,
         )
 
-    async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None) -> str:
+    async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None,
+                  step: str = "review") -> str:
         texts, error = [], None
         with tempfile.TemporaryDirectory(prefix="hamilton-review-") as cwd:
             async for msg in query(prompt=prompt, options=self._options(cwd)):
@@ -434,7 +436,7 @@ class ClaudeSdkJudge:
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
                 elif isinstance(msg, ResultMessage):
                     spent = _spent(msg)
-                    self.tokens["review"] = self.tokens.get("review", 0) + spent
+                    self.tokens[step] = self.tokens.get(step, 0) + spent
                     if on_tokens:
                         on_tokens(spent)
                     if msg.is_error:

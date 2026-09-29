@@ -63,6 +63,16 @@ $config
    and `start_command` in `.hamilton/config`, and nothing else under
    `.hamilton/`.
 
+## Presentation
+
+$design
+
+A scaffolded page or screen keeps behaviour and presentation apart: markup,
+styles and components in the presentation layer, logic outside it, so a
+change to the looks never has to touch behaviour and the reverse. Where the
+project already has a presentation layer, put the scaffold's presentation
+there, and change none of what exists.
+
 You may not write to `$requirements` or anything else under `spec/` -- the
 phase gate refuses it, and a criterion that seems wrong is not yours to fix.
 

@@ -40,6 +40,20 @@ else broke.
    -- the scratch file or extract that is not the criterion's own test -- or
    its tag.
 
+## Presentation
+
+$design
+
+- **Keep behaviour and presentation apart.** Logic lives outside the
+  presentation layer (templates, styles, components); the presentation holds
+  no rules. A change to one should never have to touch the other.
+- **New behaviour gets presentation that follows the guide** -- and looks
+  like its neighbours where the guide is silent.
+- **Leave the existing presentation alone** unless a criterion you implement
+  needs it changed. The engineer has judged it by trying the software; a
+  reviewer checks this step's diff for presentation changes no criterion asks
+  for, and sends them back.
+
 ## What you may change, and what you may not
 
 - **The implementation** is yours: it is the repair surface.

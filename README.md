@@ -177,8 +177,9 @@ calls an agent only for the parts that need one:
 - **Each kind of work runs on its own model.** Writing and reviewing tests —
   many small, tightly briefed tasks — run on a mid-tier model; planning and
   coding on the agent's default. `model.<step>` in `.hamilton/config`
-  (`plan`, `tests`, `review`, `code`, `clarify`) overrides either. Test
-  writers, coders and the planner think at medium effort and reviewers not at all;
+  (`plan`, `tests`, `review`, `code`, `present`, `clarify`) overrides either.
+  Test writers, coders, the planner and the design step think at medium
+  effort and reviewers not at all;
   `effort.<step>` overrides it. Each finished task reports its tokens beside
   its time.
 - **You are asked one kind of question.** When a criterion cannot be settled
@@ -201,6 +202,15 @@ calls an agent only for the parts that need one:
   suite runs again once they pass. The screen shows only a spinner and the
   outcome; the suite's own output goes to a log named as it starts —
   `tail -f` it in another terminal to watch.
+- **Behaviour and presentation are kept apart.** Every step keeps
+  presentation — templates, styles, components — in its own layer, follows
+  `spec/design-guide.md` wherever it touches it, and leaves the existing
+  presentation alone unless a criterion asks otherwise. A reviewer judges each
+  coding step's diff for presentation it changed unasked; that goes back to
+  the coder once, and what it keeps, with its reason, is listed at the end of
+  the run. Once the gate is green, a change to the design guide since it was
+  last realised is realised on its own — only what changed — and the suite
+  checks it. `.hamilton/presented` records the guide last realised; commit it.
 - **Every run ends with where its time and tokens went:**
   `Time 31m12s · checking 9m40s (3×, 1 with the suite) · planning 1m05s ·
   writing tests 8m30s · reviewing 6m10s · coding 5m47s · waiting for you 20s`,
@@ -235,7 +245,7 @@ Run its own test suite before you trust a checkout, especially one you have
 been editing:
 
 ```
-$ python -m pytest -q          # expects 490 passing
+$ python -m pytest -q          # expects 567 passing
 ```
 
 ### 2. Link it into a separate test project
