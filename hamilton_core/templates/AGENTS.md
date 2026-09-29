@@ -19,7 +19,8 @@ rules for any coding agent working here; Hamilton's commands (`hamilton design`,
   which only the reviewer in `hamilton build` writes, when it passes the test. A
   change to the AC or to the test clears it. Never write or edit a suffix.
 - `.hamilton/` is read-only in build phase, except `.hamilton/config`: choosing
-  the test framework and layout (`test_command`, `paths.<method>`) is a
+  the test framework, the layout and how the software starts
+  (`test_command`, `paths.<method>`, `run.<method>`, `start_command`) is a
   build-time call and yours to make. Do not touch any other key there.
 - `hamilton verify` passes before a merge request opens.
 - A correct failing test is never edited to pass.

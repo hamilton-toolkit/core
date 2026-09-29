@@ -9,6 +9,7 @@ from hamilton_core import verify as _verify
 from hamilton_core import guard as _guard
 from hamilton_core import init as _init
 from hamilton_core import show as _show
+from hamilton_core import start as _start
 from hamilton_core import status as _status
 from hamilton_core.session.modes import MODES
 
@@ -48,6 +49,9 @@ def main(argv=None) -> int:
     for mode in MODES.values():
         sub.add_parser(mode.name, help=mode.help)
 
+    sub.add_parser("run", help="start the whole software (start_command in "
+                   ".hamilton/config) for you to try it by hand")
+
     sub.add_parser("status", help="print a read-only project snapshot (phase, "
                    "counts, coverage, recent spec changes)")
 
@@ -72,6 +76,8 @@ def main(argv=None) -> int:
         return _build.main()
     if args.cmd in MODES:
         return _session().main(MODES[args.cmd])
+    if args.cmd == "run":
+        return _start.main()
     if args.cmd == "status":
         return _status.main()
     if args.cmd == "show":

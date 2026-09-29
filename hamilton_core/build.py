@@ -88,9 +88,10 @@ SPEC_RULES = frozenset({"malformed", "dangling-ref", "orphan-requirement",
                         "cyclic-parent", "no-method", "unknown-method",
                         "missing-reference"})
 CONFIG_RULES = frozenset({"no-test-command", "no-method-paths", "retired-config"})
-# Not the gate's: what lets a step run one criterion's tests. The plan step
-# sets it, and nothing needs coding for it.
-RUN_RULES = frozenset({"no-run-command"})
+# Not the gate's: what lets a step run one criterion's tests, and what lets
+# `hamilton run` start the software. The plan step sets them, and nothing
+# needs coding for them.
+RUN_RULES = frozenset({"no-run-command", "no-start-command"})
 COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
 # What the coding step fixes without a test being written: a failing suite,
 # and a copied test, which it deletes.
@@ -534,8 +535,10 @@ class Run:
         if findings and not self.runs_asked:
             # With work to do anyway, a missing `run.<method>` joins it --
             # once a run: without one, every step works out the project's
-            # runners for itself.
-            findings += _verify.missing_runs(self.root)
+            # runners for itself. So does a missing `start_command`, without
+            # which the engineer cannot try the software.
+            findings += (_verify.missing_runs(self.root)
+                         + _verify.missing_start(self.root))
             self.runs_asked = True
         self.checks += 1
         self.suites += suite

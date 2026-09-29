@@ -63,8 +63,9 @@ have not finished setting.
 
 **Build phase** — the agent writes the code and the tests. It cannot edit
 `spec/`, `.claude/`, or `AGENTS.md`, and of `.hamilton/` only `config` — and
-there only `test_command` / `paths.<method>` / `run.<method>`, because picking the test
-framework and layout is a build-time call. It cannot quietly change a requirement to
+there only `test_command` / `paths.<method>` / `run.<method>` / `start_command`,
+because picking the test framework, the layout and how the software starts is a
+build-time call. It cannot quietly change a requirement to
 match what it built, or rewrite its own rules.
 
 **`hamilton design`** (spec) and **`hamilton build`** (build) each write the
@@ -158,6 +159,8 @@ calls an agent only for the parts that need one:
 - **Each method has a command that runs one criterion's tests**
   (`run.<method>`). When one is missing and a run has work to do, the
   planner sets it first, so no step has to work out the project's runners.
+  It sets `start_command` the same way: what `hamilton run` starts for you
+  to try the software by hand.
 - **Each kind of work runs on its own model.** Writing and reviewing tests —
   many small, tightly briefed tasks — run on a mid-tier model; planning and
   coding on the agent's default. `model.<step>` in `.hamilton/config`
@@ -351,6 +354,7 @@ requirements; extend an existing spec with `hamilton design`.
 | `hamilton build` | sets **build** | Get the gate green, as a loop Hamilton drives rather than a session an agent drives: `hamilton verify` is the work list; a planner scaffolds each new surface as a contract; a writer per criterion writes its tests against it, in a file of their own (and may read the code); a reviewer that sees only the spec and the criterion's tests, judged together, lists what they cover and what is wrong; revisions are re-reviewed against that list only, until it is settled; then the implementation is written against the tests. Each step names itself and shows what is running. The one question it asks is a clarification: a criterion the spec cannot settle, answered by you and written into the spec on your approval. Without a terminal it reports and exits non-zero. |
 | `hamilton reverse` | sets **spec** | Brownfield: like `hamilton design`, but the kickoff has the agent derive a first spec from the existing code and its git history, module by module. Refuses if `spec/requirements.md` already has requirements. |
 | `hamilton verify [R-nnnn[/ACn]] [--no-suite] [--json] [--suite-output]` | ignores phase | The verification gate: run `test_command`, check every AC has a passing `@covers` test under the paths of its verification method and that every such tag carries a current review suffix, validate the requirement tree, list `manual` criteria. It reads as the spec: each requirement, then each criterion with its mark — `✓` fine, `✗` no usable test, `?` not reviewed, `○` verified by a person — and under it each test that verifies it, by name and `file:lines`, then whether the suite passed, then anything about no one criterion. The suite's own output is kept out of the way: it goes, as it runs, into a temp file that is named on a failure (and deleted when green); `--suite-output` streams it instead, for CI logs. `--json` carries every finding in full. `hamilton verify R-nnnn/ACn` (or `R-nnnn`, for all of a requirement's criteria) shows those criteria's status and runs only their tests, each method's files by its `run.<method>` command, instead of the suite — how an agent in `hamilton build` runs the tests it works on, without working out the project's runners itself. A failure is put down to the criterion whose file it names. `--no-suite` runs no tests at all — the spec, the tags and the reviews only, in a second — which is what a spec session checks. Writes nothing to the project. This is the gate — run it in CI. |
+| `hamilton run` | ignores phase | Start the whole software for you to try it by hand: `start_command` from `.hamilton/config` (a dev server, a compose stack, the app), in the foreground, from the project root, until Ctrl+C. `hamilton build` sets the key when it is missing. Writes nothing. |
 | `hamilton status` | read-only | Print the project snapshot a session shows as its banner: phase, requirement and coverage counts, and the last three `spec/` changes. |
 | `hamilton show [ID] [--json]` | read-only | Without an id, the whole requirement tree with a dotted path computed at render time and a per-requirement coverage mark. On a terminal it is interactive: ↑/↓ move, ←/→ fold or unfold, Enter opens the selected requirement in full; without one it is printed. With an id, print one entity in full and what refers to it. `R-nnnn`: path by title, `Actor:`, statement, criteria with their method, coverage status and the file holding each `@covers` tag, child requirements. `A-nnnn`: description and the requirements that name it. |
 

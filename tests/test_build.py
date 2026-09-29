@@ -402,7 +402,7 @@ def test_a_test_that_only_needed_judging_costs_no_implementation(tmp_path):
     the whole job: there is nothing to plan and nothing to build."""
     d = project(tmp_path)
     with open(f"{d}/.hamilton/config", "a") as fh:
-        fh.write("run.http=true\nrun.unit=true\n")
+        fh.write("run.http=true\nrun.unit=true\nstart_command=true\n")
     stamp(d)
     body = open(f"{d}/tests/covers.js").read()
     open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
@@ -425,6 +425,26 @@ def test_a_missing_run_command_goes_to_the_planner_once_and_needs_no_coding(tmp_
     assert "has no run.http" in plan
     assert worker.of("implement") == []
     assert "▸ Planning — the config" in out.getvalue()
+
+
+def test_a_missing_start_command_goes_to_the_planner_with_the_rest(tmp_path):
+    """So that `hamilton run` can start the software for the engineer."""
+    d = project(tmp_path)
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write("run.http=true\nrun.unit=true\n")
+    stamp(d)
+    body = open(f"{d}/tests/covers.js").read()
+    open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    [plan] = worker.of("plan")
+    assert "has no start_command" in plan
+    assert worker.of("implement") == []
+
+
+def test_a_missing_start_command_is_set_aside_like_a_run_command():
+    work = B.route([finding("no-start-command")], skipped=[])
+    assert work.runs and not work.open
 
 
 def test_a_green_gate_is_not_held_up_for_a_run_command(tmp_path):

@@ -1033,3 +1033,12 @@ def test_no_suite_checks_the_spec_and_the_tags_and_runs_nothing(tmp_path):
     assert not os.path.exists(f"{d}/suite-ran") and not os.path.exists(f"{d}/criterion-ran")
     uncovered = copy_fixture("uncovered", tmp_path)
     assert run_verify(uncovered, "--no-suite").returncode == 1
+
+
+def test_a_missing_start_command_is_named_for_the_build_to_set(tmp_path):
+    d = copy_fixture("clean", tmp_path)
+    [f] = C.missing_start(d)
+    assert f["rule"] == "no-start-command"
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write("start_command=npm run dev\n")
+    assert C.missing_start(d) == []

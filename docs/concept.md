@@ -367,8 +367,9 @@ At this scale there is no separate spec MR, and the engineer is the spec author 
 rules the agent is meant to follow — an agent must not relax what constrains it
 (Hamilton writes `.hamilton/phase` itself, as a subprocess, not through a
 hooked tool). The one exception is `.hamilton/config`: which test
-framework runs and where each method's tests live (`test_command`,
-`paths.<method>`, `run.<method>`) are build-time decisions, so the file is writable in `build`. A path hook cannot
+framework runs, where each method's tests live and how the software starts
+(`test_command`, `paths.<method>`, `run.<method>`, `start_command`) are
+build-time decisions, so the file is writable in `build`. A path hook cannot
 lock individual lines, so the whole file is writable there — and visible in the
 config diff a reviewer sees.
 
