@@ -12,7 +12,8 @@ an agent only for the work that needs one.
     tests   one task per criterion, in parallel, each blind to the
             implementation: its brief is all it gets.
     review  Hamilton runs `review` in-process. A reject goes back to a fresh
-            writer with the reviewer's reasons, at most `ROUNDS` times.
+            writer with the reviewer's reasons: a criterion gets `ROUNDS`
+            attempts at its tests, each one reviewed.
     code    one task: make the suite green. Its diff is judged for
             presentation it changed with no criterion asking (`drift`), and
             what is flagged goes back to it once. Then round again.
@@ -25,11 +26,14 @@ running: the step line, the indicator and the rows are what is happening, not
 a guess at it. Nothing asks the engineer anything until the loop **cannot
 proceed** -- a criterion the reviewer cannot judge, a test still rejected
 after its rounds, a suite that stays red -- and then it asks exactly what to
-do about that (`Stop`). Without a terminal it reports and ends instead.
+do about that (`Stop`). Without a terminal it reports and ends instead --
+unless the run is **unattended** (`hamilton build --unattended`): then every
+stop about particular criteria skips them, with the reason recorded for
+`hamilton verify` to report, and the run carries on with the rest.
 
 What a run keeps in `.hamilton/build` is only what re-running cannot work out
-for itself: the criteria the engineer chose to skip, and how many rewrite
-rounds each test has had. Everything else is read back out of `hamilton
+for itself: the criteria skipped (by the engineer, or by an unattended run)
+and why, and how many rewrite rounds each test has had. Everything else is read back out of `hamilton
 check`, which is why an interrupted run needs no resuming -- just run it
 again.
 
@@ -37,7 +41,8 @@ Written against `protocol` alone: the SDK is imported in `main`, so the loop
 itself is driven by fakes in the tests.
 
 Exit: 0 when the gate is green, 1 when it stopped, 2 outside a project or in
-the wrong phase, 130 if interrupted.
+the wrong phase, 3 when everything but the skipped criteria is green (the
+suite included), 130 if interrupted.
 """
 
 from __future__ import annotations
@@ -65,14 +70,14 @@ from hamilton_core.verify import REQ_REL, UsageError
 from hamilton_core.session import protocol as P
 from hamilton_core.session.console import Console, Rows, elapsed, tokens as _tokens
 
-STATE_REL = os.path.join(".hamilton", "build")
+STATE_REL = _verify.BUILD_STATE_REL
 MODEL_PREFIX = "model."
 EFFORT_PREFIX = "effort."
 _QUAL_RE = re.compile(r"R-\d{4}/AC\d+")
 SESSION_ENV = "HAMILTON_SESSION"
 
 PASSES = 5              # times round the loop before it gives up
-ROUNDS = 3              # rewrites of one test after a reject
+ROUNDS = 2              # attempts at a criterion's tests: a write, one rewrite
 WRITERS = 4             # test writers at once
 
 # What the time at the end of a run is booked under: each step's kind, and
@@ -168,6 +173,9 @@ def route(findings: list, skipped) -> Work:
 class State:
     """`.hamilton/build`. Only what a re-run could not work out for itself."""
     skipped: list = field(default_factory=list)
+    # Why each skipped criterion was skipped -- what `hamilton verify` says
+    # about it. None for one the engineer skipped at a question they saw.
+    why: dict = field(default_factory=dict)
     rounds: dict = field(default_factory=dict)
     # What the last review said about each test that has not passed yet
     # (`review.remember`): the list its next review settles.
@@ -178,9 +186,11 @@ class State:
     def started(self) -> bool:
         return bool(self.skipped or self.rounds or self.reviews)
 
-    def skip(self, qual: str) -> None:
+    def skip(self, qual: str, why: str = "") -> None:
         if qual not in self.skipped:
             self.skipped.append(qual)
+        if why:
+            self.why[qual] = why
 
     def round_of(self, qual: str) -> int:
         return int(self.rounds.get(qual, 0))
@@ -250,6 +260,7 @@ class Stop:
     lines: list = field(default_factory=list)       # already rendered
     retry: str = ""                                 # the retry row's label
     clarify: bool = False                           # offer to clarify the spec
+    why: dict = field(default_factory=dict)         # {qual: reason}, kept on a skip
 
 
 async def _human(run: "Run", ask, *args):
@@ -264,16 +275,28 @@ async def _human(run: "Run", ask, *args):
 
 
 async def _ask(run: "Run", stop: Stop) -> Answer:
-    return await _human(run, resolve, run.console, stop, run.state)
+    return await _human(run, resolve, run.console, stop, run.state, run.unattended)
 
 
-def resolve(console: Console, stop: Stop, state: State) -> Answer:
+def resolve(console: Console, stop: Stop, state: State,
+            unattended: bool = False) -> Answer:
     """Report the stop and ask what to do. Without a terminal there is nobody
-    to ask: it is reported and the run ends."""
+    to ask: it is reported and the run ends. An unattended run answers for
+    itself: criteria it cannot settle are skipped, with the reason kept for
+    `hamilton verify`, and the run carries on; a stop about no criterion in
+    particular still ends it."""
     console.say()
     console.say(console.paint.heading(f"── {stop.headline} ──"))
     for text in stop.lines:
         console.say(text)
+    if unattended:
+        if not stop.quals:
+            return Answer.END
+        for qual in stop.quals:
+            state.skip(qual, stop.why.get(qual) or stop.headline)
+        console.say(console.paint.dim(
+            f"  unattended: skipped {', '.join(stop.quals)} -- carrying on with the rest"))
+        return Answer.SKIP
     if not console.interactive:
         return Answer.END
 
@@ -454,12 +477,13 @@ class Run:
     """One `hamilton build`: the steps, and what the engineer sees of them."""
 
     def __init__(self, root: str, worker: P.Worker, judge: P.Judge,
-                 console: Console, state: State) -> None:
+                 console: Console, state: State, unattended: bool = False) -> None:
         self.root = root
         self.worker = worker
         self.judge = judge
         self.console = console
         self.state = state
+        self.unattended = unattended
         self.rows = Rows()
         self.shown = _review.Shown(console, rows=self.rows)
         console.follow(self.rows)
@@ -722,10 +746,10 @@ def _count(n: int, one: str, many: str) -> str:
 
 
 async def build(root: str, worker: P.Worker, judge: P.Judge, console: Console,
-                state: State) -> int:
+                state: State, unattended: bool = False) -> int:
     """Round the loop until the gate is green, the engineer ends the run, or
     `PASSES` is spent. Returns the exit code."""
-    run = Run(root, worker, judge, console, state)
+    run = Run(root, worker, judge, console, state, unattended)
     try:
         return await _loop(run, root, state, console)
     finally:
@@ -781,16 +805,21 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
             # pass of its own, so it happens however many were spent.
             suite = True
             continue
-        if passes == PASSES:
-            break
-        passes += 1
 
         reqs, defined, paths = _model(root)
         work = route(findings, state.skipped)
         if work.spec:
             return _spec_defect(console, work, state, root)
         if not work.open:       # everything left is something they skipped
+            if not suite:
+                # The rest may be done: confirm it with the suite, as a
+                # green gate would be -- no pass of its own either.
+                suite = True
+                continue
             return _only_skipped(console, work, state, root)
+        if passes == PASSES:
+            break
+        passes += 1
 
         try:
             await _pass(run, root, state, console, work, reqs, defined, paths)
@@ -917,14 +946,17 @@ def _spec_defect(console: Console, work: Work, state: State, root: str) -> int:
 
 
 def _only_skipped(console: Console, work: Work, state: State, root: str) -> int:
+    """Everything else is green, the suite included; what is left was skipped.
+    The gate stays red until those criteria are dealt with -- `hamilton
+    verify` lists them with the reason each was skipped."""
     console.say()
-    console.say(f"hamilton build: nothing left but the "
-                f"{_count(len(state.skipped), 'criterion', 'criteria')} you "
-                f"skipped ({', '.join(state.skipped)}). The gate stays red "
-                f"until they are dealt with.")
+    console.say(f"hamilton build: everything is green but the "
+                f"{_count(len(state.skipped), 'skipped criterion', 'skipped criteria')} "
+                f"({', '.join(state.skipped)}). The gate stays red until they are "
+                f"dealt with -- `hamilton verify` lists why each was skipped.")
     state.stopped = "skipped"
     state.save(root)
-    return 1
+    return 3
 
 
 async def _task_failed(run: "Run", failure: Failed) -> Answer:
@@ -956,7 +988,7 @@ async def _spec_gaps(run: "Run", gaps: dict, reqs: dict) -> None:
         while True:
             answer = await _ask(run, Stop(
                 headline="The criterion cannot settle what the test must prove",
-                quals=[qual], clarify=True,
+                quals=[qual], clarify=True, why={qual: f"unclear: {question}"},
                 lines=[f"  {console.paint.yellow('?')} "
                        f"{console.paint.bold(qual)}  {reqs[rid]['acs'][acid]['text']}",
                        *_review._field("Question", question, _review.MAX_WIDTH,
@@ -1037,9 +1069,12 @@ async def _exhausted(run: "Run", quals: list, rejected: dict) -> Answer:
     # writer ran, but left no `@covers` tag under the method's paths.
     none = [q for q in quals if q not in rejected]
     answer = await _ask(run, Stop(
-        headline=(f"Still rejected after {ROUNDS} rewrites" if open_
+        headline=(f"Still rejected after {ROUNDS} attempts" if open_
                   else f"Still no test after {ROUNDS} attempts"),
         quals=quals,
+        why={**{r["ac"]: f"still rejected after {ROUNDS} attempts: "
+                        + "; ".join(c["text"] for c in r["comments"]) for r in open_},
+             **{q: f"no test the gate recognises after {ROUNDS} attempts" for q in none}},
         lines=[f"  {_review.line(r, console.paint)}" for r in open_]
               + [f"  {console.paint.red('✗')} {console.paint.bold(q)}  no test was "
                  f"written that the gate recognises -- a `@covers {q}` tag under "
@@ -1055,7 +1090,9 @@ async def _exhausted(run: "Run", quals: list, rejected: dict) -> Answer:
 
 # --- the command --------------------------------------------------------------
 
-def main() -> int:
+def main(unattended: bool = False) -> int:
+    """`unattended`: nobody answers; a stop about criteria skips them and the
+    run carries on (see the module docstring)."""
     root = os.getcwd()
     console = Console()
 
@@ -1087,7 +1124,7 @@ def main() -> int:
         return refuse(str(exc), 2)
     console.start_working(STEPS["check"])
     try:
-        return asyncio.run(build(root, worker, judge, console, state))
+        return asyncio.run(build(root, worker, judge, console, state, unattended))
     except KeyboardInterrupt:
         console.error("interrupted -- run `hamilton build` again to carry on "
                       "from wherever `hamilton verify` now stands.")

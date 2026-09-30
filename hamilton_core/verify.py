@@ -50,9 +50,11 @@ Every problem in a run is reported, not just the first. Exit 0 on a clean run
 with at least one requirement, 1 on any finding; exit 2 when it cannot run at
 all (`spec/requirements.md` or `.hamilton/config` missing). `--json` emits
 {"ok": bool, "findings": [...], "warnings": [...], "notices": [...],
-"manual": ["R-nnnn/ACn", ...], "requirements": int,
-"acceptance_criteria": int} or {"error": "..."}. `manual` lists the criteria a
-person verifies, which the gate does not. `notices` flag config that is set
+"manual": ["R-nnnn/ACn", ...], "skipped": {"R-nnnn/ACn": why},
+"requirements": int, "acceptance_criteria": int} or {"error": "..."}.
+`manual` lists the criteria a person verifies, which the gate does not.
+`skipped` lists the criteria `hamilton build` skipped and why (an engineer's
+choice, or an unattended run's); their findings still count. `notices` flag config that is set
 but does nothing (e.g. `mutation_command`, which is reserved and
 unimplemented) and files nothing reads any more (`.hamilton/verified`); they
 never change the exit code.
@@ -97,6 +99,9 @@ from typing import NamedTuple
 
 REQ_REL = "spec/requirements.md"
 CONFIG_REL = ".hamilton/config"
+# What `hamilton build` keeps between runs; the gate reads only which
+# criteria it skipped, and why, to say so.
+BUILD_STATE_REL = ".hamilton/build"
 # retired by D-020; a leftover file only earns a notice
 RETIRED_VERIFIED_REL = ".hamilton/verified"
 # Files a past `hamilton init` copied in that nothing reads any more: the
@@ -350,6 +355,22 @@ def review_state(found: str | None, want: str) -> str:
     if ob_ok:
         return TEST_CHANGED
     return AC_CHANGED if test_ok else BOTH_CHANGED
+
+
+def skipped(root: str) -> dict:
+    """{qual: why} for each criterion `hamilton build` skipped -- an engineer's
+    choice at a question, or an unattended run's (with its reason). The gate
+    still counts their findings; this says why they are open. Empty when no
+    build left a record, or one that cannot be read."""
+    try:
+        with open(os.path.join(root, BUILD_STATE_REL), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or not isinstance(data.get("skipped"), list):
+        return {}
+    why = data.get("why") if isinstance(data.get("why"), dict) else {}
+    return {str(q): str(why.get(q) or "skipped by the engineer") for q in data["skipped"]}
 
 
 def read_config(root: str) -> dict:
@@ -1528,10 +1549,12 @@ def main(as_json: bool = False, suite_output: bool = False,
     finally:
         console.stop_working()
     took = elapsed(time.monotonic() - started)
+    left = skipped(root)
     if as_json:
         print(json.dumps({"ok": not findings, "findings": findings,
                           "warnings": warnings, "notices": notices,
-                          "manual": manual, "requirements": n_reqs,
+                          "manual": manual, "skipped": left,
+                          "requirements": n_reqs,
                           "acceptance_criteria": n_acs}))
         return 1 if findings else 0
 
@@ -1555,6 +1578,10 @@ def main(as_json: bool = False, suite_output: bool = False,
         print(f"\n{paint.bold('Other findings')}")
         for f in rest:
             print(f"  {paint.red('✗')} {f['message']}")
+    if left:
+        print(f"\n{paint.bold('Skipped by `hamilton build`')} -- open until dealt with")
+        for qual, why in left.items():
+            print(f"  {paint.yellow('–')} {qual}  {why}")
 
     for w in warnings:
         print(w["message"], file=sys.stderr)

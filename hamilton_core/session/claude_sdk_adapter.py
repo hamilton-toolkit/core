@@ -76,6 +76,12 @@ PLUGIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 SKILL = "hamilton:hamilton"
 
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+# All a build task needs: read and change files, run commands. Every tool a
+# session offers is sent on every turn -- the CLI's full set is ~14k tokens of
+# definitions, five times a test writer's whole brief -- so a task gets only
+# these (measured: a worker's first turn 17.5k tokens with the full set, 3.2k
+# with these).
+WORKER_TOOLS = ["Bash", "Read", "Write", "Edit"]
 SUBAGENT_TOOLS = ("Agent", "Task")      # "Task" is the tool's older name
 
 FOREGROUND = ("Run subagents in the foreground; issue several Agent calls in "
@@ -491,6 +497,7 @@ class ClaudeSdkWorker:
             cwd=self._root,
             setting_sources=["project"],
             env={**CACHE, **FOREGROUND_ENV},
+            tools=list(WORKER_TOOLS),
             skills=[],
             can_use_tool=self._can_use_tool,
             hooks={"PreToolUse": [

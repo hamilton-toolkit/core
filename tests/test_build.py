@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 
-from conftest import copy_fixture, stamp
+from conftest import copy_fixture, run_verify, stamp
 
 from hamilton_core import build as B
 from hamilton_core import verify as C
@@ -275,7 +275,8 @@ def test_a_test_still_rejected_after_its_rounds_asks_what_to_do(tmp_path):
     state = B.State()
     # 1) another round  2) skip it  3) end the run
     c, out = answering("2\n" * 4)
-    assert run(d, worker, FakeJudge(rejects()), c, state) == 1
+    # everything but the skipped criterion is green, the suite included
+    assert run(d, worker, FakeJudge(rejects()), c, state) == 3
 
     tries = [QUAL_RE.search(p).group(0) for p in worker.of("write_test")]
     assert tries, "the writer ran at all"
@@ -283,7 +284,7 @@ def test_a_test_still_rejected_after_its_rounds_asks_what_to_do(tmp_path):
         assert tries.count(qual) <= B.ROUNDS, qual
     assert "R-0001/AC2" in state.skipped
     text = out.getvalue()
-    assert f"Still rejected after {B.ROUNDS} rewrites" in text
+    assert f"Still rejected after {B.ROUNDS} attempts" in text
     assert "the gate stays red" in text.lower()
 
 
@@ -360,7 +361,7 @@ def test_another_round_can_be_spent_on_a_rejected_test(tmp_path):
     worker = FakeWorker(writes_a_test(d))
     state = B.State()
     c, _out = answering("1\n" + "2\n" * 4)      # one more round, then skip
-    assert run(d, worker, FakeJudge(rejects()), c, state) == 1
+    assert run(d, worker, FakeJudge(rejects()), c, state) == 3
     tries = [QUAL_RE.search(p).group(0) for p in worker.of("write_test")]
     assert tries.count("R-0001/AC2") > B.ROUNDS
 
@@ -666,7 +667,7 @@ def test_declining_the_draft_changes_nothing_and_asks_again(tmp_path):
     before = spec(d)
     # clarify, answer, 3) Back from the draft -- then skip it
     c, _out = answering("1\nyes, inclusive\n3\n2\n")
-    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 1
+    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 3
     assert spec(d) == before
 
 
@@ -1035,7 +1036,7 @@ def test_a_spec_that_changed_while_the_engineer_answered_is_not_overwritten(tmp_
     # clarify, answer, 1) write it -- refused -- then 2) skip it
     c = EditedMeanwhile(out=out, inp=io.StringIO("1\nyes, inclusive\n1\n2\n"),
                         color=False)
-    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 1
+    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 3
     assert "changed while the run was waiting" in out.getvalue()
     assert REWORDED not in spec(d)
 
@@ -1332,3 +1333,75 @@ def test_a_garbled_presentation_check_flags_nothing():
     assert design.files("no json here", "flagged") == {}
     assert design.files('{"flagged": ["a.css"]}', "flagged") == {}
     assert design.files('{"flagged": {"a.css": "grey"}}', "flagged") == {"a.css": "grey"}
+
+
+# --- unattended: nobody answers, the run carries on --------------------------
+
+def unattended(root, worker, judge, state=None):
+    c, out = console()
+    code = asyncio.run(B.build(root, worker, judge, c, state or B.State(),
+                               unattended=True))
+    return code, out.getvalue()
+
+
+def test_unattended_skips_an_unclear_criterion_and_carries_on(tmp_path):
+    """Nobody can clarify it: the criterion is set aside with its question as
+    the reason, and the run goes on to the end instead of stopping."""
+    d = project(tmp_path, "uncovered")
+    state = B.State()
+    code, text = unattended(d, FakeWorker(writes_a_test(d)), FakeJudge(unclear()), state)
+    assert code == 3
+    assert state.skipped == ["R-0001/AC2"]
+    assert state.why["R-0001/AC2"] == "unclear: Is a skew of exactly 30s inside the window?"
+    assert "unattended: skipped R-0001/AC2" in text
+    assert "What now?" not in text
+
+
+def test_unattended_skips_tests_still_rejected_after_their_attempts(tmp_path):
+    d = project(tmp_path, "uncovered")
+    worker = FakeWorker(writes_a_test(d))
+    state = B.State()
+    code, _text = unattended(d, worker, FakeJudge(rejects("the body is never asserted")), state)
+    assert code == 3
+    assert len(worker.of("write_test")) == B.ROUNDS
+    assert state.why["R-0001/AC2"] == (
+        f"still rejected after {B.ROUNDS} attempts: the body is never asserted")
+
+
+def test_unattended_still_ends_on_a_stop_about_no_criterion(tmp_path):
+    """A task that did not come back is about the model or the network, not
+    a criterion: there is nothing to skip, so the run ends as before."""
+    d = project(tmp_path, "uncovered")
+
+    class Down(FakeWorker):
+        async def run(self, prompt, **_kw):
+            raise RuntimeError("the network is down")
+
+    code, text = unattended(d, Down(), FakeJudge(passes))
+    assert code == 1
+    assert "the network is down" in text
+
+
+def test_a_criterion_is_written_at_most_twice(tmp_path):
+    """A write, one rewrite with the reviewer's reasons -- then it is the
+    engineer's, or an unattended run's, call."""
+    assert B.ROUNDS == 2
+
+
+def test_verify_reports_what_the_build_skipped_and_why(tmp_path):
+    d = project(tmp_path, "uncovered")
+    B.State(skipped=["R-0001/AC2", "R-0001/AC1"],
+            why={"R-0001/AC2": "unclear: which window?"}).save(d)
+    assert C.skipped(d) == {"R-0001/AC2": "unclear: which window?",
+                            "R-0001/AC1": "skipped by the engineer"}
+    r = run_verify(d, "--json", "--no-suite")
+    assert json.loads(r.stdout)["skipped"]["R-0001/AC2"] == "unclear: which window?"
+    r = run_verify(d, "--no-suite")
+    assert "Skipped by `hamilton build`" in r.stdout
+    assert "R-0001/AC2  unclear: which window?" in r.stdout
+
+
+def test_verify_reports_nothing_skipped_without_a_build_record(tmp_path):
+    d = project(tmp_path, "uncovered")
+    assert C.skipped(d) == {}
+    assert "Skipped by" not in run_verify(d, "--no-suite").stdout

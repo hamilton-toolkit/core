@@ -416,6 +416,14 @@ def test_a_worker_loads_no_skill():
     assert all(w._options(step).skills == [] for step in ("plan", "tests", "code"))
 
 
+def test_a_worker_is_offered_only_the_tools_a_build_task_needs():
+    """Every tool offered is sent on every turn: a task gets files and a
+    shell, nothing more."""
+    w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
+    for step in ("plan", "tests", "code", "clarify"):
+        assert w._options(step).tools == ["Bash", "Read", "Write", "Edit"]
+
+
 def test_writers_and_coders_think_less_than_the_cli_default():
     w = ClaudeSdkWorker("/tmp/p", write_policy=lambda p: None)
     assert w._options("tests").effort == "medium"
