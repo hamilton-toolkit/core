@@ -38,8 +38,9 @@ class FakeJudge:
         self.reply = reply
         self.prompts = []
 
-    async def ask(self, prompt, on_tokens=None):
+    async def ask(self, prompt, on_tokens=None, system=""):
         self.prompts.append(prompt)
+        self.system = system
         return self.reply(prompt)
 
 
@@ -202,9 +203,22 @@ def test_a_test_tagged_for_two_criteria_is_judged_with_each(tmp_path):
         "// @covers R-0001/AC1\n// @covers R-0001/AC2\nit('both', ...)\n")
     judge = FakeJudge(verdicts("pass"))
     assert {r["verdict"] for r in reviewed(d, judge)} == {"pass"}
-    assert len(judge.prompts) == 2
-    assert all("it('both', ...)" in p for p in judge.prompts)
+    # one requirement's first reviews share a session; the test is shown
+    # under each criterion it covers
+    [prompt] = judge.prompts
+    for part in re.split(r"^## (?=R-0001/AC\d$)", prompt, flags=re.M)[1:]:
+        assert "it('both', ...)" in part
     assert run_verify(d).returncode == 0
+
+
+def test_the_instructions_go_apart_from_the_criteria(tmp_path):
+    """The same for every review: sent as the standing instruction, so it is
+    cached, not written again with each criterion."""
+    d = project(tmp_path)
+    judge = FakeJudge(verdicts("pass"))
+    reviewed(d, judge)
+    assert "# How to judge" in judge.system
+    assert all("# How to judge" not in p for p in judge.prompts)
 
 
 def test_a_criterion_s_tests_are_judged_together_wherever_they_lie(tmp_path):
@@ -223,7 +237,7 @@ def test_a_criterion_s_tests_are_judged_together_wherever_they_lie(tmp_path):
         assert text in prompt
     # each file's preamble once, not once per test
     assert prompt.count("import { skew } from './support.js';") == 1
-    assert "Judge them **together**" in prompt
+    assert "Judge a criterion's tests **together**" in judge.system
     assert run_verify(d).returncode == 0
 
 
@@ -240,17 +254,19 @@ def test_writing_a_suffix_keeps_line_endings_and_replaces_an_old_one(tmp_path):
 
 
 def test_reviewers_run_side_by_side_up_to_the_cap_and_results_keep_file_order(tmp_path):
+    """One session per requirement's first reviews: six requirements are six
+    sessions, at most `PARALLEL` at once."""
     d = project(tmp_path)
     with open(f"{d}/spec/requirements.md", "a") as fh:
-        fh.write("\n## R-0002\nActor: A-0001\nStatement: The service answers health "
-                 "checks.\nCriteria:\n"
-                 + "".join(f"- AC{i + 1}: probe {i} -> 200 [http]\n" for i in range(6)))
+        for i in range(6):
+            fh.write(f"\n## R-00{i + 10}\nActor: A-0001\nStatement: The service answers "
+                     f"probe {i}.\nCriteria:\n- AC1: probe {i} -> 200 [http]\n")
     for i in range(6):
-        open(f"{d}/tests/t{i}.js", "w").write(f"// @covers R-0002/AC{i + 1}\nit('t{i}', ...)\n")
+        open(f"{d}/tests/t{i}.js", "w").write(f"// @covers R-00{i + 10}/AC1\nit('t{i}', ...)\n")
     running, peak = [0], [0]
 
     class SlowJudge(FakeJudge):
-        async def ask(self, prompt, on_tokens=None):
+        async def ask(self, prompt, on_tokens=None, system=""):
             running[0] += 1
             peak[0] = max(peak[0], running[0])
             await asyncio.sleep(0.01)
@@ -277,9 +293,38 @@ def test_the_watcher_hears_each_criterion_start_and_finish(tmp_path):
             heard.append(("finished", [r["ac"] for r in results]))
 
     reviewed(d, FakeJudge(verdicts("pass")), watch=Watch())
-    assert sorted(heard) == [("finished", ["R-0001/AC1"]), ("finished", ["R-0001/AC2"]),
-                             ("started", "R-0001/AC1 · covers.js, other.js"),
-                             ("started", "R-0001/AC2 · covers.js")]
+    # both first reviews of R-0001 go in one session: one row, both results
+    assert sorted(heard) == [("finished", ["R-0001/AC1", "R-0001/AC2"]),
+                             ("started", "R-0001/AC1, R-0001/AC2 · covers.js, other.js")]
+
+
+def test_a_requirement_with_many_criteria_is_judged_in_several_sessions(tmp_path):
+    d = project(tmp_path)
+    with open(f"{d}/spec/requirements.md", "a") as fh:
+        fh.write("\n## R-0002\nActor: A-0001\nStatement: The service answers health "
+                 "checks.\nCriteria:\n"
+                 + "".join(f"- AC{i + 1}: probe {i} -> 200 [http]\n" for i in range(8)))
+    for i in range(8):
+        open(f"{d}/tests/t{i}.js", "w").write(f"// @covers R-0002/AC{i + 1}\nit('t{i}', ...)\n")
+    judge = FakeJudge(verdicts("pass"))
+    assert {r["verdict"] for r in reviewed(d, judge)} == {"pass"}
+    sizes = sorted(len(re.findall(r"^## R-0002/AC\d+$", p, re.M)) for p in judge.prompts)
+    assert sizes == [0, 2, R.BATCH]      # R-0001's own session, then 6 + 2
+
+
+def test_a_re_review_has_a_session_to_itself(tmp_path):
+    """Settling points is per criterion: its own list, its own instructions."""
+    d = project(tmp_path)
+    earlier = {"covered": ["asserts a 200"], "comments": [{"check": "scope", "text": "x"}],
+               "advice": []}
+
+    def settles(prompt):
+        return json.dumps([{"ac": "R-0001/AC2", "kept": {"K1": {"ok": True}},
+                            "resolved": {"C1": {"ok": True, "covers": "y"}}, "question": ""}])
+    judge = FakeJudge(settles)
+    [r] = reviewed(d, judge, memory={"R-0001/AC2": earlier})
+    assert r["verdict"] == "pass"
+    assert "# How to settle the list" in judge.system
 
 
 def test_a_long_reason_wraps_under_its_bullet():
@@ -598,7 +643,7 @@ def test_tests_too_long_are_sent_back_without_asking_the_reviewer(tmp_path):
     long_preamble(d, R.MAX_LINES)
 
     class Unasked(FakeJudge):
-        async def ask(self, prompt, on_tokens=None):
+        async def ask(self, prompt, on_tokens=None, system=""):
             raise AssertionError("the reviewer was asked")
 
     [r] = [r for r in reviewed(d, Unasked(None)) if r["ac"] == "R-0001/AC2"]

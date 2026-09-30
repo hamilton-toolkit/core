@@ -419,9 +419,10 @@ class ClaudeSdkJudge:
         self._effort = _effort("review", {"review": effort} if effort else {})
         self.tokens: dict = {}
 
-    def _options(self, cwd: str) -> ClaudeAgentOptions:
+    def _options(self, cwd: str, system: str = "") -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             cwd=cwd,
+            system_prompt=system or None,
             tools=[],
             allowed_tools=[],
             setting_sources=[],
@@ -434,10 +435,10 @@ class ClaudeSdkJudge:
         )
 
     async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None,
-                  step: str = "review") -> str:
+                  step: str = "review", system: str = "") -> str:
         texts, error = [], None
         with tempfile.TemporaryDirectory(prefix="hamilton-review-") as cwd:
-            async for msg in query(prompt=prompt, options=self._options(cwd)):
+            async for msg in query(prompt=prompt, options=self._options(cwd, system)):
                 if isinstance(msg, AssistantMessage):
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
                 elif isinstance(msg, ResultMessage):

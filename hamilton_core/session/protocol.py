@@ -205,12 +205,14 @@ class Judge(Protocol):
     what it can judge is exactly what the prompt holds.
 
     `tokens` is what it has used so far, per `step`; `on_tokens` is told
-    what this one answer used."""
+    what this one answer used. `system` is the standing instruction, the
+    same across many asks -- kept apart from the prompt so a vendor can
+    cache it."""
 
     tokens: dict
 
     async def ask(self, prompt: str, on_tokens: OnTokens | None = None,
-                  step: str = "review") -> str:
+                  step: str = "review", system: str = "") -> str:
         ...
 
 

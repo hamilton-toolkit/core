@@ -66,7 +66,7 @@ class FakeJudge:
         self.flag = flag or {}      # ... and what it flags in each
         self.tokens = {}
 
-    async def ask(self, prompt, on_tokens=None, step="review"):
+    async def ask(self, prompt, on_tokens=None, step="review", system=""):
         if step == "drift":
             self.drifts.append(prompt)
             return json.dumps({"flagged": self.flag})
@@ -576,7 +576,7 @@ def test_the_list_only_shrinks_until_the_test_passes(tmp_path):
     class Converging:
         tokens: dict = {}
 
-        async def ask(self, prompt, on_tokens=None):
+        async def ask(self, prompt, on_tokens=None, system=""):
             quals = re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M)
             if "Comments to settle" not in prompt:
                 return json.dumps([{"ac": q, "covered": ["a 401"], "question": "",
@@ -950,7 +950,7 @@ class Garbled:
         self.asked = []
         self.tokens = {}
 
-    async def ask(self, prompt, on_tokens=None):
+    async def ask(self, prompt, on_tokens=None, system=""):
         self.asked.append(prompt)
         if len(self.asked) == 1:
             return "I could not decide."
@@ -1119,7 +1119,7 @@ def test_a_task_that_reports_no_tokens_shows_its_time_alone(tmp_path):
 
 def test_the_review_step_reports_its_time_and_tokens(tmp_path):
     class Spending(FakeJudge):
-        async def ask(self, prompt, on_tokens=None):
+        async def ask(self, prompt, on_tokens=None, system=""):
             on_tokens(1_500)
             return await super().ask(prompt)
 
