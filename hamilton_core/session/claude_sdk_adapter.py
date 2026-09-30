@@ -493,9 +493,10 @@ class ClaudeSdkWorker:
                                        "permissionDecision": "deny",
                                        "permissionDecisionReason": denial}}
 
-    def _options(self, step: str = "") -> ClaudeAgentOptions:
+    def _options(self, step: str = "", system: str = "") -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             cwd=self._root,
+            system_prompt=system or None,
             setting_sources=["project"],
             env={**CACHE, **FOREGROUND_ENV},
             tools=list(WORKER_TOOLS),
@@ -510,9 +511,10 @@ class ClaudeSdkWorker:
         )
 
     async def run(self, prompt: str, on_action: P.OnAction | None = None,
-                  step: str = "", on_tokens: P.OnTokens | None = None) -> str:
+                  step: str = "", on_tokens: P.OnTokens | None = None,
+                  system: str = "") -> str:
         texts, error = [], None
-        async for msg in query(prompt=prompt, options=self._options(step)):
+        async for msg in query(prompt=prompt, options=self._options(step, system)):
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):

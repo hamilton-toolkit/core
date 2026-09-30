@@ -683,7 +683,8 @@ def test_a_writer_sent_back_for_length_is_told_its_tests_were_not_read():
                          {"unit": ["tests"]}, review)
     assert "sent back unread, for their length" in text
     assert "The next review checks only these points" not in text
-    assert f"At most {R.MAX_LINES} lines" in text
+    # the cap itself is part of every writer's standing instructions
+    assert f"At most {R.MAX_LINES} lines" in B.tests_system()
 
 
 def test_only_reviewed_tests_over_the_cap_are_sent_back_outside_a_review(tmp_path):

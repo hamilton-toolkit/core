@@ -29,13 +29,15 @@ class FakeWorker:
     def __init__(self, act=None, spend=0):
         self.prompts = []
         self.steps = []
+        self.systems = []
         self.tokens = {}
         self._act = act
         self._spend = spend
 
-    async def run(self, prompt, on_action=None, step="", on_tokens=None):
+    async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
         self.prompts.append(prompt)
         self.steps.append(step)
+        self.systems.append(system)
         if on_action:
             on_action("editing a file")
         if on_tokens and self._spend:
@@ -45,7 +47,7 @@ class FakeWorker:
     def of(self, kind):
         """The prompts of one kind: 'plan', 'write_test' or 'implement'."""
         marks = {"plan": "into a contract a test can be written",
-                 "write_test": "Write the tests for one acceptance criterion",
+                 "write_test": "Write the tests for these acceptance criteria",
                  "implement": "Write the implementation",
                  "present": "in line with its design guide",
                  "restore": "A reviewer found that it"}
@@ -112,13 +114,15 @@ def writes_a_test(root, body="expect(true).toBe(true);"):
     """A worker that writes the tagged test it was asked for, as the real
     writer would, so the next `hamilton verify` sees it."""
     def act(prompt):
-        if "Write the tests for one acceptance criterion" not in prompt:
+        if "Write the tests for these acceptance criteria" not in prompt:
             return ""
-        qual = QUAL_RE.search(prompt).group(0)
-        path = os.path.join(root, "tests", f"{qual.replace('/', '_')}.js")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"// @covers {qual}\nit('{qual}', () => {{ {body} }});\n")
-        return f"wrote tests/{os.path.basename(path)}"
+        wrote = []
+        for qual in re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M):
+            path = os.path.join(root, "tests", f"{qual.replace('/', '_')}.js")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"// @covers {qual}\nit('{qual}', () => {{ {body} }});\n")
+            wrote.append(f"tests/{os.path.basename(path)}")
+        return "wrote " + ", ".join(wrote)
     return act
 
 
@@ -378,7 +382,7 @@ def test_what_did_not_pass_is_left_for_the_engineer_to_unfold(tmp_path):
 def test_a_task_that_does_not_come_back_is_the_steps_failure_not_the_runs(tmp_path):
     """A model error ends up as a choice, not a traceback."""
     class Broken(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             self.prompts.append(prompt)
             raise RuntimeError("the agent session failed: out of budget")
 
@@ -394,7 +398,7 @@ def test_a_failed_step_can_be_tried_again(tmp_path):
     once = {"failed": False}
 
     class Flaky(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             if not once["failed"] and "into a contract a test can be written" in prompt:
                 once["failed"] = True
                 raise RuntimeError("temporary failure")
@@ -535,7 +539,7 @@ def test_criteria_whose_tests_share_a_file_take_turns_on_it(tmp_path):
     busy, overlaps = set(), []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             if "shared.js" in prompt:
                 if busy:
                     overlaps.append(prompt)
@@ -856,7 +860,9 @@ def test_a_writer_runs_only_its_own_tests(tmp_path):
     run(d, worker, FakeJudge(passes), console()[0])
     brief = worker.of("write_test")[0]
     assert "with `hamilton verify R-0001/AC2`" in brief
-    assert "Never run the full suite** (`true`)" in brief     # the fixture's test_command
+    # the fixture's test_command, in the standing instructions every writer shares
+    system = worker.systems[worker.prompts.index(brief)]
+    assert "Never run the\n  full suite** (`true`)" in system
 
 
 def test_the_coder_is_given_the_tests_to_run(tmp_path):
@@ -1004,7 +1010,7 @@ def test_first_round_writers_whose_tests_share_a_file_take_turns_on_it(tmp_path)
     busy, overlaps = [], []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             if busy:
                 overlaps.append(prompt)
             busy.append(prompt)
@@ -1187,7 +1193,7 @@ def test_reviewed_tests_over_the_cap_are_written_again_before_coding(tmp_path):
     briefs = []
 
     def act(prompt):
-        if "Write the tests for one acceptance criterion" in prompt:
+        if "Write the tests for these acceptance criteria" in prompt:
             briefs.append(prompt)
             open(f"{d}/tests/covers.js", "w").write(SHORT)
         elif "Write the implementation" in prompt:
@@ -1195,8 +1201,9 @@ def test_reviewed_tests_over_the_cap_are_written_again_before_coding(tmp_path):
 
     worker = FakeWorker(act)
     assert run(d, worker, FakeJudge(passes), console()[0]) == 0
-    assert len(briefs) == 2
-    assert all("sent back unread, for their length" in b for b in briefs)
+    # both criteria are R-0001's: one writer, each sent back for its length
+    [brief] = briefs
+    assert brief.count("sent back unread, for their length") == 2
     [coding] = worker.of("implement")
     assert "Criterion: AC1:" in coding and "Criterion: AC2:" in coding
 
@@ -1380,6 +1387,25 @@ def test_unattended_still_ends_on_a_stop_about_no_criterion(tmp_path):
     code, text = unattended(d, Down(), FakeJudge(passes))
     assert code == 1
     assert "the network is down" in text
+
+
+def test_one_writer_takes_a_requirement_s_criteria_together():
+    quals = [f"R-0001/AC{i}" for i in range(1, 9)] + ["R-0002/AC1"]
+    assert B.by_requirement(quals) == [quals[:B.PER_WRITER], quals[B.PER_WRITER:8],
+                                       ["R-0002/AC1"]]
+
+
+def test_a_writer_gets_each_of_its_criteria_and_the_shared_instructions(tmp_path):
+    reqs = {"R-0001": {"title": "", "statement": "s.",
+                       "acs": {"AC1": {"text": "a -> b [unit]", "methods": ["unit"]},
+                               "AC2": {"text": "c -> d [unit]", "methods": ["unit"]}}}}
+    text = B.tests_prompt(["R-0001/AC1", "R-0001/AC2"], reqs, {"unit": {"description": "x"}},
+                          {"R-0001/AC1": "call f()"}, {"unit": ["tests"]}, {})
+    assert "## R-0001/AC1" in text and "## R-0001/AC2" in text
+    assert "Contract: call f()" in text
+    assert "`R-0001-AC2` in its name" in text
+    # what every writer is told alike is not repeated per criterion
+    assert "# What each test must do" not in text and "What each test must do" in B.tests_system()
 
 
 def test_a_criterion_is_written_at_most_twice(tmp_path):

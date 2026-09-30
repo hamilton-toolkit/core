@@ -232,13 +232,16 @@ class Worker(Protocol):
     the engineer watches. `step` is the kind of work -- `plan`, `tests`,
     `code`, `clarify` -- which an adapter may pick its model by. `tokens` is
     what the worker has used so far, per step; `on_tokens` is told what this
-    one piece of work used.
+    one piece of work used. `system` is a standing instruction shared by many
+    pieces of work (every test writer's, say) -- kept apart from the prompt so
+    a vendor can cache it.
     """
 
     tokens: dict
 
     async def run(self, prompt: str, on_action: OnAction | None = None,
-                  step: str = "", on_tokens: OnTokens | None = None) -> str:
+                  step: str = "", on_tokens: OnTokens | None = None,
+                  system: str = "") -> str:
         ...
 
 
