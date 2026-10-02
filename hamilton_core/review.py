@@ -40,6 +40,12 @@ settles each comment (resolved or not) and each covered point (still covered
 or not). A lost point reopens as a comment, a resolved comment becomes a
 covered point, so a test's coverage only grows and the list only shrinks.
 
+First reviews of one requirement's criteria share a judge session (up to
+`BATCH`), each still judged on its own; a re-review has a session to itself.
+The instructions go to the judge apart from the criteria (`instructions`),
+the same text for every session of its kind, so they are read from the
+cache rather than written again each time.
+
 Up to `PARALLEL` reviewers run at once; the suffixes are written after all
 of them have answered. The running reviews show as rows under the build's
 indicator (`Shown`), and what did not pass ends up in a list the engineer
@@ -64,7 +70,6 @@ import re
 import shutil
 import textwrap
 from importlib import resources
-from string import Template
 
 from hamilton_core.verify import (REQ_REL, REVIEWED, TAG_RE, UsageError,
                                  counted, extract, extract_methods,
@@ -73,6 +78,10 @@ from hamilton_core.session.console import Console, Rows
 
 VERDICTS = ("pass", "reject", "unclear")
 PARALLEL = 4            # reviewer sessions at once
+# First reviews of one requirement's criteria share a session, up to this
+# many: each is still judged on its own, but the instructions and the
+# requirement are read once, not once per criterion.
+BATCH = 6
 MARKS = {"pass": "✓", "reject": "✗", "unclear": "?", "error": "!"}
 DONE = {"pass": "passed", "reject": "rejected", "unclear": "unclear",
         "error": "error"}
@@ -204,10 +213,18 @@ def points(earlier: dict) -> tuple[dict, dict]:
             {f"C{i}": c["text"] for i, c in enumerate(earlier["comments"], 1)})
 
 
+def instructions(again: bool = False) -> str:
+    """How to review -- the same for every call of its kind, so it goes to
+    the judge apart from the criteria (`Judge.ask`'s `system`), where it is
+    read from the cache instead of written again with each review."""
+    name = "prompts/rereview.md" if again else "prompts/review.md"
+    return resources.files("hamilton_core").joinpath(name).read_text(encoding="utf-8")
+
+
 def prompt(reqs: dict, defined: dict, group, earlier: dict | None = None) -> str:
-    """The whole of what the reviewer sees for one criterion: the criterion,
-    and all of its tests. With `earlier` -- the criterion's last review -- it
-    is a re-review: the same, plus the points to settle."""
+    """What the reviewer is shown of one criterion: the criterion, and all of
+    its tests. With `earlier` -- the criterion's last review -- it is a
+    re-review: the same, plus the points to settle."""
     block = _criterion(reqs, defined, group)
     if earlier:
         kept, comments = points(earlier)
@@ -217,10 +234,7 @@ def prompt(reqs: dict, defined: dict, group, earlier: dict | None = None) -> str
                   + "\n\nComments to settle:\n"
                   + ("\n".join(f"- {k}: {t}" for k, t in comments.items())
                      or "- (none)"))
-    name = "prompts/rereview.md" if earlier else "prompts/review.md"
-    template = resources.files("hamilton_core").joinpath(name)
-    return Template(template.read_text(encoding="utf-8")).substitute(
-        criteria=block, tests=_tests(group))
+    return f"{block}\n\n### Its tests\n\n{_tests(group)}"
 
 
 def _items(reply: str, quals) -> dict:
@@ -411,8 +425,40 @@ def result(reqs: dict, group, answer: dict, tokens: int = 0) -> dict:
             "tokens": tokens, **answer}
 
 
-class _TooLong(Exception):
-    """A criterion's tests are over `MAX_LINES`: not put to the judge."""
+def _batches(groups: list, earlier_of) -> list:
+    """The judge sessions for `groups`: a re-review, or tests over
+    `MAX_LINES`, alone; first reviews of one requirement's criteria together,
+    up to `BATCH` at a time."""
+    alone, firsts = [], {}
+    for g in groups:
+        if earlier_of(g) or size(g) > MAX_LINES:
+            alone.append([g])
+        else:
+            firsts.setdefault(g[0].tag.rid, []).append(g)
+    together = [gs[i:i + BATCH] for gs in firsts.values()
+                for i in range(0, len(gs), BATCH)]
+    return together + alone
+
+
+async def _judge(judge, reqs: dict, defined: dict, batch: list,
+                 earlier: dict | None, on_tokens) -> list:
+    """One answer per group of `batch`, in order. Tests too long to read are
+    sent back without a session; a re-review settles its points; first
+    reviews are judged in one session, each criterion on its own."""
+    if len(batch) == 1 and size(batch[0]) > MAX_LINES:
+        return [too_long(size(batch[0]), earlier)]
+    if len(batch) == 1 and earlier:
+        qual = _qual(batch[0][0])
+        reply = await judge.ask(prompt(reqs, defined, batch[0], earlier),
+                                on_tokens=on_tokens, system=instructions(again=True))
+        return [settle(earlier, parse_settle(reply, {qual: earlier})[qual])]
+    quals = [_qual(g[0]) for g in batch]
+    reply = await judge.ask("\n\n".join(prompt(reqs, defined, g) for g in batch),
+                            on_tokens=on_tokens, system=instructions())
+    parsed = parse_first(reply, quals)
+    return [dict(parsed[q], resolved=[],
+                 verdict=verdict(parsed[q]["comments"], parsed[q]["question"]))
+            for q in quals]
 
 
 class Watch:
@@ -439,39 +485,36 @@ async def review(root: str, judge, watch: Watch | None = None,
     watch = watch or Watch()
     slots = asyncio.Semaphore(PARALLEL)
 
-    async def judged(key, group) -> dict:
-        qual = _qual(group[0])
-        earlier = memory.get(qual)
+    def earlier_of(group) -> dict | None:
+        earlier = memory.get(_qual(group[0]))
         if earlier and not (earlier["covered"] or earlier["comments"]
                             or earlier.get("question")):
-            earlier = None      # nothing to settle: a re-review would pass it unseen
-        lines = size(group)
+            return None         # nothing to settle: a re-review would pass it unseen
+        return earlier
+
+    async def judged(key, batch: list) -> list:
+        """One judge session for `batch` -- a criterion to re-review or send
+        back unread, or up to `BATCH` first reviews of one requirement."""
         async with slots:
-            files = sorted({os.path.basename(c.tag.file) for c in group})
-            watch.started(key, f"{qual} · {', '.join(files)}")
+            files = sorted({os.path.basename(c.tag.file) for g in batch for c in g})
+            watch.started(key, f"{', '.join(_qual(g[0]) for g in batch)} · {', '.join(files)}")
             used: list = []
             try:
-                if lines > MAX_LINES:
-                    raise _TooLong(lines)
-                reply = await judge.ask(prompt(reqs, defined, group, earlier),
-                                        on_tokens=used.append)
-                if earlier:
-                    answer = settle(earlier, parse_settle(reply, {qual: earlier})[qual])
-                else:
-                    a = parse_first(reply, [qual])[qual]
-                    answer = dict(a, resolved=[],
-                                  verdict=verdict(a["comments"], a["question"]))
-            except _TooLong:
-                answer = too_long(lines, earlier)
+                answers = await _judge(judge, reqs, defined, batch, earlier_of(batch[0]),
+                                       used.append)
             except Exception as exc:      # the judge failed, or answered badly
-                answer = {"verdict": "error", "covered": [], "resolved": [],
-                          "comments": [{"check": "error", "text": str(exc)}],
-                          "advice": [], "question": ""}
-        done = result(reqs, group, answer, sum(used))
-        watch.finished(key, [done])
+                answers = [{"verdict": "error", "covered": [], "resolved": [],
+                            "comments": [{"check": "error", "text": str(exc)}],
+                            "advice": [], "question": ""} for _g in batch]
+        # what the session used, shared out over the criteria it judged
+        done = [result(reqs, g, a, sum(used) // len(batch)) for g, a in zip(batch, answers)]
+        watch.finished(key, done)
         return done
 
-    results = await asyncio.gather(*(judged(i, g) for i, g in enumerate(groups)))
+    batches = _batches(groups, earlier_of)
+    judged_ = await asyncio.gather(*(judged(i, b) for i, b in enumerate(batches)))
+    by_qual = {r["ac"]: r for rs in judged_ for r in rs}
+    results = [by_qual[_qual(g[0])] for g in groups]
     for group, r in zip(groups, results):
         if r["verdict"] == "pass":
             for c in group:

@@ -4,26 +4,17 @@ since been revised. Your only job is to settle that list. You did not write
 the tests, and you will not change them.
 
 You have no tools and no access to the project. Everything you can judge is
-below: the criterion, the verification methods it names, the spec files it
-references (in full -- they are part of the criterion), the earlier points,
-and its tests as revised. The implementation is withheld on purpose -- the test
-has to stand on what the specification says, not on what the code does. Code
-the tests call from other files is not shown; judge it by its name and the
-way it is used.
+in the message: the criterion, the verification methods it names, the spec
+files it references (in full -- they are part of the criterion), the earlier
+points, and its tests as revised. The implementation is withheld on purpose
+-- the test has to stand on what the specification says, not on what the
+code does. Code the tests call from other files is not shown; judge it by
+its name and the way it is used.
 
-# The criterion, and what was said about its tests before
-
-$criteria
-
-# Its tests, as revised
-
-Every test of the criterion is below, file by file: the file's preamble
-once, then each tagged section. Judge them **together**: a criterion's cases
-may be spread over several tests, and the set proves the criterion when,
-between them, every check holds. Do not fault one test for a case another
-covers.
-
-$tests
+Every test of the criterion is given file by file: the file's preamble once,
+then each tagged section. Judge them **together**: a criterion's cases may be
+spread over several tests, and the set proves the criterion when, between
+them, every check holds. Do not fault one test for a case another covers.
 
 # How to settle the list
 

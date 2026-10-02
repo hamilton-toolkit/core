@@ -43,9 +43,14 @@ def main(argv=None) -> int:
     p_init.add_argument("path", nargs="?", default=None,
                         help="target directory (default: current directory)")
     sub.add_parser("guard")
-    sub.add_parser("build", help="get the gate green: check, plan, write the "
-                   "tests, have them reviewed, implement -- a loop Hamilton "
-                   "drives, asking only where it cannot proceed")
+    p_build = sub.add_parser("build", help="get the gate green: check, plan, write "
+                             "the tests, have them reviewed, implement -- a loop "
+                             "Hamilton drives, asking only where it cannot proceed")
+    p_build.add_argument("--unattended", action="store_true",
+                         help="nobody answers: a criterion the build cannot settle "
+                              "(unclear, or its tests still rejected) is skipped, "
+                              "with the reason `hamilton verify` reports, and the "
+                              "run carries on with the rest")
     for mode in MODES.values():
         sub.add_parser(mode.name, help=mode.help)
 
@@ -73,7 +78,7 @@ def main(argv=None) -> int:
         return _guard.main()
     if args.cmd == "build":
         from hamilton_core import build as _build
-        return _build.main()
+        return _build.main(unattended=args.unattended)
     if args.cmd == "validate":
         from hamilton_core import validate as _validate
         return _validate.main()

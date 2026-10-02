@@ -205,12 +205,14 @@ class Judge(Protocol):
     what it can judge is exactly what the prompt holds.
 
     `tokens` is what it has used so far, per `step`; `on_tokens` is told
-    what this one answer used."""
+    what this one answer used. `system` is the standing instruction, the
+    same across many asks -- kept apart from the prompt so a vendor can
+    cache it."""
 
     tokens: dict
 
     async def ask(self, prompt: str, on_tokens: OnTokens | None = None,
-                  step: str = "review") -> str:
+                  step: str = "review", system: str = "") -> str:
         ...
 
 
@@ -230,13 +232,16 @@ class Worker(Protocol):
     the engineer watches. `step` is the kind of work -- `plan`, `tests`,
     `code`, `clarify` -- which an adapter may pick its model by. `tokens` is
     what the worker has used so far, per step; `on_tokens` is told what this
-    one piece of work used.
+    one piece of work used. `system` is a standing instruction shared by many
+    pieces of work (every test writer's, say) -- kept apart from the prompt so
+    a vendor can cache it.
     """
 
     tokens: dict
 
     async def run(self, prompt: str, on_action: OnAction | None = None,
-                  step: str = "", on_tokens: OnTokens | None = None) -> str:
+                  step: str = "", on_tokens: OnTokens | None = None,
+                  system: str = "") -> str:
         ...
 
 

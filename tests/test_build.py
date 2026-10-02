@@ -14,7 +14,7 @@ import os
 import re
 import subprocess
 
-from conftest import copy_fixture, stamp
+from conftest import copy_fixture, run_verify, stamp
 
 from hamilton_core import build as B
 from hamilton_core import verify as C
@@ -29,13 +29,15 @@ class FakeWorker:
     def __init__(self, act=None, spend=0):
         self.prompts = []
         self.steps = []
+        self.systems = []
         self.tokens = {}
         self._act = act
         self._spend = spend
 
-    async def run(self, prompt, on_action=None, step="", on_tokens=None):
+    async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
         self.prompts.append(prompt)
         self.steps.append(step)
+        self.systems.append(system)
         if on_action:
             on_action("editing a file")
         if on_tokens and self._spend:
@@ -45,7 +47,7 @@ class FakeWorker:
     def of(self, kind):
         """The prompts of one kind: 'plan', 'write_test' or 'implement'."""
         marks = {"plan": "into a contract a test can be written",
-                 "write_test": "Write the tests for one acceptance criterion",
+                 "write_test": "Write the tests for these acceptance criteria",
                  "implement": "Write the implementation",
                  "present": "in line with its design guide",
                  "restore": "A reviewer found that it"}
@@ -66,7 +68,7 @@ class FakeJudge:
         self.flag = flag or {}      # ... and what it flags in each
         self.tokens = {}
 
-    async def ask(self, prompt, on_tokens=None, step="review"):
+    async def ask(self, prompt, on_tokens=None, step="review", system=""):
         if step == "drift":
             self.drifts.append(prompt)
             return json.dumps({"flagged": self.flag})
@@ -112,13 +114,15 @@ def writes_a_test(root, body="expect(true).toBe(true);"):
     """A worker that writes the tagged test it was asked for, as the real
     writer would, so the next `hamilton verify` sees it."""
     def act(prompt):
-        if "Write the tests for one acceptance criterion" not in prompt:
+        if "Write the tests for these acceptance criteria" not in prompt:
             return ""
-        qual = QUAL_RE.search(prompt).group(0)
-        path = os.path.join(root, "tests", f"{qual.replace('/', '_')}.js")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"// @covers {qual}\nit('{qual}', () => {{ {body} }});\n")
-        return f"wrote tests/{os.path.basename(path)}"
+        wrote = []
+        for qual in re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M):
+            path = os.path.join(root, "tests", f"{qual.replace('/', '_')}.js")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(f"// @covers {qual}\nit('{qual}', () => {{ {body} }});\n")
+            wrote.append(f"tests/{os.path.basename(path)}")
+        return "wrote " + ", ".join(wrote)
     return act
 
 
@@ -275,7 +279,8 @@ def test_a_test_still_rejected_after_its_rounds_asks_what_to_do(tmp_path):
     state = B.State()
     # 1) another round  2) skip it  3) end the run
     c, out = answering("2\n" * 4)
-    assert run(d, worker, FakeJudge(rejects()), c, state) == 1
+    # everything but the skipped criterion is green, the suite included
+    assert run(d, worker, FakeJudge(rejects()), c, state) == 3
 
     tries = [QUAL_RE.search(p).group(0) for p in worker.of("write_test")]
     assert tries, "the writer ran at all"
@@ -283,7 +288,7 @@ def test_a_test_still_rejected_after_its_rounds_asks_what_to_do(tmp_path):
         assert tries.count(qual) <= B.ROUNDS, qual
     assert "R-0001/AC2" in state.skipped
     text = out.getvalue()
-    assert f"Still rejected after {B.ROUNDS} rewrites" in text
+    assert f"Still rejected after {B.ROUNDS} attempts" in text
     assert "the gate stays red" in text.lower()
 
 
@@ -360,7 +365,7 @@ def test_another_round_can_be_spent_on_a_rejected_test(tmp_path):
     worker = FakeWorker(writes_a_test(d))
     state = B.State()
     c, _out = answering("1\n" + "2\n" * 4)      # one more round, then skip
-    assert run(d, worker, FakeJudge(rejects()), c, state) == 1
+    assert run(d, worker, FakeJudge(rejects()), c, state) == 3
     tries = [QUAL_RE.search(p).group(0) for p in worker.of("write_test")]
     assert tries.count("R-0001/AC2") > B.ROUNDS
 
@@ -377,7 +382,7 @@ def test_what_did_not_pass_is_left_for_the_engineer_to_unfold(tmp_path):
 def test_a_task_that_does_not_come_back_is_the_steps_failure_not_the_runs(tmp_path):
     """A model error ends up as a choice, not a traceback."""
     class Broken(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             self.prompts.append(prompt)
             raise RuntimeError("the agent session failed: out of budget")
 
@@ -393,7 +398,7 @@ def test_a_failed_step_can_be_tried_again(tmp_path):
     once = {"failed": False}
 
     class Flaky(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             if not once["failed"] and "into a contract a test can be written" in prompt:
                 once["failed"] = True
                 raise RuntimeError("temporary failure")
@@ -534,7 +539,7 @@ def test_criteria_whose_tests_share_a_file_take_turns_on_it(tmp_path):
     busy, overlaps = set(), []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             if "shared.js" in prompt:
                 if busy:
                     overlaps.append(prompt)
@@ -575,7 +580,7 @@ def test_the_list_only_shrinks_until_the_test_passes(tmp_path):
     class Converging:
         tokens: dict = {}
 
-        async def ask(self, prompt, on_tokens=None):
+        async def ask(self, prompt, on_tokens=None, system=""):
             quals = re.findall(r"^## (R-\d{4}/AC\d+)$", prompt, re.M)
             if "Comments to settle" not in prompt:
                 return json.dumps([{"ac": q, "covered": ["a 401"], "question": "",
@@ -666,7 +671,7 @@ def test_declining_the_draft_changes_nothing_and_asks_again(tmp_path):
     before = spec(d)
     # clarify, answer, 3) Back from the draft -- then skip it
     c, _out = answering("1\nyes, inclusive\n3\n2\n")
-    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 1
+    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 3
     assert spec(d) == before
 
 
@@ -855,7 +860,9 @@ def test_a_writer_runs_only_its_own_tests(tmp_path):
     run(d, worker, FakeJudge(passes), console()[0])
     brief = worker.of("write_test")[0]
     assert "with `hamilton verify R-0001/AC2`" in brief
-    assert "Never run the full suite** (`true`)" in brief     # the fixture's test_command
+    # the fixture's test_command, in the standing instructions every writer shares
+    system = worker.systems[worker.prompts.index(brief)]
+    assert "Never run the\n  full suite** (`true`)" in system
 
 
 def test_the_coder_is_given_the_tests_to_run(tmp_path):
@@ -949,7 +956,7 @@ class Garbled:
         self.asked = []
         self.tokens = {}
 
-    async def ask(self, prompt, on_tokens=None):
+    async def ask(self, prompt, on_tokens=None, system=""):
         self.asked.append(prompt)
         if len(self.asked) == 1:
             return "I could not decide."
@@ -1003,7 +1010,7 @@ def test_first_round_writers_whose_tests_share_a_file_take_turns_on_it(tmp_path)
     busy, overlaps = [], []
 
     class Watching(FakeWorker):
-        async def run(self, prompt, on_action=None, step="", on_tokens=None):
+        async def run(self, prompt, on_action=None, step="", on_tokens=None, system=""):
             if busy:
                 overlaps.append(prompt)
             busy.append(prompt)
@@ -1035,7 +1042,7 @@ def test_a_spec_that_changed_while_the_engineer_answered_is_not_overwritten(tmp_
     # clarify, answer, 1) write it -- refused -- then 2) skip it
     c = EditedMeanwhile(out=out, inp=io.StringIO("1\nyes, inclusive\n1\n2\n"),
                         color=False)
-    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 1
+    assert run(d, FakeWorker(clarifying(d)), FakeJudge(unclear()), c) == 3
     assert "changed while the run was waiting" in out.getvalue()
     assert REWORDED not in spec(d)
 
@@ -1118,7 +1125,7 @@ def test_a_task_that_reports_no_tokens_shows_its_time_alone(tmp_path):
 
 def test_the_review_step_reports_its_time_and_tokens(tmp_path):
     class Spending(FakeJudge):
-        async def ask(self, prompt, on_tokens=None):
+        async def ask(self, prompt, on_tokens=None, system=""):
             on_tokens(1_500)
             return await super().ask(prompt)
 
@@ -1186,7 +1193,7 @@ def test_reviewed_tests_over_the_cap_are_written_again_before_coding(tmp_path):
     briefs = []
 
     def act(prompt):
-        if "Write the tests for one acceptance criterion" in prompt:
+        if "Write the tests for these acceptance criteria" in prompt:
             briefs.append(prompt)
             open(f"{d}/tests/covers.js", "w").write(SHORT)
         elif "Write the implementation" in prompt:
@@ -1194,8 +1201,9 @@ def test_reviewed_tests_over_the_cap_are_written_again_before_coding(tmp_path):
 
     worker = FakeWorker(act)
     assert run(d, worker, FakeJudge(passes), console()[0]) == 0
-    assert len(briefs) == 2
-    assert all("sent back unread, for their length" in b for b in briefs)
+    # both criteria are R-0001's: one writer, each sent back for its length
+    [brief] = briefs
+    assert brief.count("sent back unread, for their length") == 2
     [coding] = worker.of("implement")
     assert "Criterion: AC1:" in coding and "Criterion: AC2:" in coding
 
@@ -1332,3 +1340,94 @@ def test_a_garbled_presentation_check_flags_nothing():
     assert design.files("no json here", "flagged") == {}
     assert design.files('{"flagged": ["a.css"]}', "flagged") == {}
     assert design.files('{"flagged": {"a.css": "grey"}}', "flagged") == {"a.css": "grey"}
+
+
+# --- unattended: nobody answers, the run carries on --------------------------
+
+def unattended(root, worker, judge, state=None):
+    c, out = console()
+    code = asyncio.run(B.build(root, worker, judge, c, state or B.State(),
+                               unattended=True))
+    return code, out.getvalue()
+
+
+def test_unattended_skips_an_unclear_criterion_and_carries_on(tmp_path):
+    """Nobody can clarify it: the criterion is set aside with its question as
+    the reason, and the run goes on to the end instead of stopping."""
+    d = project(tmp_path, "uncovered")
+    state = B.State()
+    code, text = unattended(d, FakeWorker(writes_a_test(d)), FakeJudge(unclear()), state)
+    assert code == 3
+    assert state.skipped == ["R-0001/AC2"]
+    assert state.why["R-0001/AC2"] == "unclear: Is a skew of exactly 30s inside the window?"
+    assert "unattended: skipped R-0001/AC2" in text
+    assert "What now?" not in text
+
+
+def test_unattended_skips_tests_still_rejected_after_their_attempts(tmp_path):
+    d = project(tmp_path, "uncovered")
+    worker = FakeWorker(writes_a_test(d))
+    state = B.State()
+    code, _text = unattended(d, worker, FakeJudge(rejects("the body is never asserted")), state)
+    assert code == 3
+    assert len(worker.of("write_test")) == B.ROUNDS
+    assert state.why["R-0001/AC2"] == (
+        f"still rejected after {B.ROUNDS} attempts: the body is never asserted")
+
+
+def test_unattended_still_ends_on_a_stop_about_no_criterion(tmp_path):
+    """A task that did not come back is about the model or the network, not
+    a criterion: there is nothing to skip, so the run ends as before."""
+    d = project(tmp_path, "uncovered")
+
+    class Down(FakeWorker):
+        async def run(self, prompt, **_kw):
+            raise RuntimeError("the network is down")
+
+    code, text = unattended(d, Down(), FakeJudge(passes))
+    assert code == 1
+    assert "the network is down" in text
+
+
+def test_one_writer_takes_a_requirement_s_criteria_together():
+    quals = [f"R-0001/AC{i}" for i in range(1, 9)] + ["R-0002/AC1"]
+    assert B.by_requirement(quals) == [quals[:B.PER_WRITER], quals[B.PER_WRITER:8],
+                                       ["R-0002/AC1"]]
+
+
+def test_a_writer_gets_each_of_its_criteria_and_the_shared_instructions(tmp_path):
+    reqs = {"R-0001": {"title": "", "statement": "s.",
+                       "acs": {"AC1": {"text": "a -> b [unit]", "methods": ["unit"]},
+                               "AC2": {"text": "c -> d [unit]", "methods": ["unit"]}}}}
+    text = B.tests_prompt(["R-0001/AC1", "R-0001/AC2"], reqs, {"unit": {"description": "x"}},
+                          {"R-0001/AC1": "call f()"}, {"unit": ["tests"]}, {})
+    assert "## R-0001/AC1" in text and "## R-0001/AC2" in text
+    assert "Contract: call f()" in text
+    assert "`R-0001-AC2` in its name" in text
+    # what every writer is told alike is not repeated per criterion
+    assert "# What each test must do" not in text and "What each test must do" in B.tests_system()
+
+
+def test_a_criterion_is_written_at_most_twice(tmp_path):
+    """A write, one rewrite with the reviewer's reasons -- then it is the
+    engineer's, or an unattended run's, call."""
+    assert B.ROUNDS == 2
+
+
+def test_verify_reports_what_the_build_skipped_and_why(tmp_path):
+    d = project(tmp_path, "uncovered")
+    B.State(skipped=["R-0001/AC2", "R-0001/AC1"],
+            why={"R-0001/AC2": "unclear: which window?"}).save(d)
+    assert C.skipped(d) == {"R-0001/AC2": "unclear: which window?",
+                            "R-0001/AC1": "skipped by the engineer"}
+    r = run_verify(d, "--json", "--no-suite")
+    assert json.loads(r.stdout)["skipped"]["R-0001/AC2"] == "unclear: which window?"
+    r = run_verify(d, "--no-suite")
+    assert "Skipped by `hamilton build`" in r.stdout
+    assert "R-0001/AC2  unclear: which window?" in r.stdout
+
+
+def test_verify_reports_nothing_skipped_without_a_build_record(tmp_path):
+    d = project(tmp_path, "uncovered")
+    assert C.skipped(d) == {}
+    assert "Skipped by" not in run_verify(d, "--no-suite").stdout

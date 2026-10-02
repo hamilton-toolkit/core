@@ -76,6 +76,12 @@ PLUGIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 SKILL = "hamilton:hamilton"
 
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+# All a build task needs: read and change files, run commands. Every tool a
+# session offers is sent on every turn -- the CLI's full set is ~14k tokens of
+# definitions, five times a test writer's whole brief -- so a task gets only
+# these (measured: a worker's first turn 17.5k tokens with the full set, 3.2k
+# with these).
+WORKER_TOOLS = ["Bash", "Read", "Write", "Edit"]
 SUBAGENT_TOOLS = ("Agent", "Task")      # "Task" is the tool's older name
 
 FOREGROUND = ("Run subagents in the foreground; issue several Agent calls in "
@@ -413,9 +419,10 @@ class ClaudeSdkJudge:
         self._effort = _effort("review", {"review": effort} if effort else {})
         self.tokens: dict = {}
 
-    def _options(self, cwd: str) -> ClaudeAgentOptions:
+    def _options(self, cwd: str, system: str = "") -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             cwd=cwd,
+            system_prompt=system or None,
             tools=[],
             allowed_tools=[],
             setting_sources=[],
@@ -428,10 +435,10 @@ class ClaudeSdkJudge:
         )
 
     async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None,
-                  step: str = "review") -> str:
+                  step: str = "review", system: str = "") -> str:
         texts, error = [], None
         with tempfile.TemporaryDirectory(prefix="hamilton-review-") as cwd:
-            async for msg in query(prompt=prompt, options=self._options(cwd)):
+            async for msg in query(prompt=prompt, options=self._options(cwd, system)):
                 if isinstance(msg, AssistantMessage):
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
                 elif isinstance(msg, ResultMessage):
@@ -486,11 +493,13 @@ class ClaudeSdkWorker:
                                        "permissionDecision": "deny",
                                        "permissionDecisionReason": denial}}
 
-    def _options(self, step: str = "") -> ClaudeAgentOptions:
+    def _options(self, step: str = "", system: str = "") -> ClaudeAgentOptions:
         return ClaudeAgentOptions(
             cwd=self._root,
+            system_prompt=system or None,
             setting_sources=["project"],
             env={**CACHE, **FOREGROUND_ENV},
+            tools=list(WORKER_TOOLS),
             skills=[],
             can_use_tool=self._can_use_tool,
             hooks={"PreToolUse": [
@@ -502,9 +511,10 @@ class ClaudeSdkWorker:
         )
 
     async def run(self, prompt: str, on_action: P.OnAction | None = None,
-                  step: str = "", on_tokens: P.OnTokens | None = None) -> str:
+                  step: str = "", on_tokens: P.OnTokens | None = None,
+                  system: str = "") -> str:
         texts, error = [], None
-        async for msg in query(prompt=prompt, options=self._options(step)):
+        async for msg in query(prompt=prompt, options=self._options(step, system)):
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
