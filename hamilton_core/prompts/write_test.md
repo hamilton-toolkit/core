@@ -80,6 +80,10 @@ Also:
   one the reviewer has more to find in. **At most $budget lines** for the
   criterion, counting the preamble of each file its tests are in: longer is
   sent back unread.
+- **Behaviour, not presentation.** Assert what the criterion says the actor
+  can do and observe -- never styling, layout, colour or wording it does not
+  name. How the software looks is the engineer's to judge by trying it; a
+  test that pins it breaks on every change to the design.
 - Write only test files. Do not touch the implementation, and do not make
   the test pass by changing what it tests.
 - **Run it -- and only it -- with `hamilton verify $qual`.** It runs this

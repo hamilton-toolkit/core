@@ -1,11 +1,13 @@
-"""The session modes: `hamilton design`, `hamilton reverse`, and any added
-later. A mode is everything that differs between them -- which phase it sets,
+"""The session modes: `hamilton design`, `hamilton reverse`, `hamilton
+validate`, and any added later. A mode is everything that differs between them -- which phase it sets,
 how the agent is told to start, what is offered after an iteration, and how
 the session is summed up. Everything else (the console, the adapter, the
 turn loop) is shared, so a new mode is one `Mode` here and nothing more.
 
-Both modes here are spec work, which is a conversation with the engineer.
-Build is not a mode: `hamilton build` is a loop Hamilton drives itself, in
+Design and reverse are spec work, which is a conversation with the engineer.
+Validate is one too, in build phase: the engineer tries the running software
+and reports what they find. What it does besides talking -- a spec change,
+the build after it -- lives in `hamilton_core.validate`. Build is not a mode: `hamilton build` is a loop Hamilton drives itself, in
 `hamilton_core.build`, and calls an agent per step.
 """
 
@@ -15,6 +17,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from hamilton_core import show
+from hamilton_core import verify
 
 
 @dataclass(frozen=True)
@@ -22,10 +25,13 @@ class Step:
     """A step offered after an iteration. `instruction` is what the agent is
     sent. A step that `picks_requirements` first lets the engineer choose
     requirements from the tree and describe the change; its instruction is a
-    template with `{requirements}` and `{change}`."""
+    template with `{requirements}` and `{change}`. A step with a `template`
+    works on that scaffold file, and Hamilton scaffolds it first when the
+    project was initialised before it existed."""
     label: str
     instruction: str
     picks_requirements: bool = False
+    template: str = ""
 
 
 @dataclass(frozen=True)
@@ -62,6 +68,11 @@ _SPEC_STEPS: tuple[Step, ...] = (
          "Render `hamilton show` and read it upward: for each parent, ask "
          "whether its children add up to it. Report any gap you find, then "
          "run the review protocol for whatever the engineer decides to fix."),
+    Step("Specify the presentation",
+         "The engineer wants to describe how the software should look and "
+         "feel. Run the `hamilton` skill's Specify presentation workflow on "
+         "`spec/design-guide.md`.",
+         template="spec/design-guide.md"),
 )
 
 
@@ -86,8 +97,9 @@ DESIGN = Mode(
         "current spec state; if the spec is empty and `spec/vision.md` is still "
         "the scaffold, offer to help me draft the vision first, then move on to "
         "the root requirements; otherwise ask whether I want to draft the "
-        "initial spec or modify/extend existing requirements. Then run the "
-        "review protocol."
+        "initial spec, modify/extend existing requirements, or describe the "
+        "presentation in the design guide. Then run the review protocol, or "
+        "the Specify presentation workflow."
     ),
     footer=("hamilton design: session ended (phase 'spec'). Run `hamilton "
             "build` to implement the changes, or `hamilton design` again to "
@@ -118,4 +130,43 @@ REVERSE = Mode(
     precheck=_spec_is_empty,
 )
 
-MODES: dict[str, Mode] = {m.name: m for m in (DESIGN, REVERSE)}
+def _ready_to_validate(root: str) -> str | None:
+    """Validation starts from software that is verified and can be run."""
+    try:
+        if not verify.start_command(verify.read_config(root)):
+            return ("`.hamilton/config` has no start_command, so there is "
+                    "nothing for `hamilton run` to start. Run `hamilton "
+                    "build`, which sets it, or set it yourself.")
+        findings = verify.run(root, suite=False)[0]
+    except verify.UsageError as exc:
+        return str(exc)
+    if findings:
+        return (f"the gate is not green ({len(findings)} finding(s) in "
+                f"`hamilton verify --no-suite`). Validation starts from "
+                f"verified software: run `hamilton build` first.")
+    return None
+
+
+VALIDATE = Mode(
+    name="validate",
+    phase="build",
+    help="try the running software by hand and report what you find: "
+         "presentation is fixed here, a bug gets a test and a fix, a gap in "
+         "the spec is specified and built without leaving the session",
+    kickoff=(
+        "Start the Hamilton validation session now: follow the `hamilton` "
+        "skill's Validate workflow from the top -- greet me in a line, remind "
+        "me to keep `hamilton run` going in another terminal, and ask for my "
+        "first finding."
+    ),
+    footer=("hamilton validate: session ended (phase 'build'). Run `hamilton "
+            "validate` again to carry on trying the software."),
+    next_steps=(
+        Step("Report another finding",
+             "The engineer has another finding. Ask what it is, then run the "
+             "Validate workflow for it."),
+    ),
+    precheck=_ready_to_validate,
+)
+
+MODES: dict[str, Mode] = {m.name: m for m in (DESIGN, REVERSE, VALIDATE)}

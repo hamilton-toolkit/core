@@ -367,8 +367,9 @@ At this scale there is no separate spec MR, and the engineer is the spec author 
 rules the agent is meant to follow — an agent must not relax what constrains it
 (Hamilton writes `.hamilton/phase` itself, as a subprocess, not through a
 hooked tool). The one exception is `.hamilton/config`: which test
-framework runs and where each method's tests live (`test_command`,
-`paths.<method>`, `run.<method>`) are build-time decisions, so the file is writable in `build`. A path hook cannot
+framework runs, where each method's tests live and how the software starts
+(`test_command`, `paths.<method>`, `run.<method>`, `start_command`) are
+build-time decisions, so the file is writable in `build`. A path hook cannot
 lock individual lines, so the whole file is writable there — and visible in the
 config diff a reviewer sees.
 
@@ -423,6 +424,24 @@ decides. No code is written.
 - `hamilton verify` runs `test_command`; Claude repairs failures within the mutability rule below. A test it edits is `unreviewed` again and goes back through *2b*.
 - The AC coverage gate (§5.4) is the exit condition and the precondition for opening the MR.
 
+**Step 4 — Validation**
+Verification proves the software does what the spec says; validation asks
+whether the spec says the right thing, and whether the software looks the
+way it was meant to. Only a person can answer that, by trying it:
+`hamilton run` starts the software (`start_command`), and in a
+`hamilton validate` session the engineer reports what they find. The session
+runs in build phase and sorts each finding:
+- *Presentation* — fixed in the session. It is validated, never verified.
+- *Bug* (spec right, code wrong) — a test tagged to the criterion it breaks,
+  failing first, then the fix. A bug no criterion covers is a spec gap.
+- *Spec wrong or incomplete* — on the engineer's word Hamilton switches the
+  phase to spec, and the same conversation runs the Step 1 review protocol for
+  the change; then back to build.
+
+After every turn that leaves the gate with findings — a spec change, a new
+test — Hamilton runs Step 2–3 before the engineer goes on. Validation starts
+from a green gate and returns to one.
+
 ### 7.3 Mutability rule during Step 3
 
 Without an explicit rule, agents repair red suites by weakening assertions, deleting failing tests, or loosening acceptance criteria.
@@ -446,6 +465,8 @@ A hard stop is a **full stop**: Claude reports and yields to the engineer. It ne
 - **Step 2 → Step 1 (hard stop), from the reviewer.** The reviewer answers `unclear` — the AC is ambiguous — or rejects a test three rounds running. The agent stops with the reviewer's question or last reasons.
 - **Step 3 → Step 2.** Test failure caused by the implementation. Claude decides and proceeds.
 - **Step 3 → Step 1.** Test failure revealing that the specification is wrong. **Only the engineer may take this edge.**
+- **Step 4 → Step 1 → Step 2.** A finding shows the specification wrong or incomplete. The agent names the change and asks; only on the engineer's word does the phase switch to spec, and the change is ratified item by item as in Step 1. Step 2–3 follow before validation goes on.
+- **Step 4 → Step 2.** A finding is a bug: a test for the criterion it breaks, then the fix, then Step 2–3.
 
 To avoid idling on a hard stop, the agent records the deviation and may continue with other already-ratified requirements; accumulated spec corrections are cleared in one Step 1 pass.
 

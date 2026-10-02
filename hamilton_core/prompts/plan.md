@@ -56,9 +56,22 @@ $config
    `run.<method>` for each method the criteria use that has none: a command
    that runs the test files given to it as arguments, starting whatever they
    need (a server, a container), so `hamilton verify R-nnnn/ACn` can run one
-   criterion's tests. In build phase you may edit `test_command`,
-   `paths.<method>` and `run.<method>` in `.hamilton/config`, and nothing
-   else under `.hamilton/`.
+   criterion's tests. When `start_command` is missing, set it: the command
+   that starts the whole software in the foreground for the engineer to try
+   it by hand (`hamilton run`) -- a dev server, a compose stack, the app. In
+   build phase you may edit `test_command`, `paths.<method>`, `run.<method>`
+   and `start_command` in `.hamilton/config`, and nothing else under
+   `.hamilton/`.
+
+## Presentation
+
+$design
+
+A scaffolded page or screen keeps behaviour and presentation apart: markup,
+styles and components in the presentation layer, logic outside it, so a
+change to the looks never has to touch behaviour and the reverse. Where the
+project already has a presentation layer, put the scaffold's presentation
+there, and change none of what exists.
 
 You may not write to `$requirements` or anything else under `spec/` -- the
 phase gate refuses it, and a criterion that seems wrong is not yours to fix.

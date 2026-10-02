@@ -1,6 +1,6 @@
 ---
 name: hamilton
-description: Use in a repository scaffolded by `hamilton init`. Covers the spec-phase review protocol for drafting and changing requirements, deriving a first spec from an existing codebase (`hamilton reverse`), how a requirement and its acceptance criteria are written, and what verification methods mean. Build phase is not here: `hamilton build` drives that loop itself. The model is one requirement tree; every acceptance criterion names how it is verified.
+description: Use in a repository scaffolded by `hamilton init`. Covers the spec-phase review protocol for drafting and changing requirements, deriving a first spec from an existing codebase (`hamilton reverse`), how a requirement and its acceptance criteria are written, and what verification methods mean, and the validation session (`hamilton validate`) in which the engineer tries the running software and reports findings. The build loop is not here: `hamilton build` drives it itself. The model is one requirement tree; every acceptance criterion names how it is verified.
 ---
 
 # Hamilton workflows
@@ -35,10 +35,12 @@ that needs attention — see **How to write a requirement**.
 - The spec is ratified and the code has to catch up — new behaviour, a spec
   change to propagate, a red gate, a suite to bind to a freshly derived spec
   -> **`hamilton build`**, which drives that loop itself (below).
+- The build is green and the engineer is trying the running software, in a
+  `hamilton validate` session -> **Validate**.
 
-`hamilton design` and `hamilton reverse` scope the session to the spec phase
-and hand you a kickoff line so you start straight away — do not wait to be
-told "go". End with a summary; Hamilton offers the engineer their next step
+`hamilton design` and `hamilton reverse` scope the session to the spec phase,
+`hamilton validate` to build phase, and each hands you a kickoff line so you
+start straight away — do not wait to be told "go". End with a summary; Hamilton offers the engineer their next step
 from there.
 
 ## Asking, and ending
@@ -87,8 +89,9 @@ offer to draft the vision first — see **Drafting the vision** below. If the
 engineer declines, write nothing to `spec/vision.md` and go straight to the one
 question below, taking the answer as "initial spec".
 
-**Otherwise**, ask **one** question: are they drafting the initial spec, or
-modifying / extending existing requirements, and what is the change? Wait for the
+**Otherwise**, ask **one** question: are they drafting the initial spec,
+modifying / extending existing requirements, or describing the presentation
+(**Specify presentation**, below) — and what is the change? Wait for the
 answer before Phase 1.
 
 ### Drafting the vision (first run only)
@@ -116,6 +119,37 @@ description, you write the clean version, you ask where it is unclear:
 Keep it short: when the description is solid and nothing needs a question, one
 round is enough. This is orientation, not a spec — do not expand it toward
 requirements.
+
+### Specify presentation
+
+Behaviour can be specified and verified; presentation — how the software
+looks and feels — cannot. It is written as intent in `spec/design-guide.md`,
+which the build agents realise as well as they can and the engineer judges by
+trying the software in `hamilton validate`. `hamilton verify` never reads it.
+
+- **Draft it the way you draft the vision**: ask for a coarse description —
+  the impression the software should make, the look and feel, the layout on
+  small and large screens, recurring components, the tone of copy — then
+  write the clean version into the guide's sections and ask where it is
+  unclear, one focused question at a time. Show the full draft, or the
+  changed passages before and after, and write only on confirmation.
+- **Intent, not measurements.** "Calm, generous white space, one accent
+  colour" is a guide; a pixel grid nobody asked for is not. Keep what the
+  engineer said, and name the few properties that matter most.
+- **References.** A mockup, a screenshot, a logo or a palette goes under
+  `spec/design/` and is named in the guide by path —
+  `spec/design/home.png`, and what to take from it. Ask the engineer to put
+  the files there; you cannot make them up.
+- **Never behaviour.** What an actor can do or observe — a button that
+  subscribes, an error that is shown — is a requirement. If the engineer
+  describes one, say so, and take it through the review protocol.
+- **Never referenced from the model.** No Statement or AC names
+  `spec/design-guide.md` or a file under `spec/design/`: that would make it
+  part of the criterion and of every review of its tests, which is exactly
+  what presentation is not.
+- **Changing it has a consequence**: the next `hamilton build` realises the
+  changed passages in the presentation, and nothing else. Say so in the
+  summary.
 
 ### From vision to requirements
 
@@ -211,13 +245,14 @@ observes, never by what is cheapest to test:
 - a calculation or rule without I/O -> `unit`;
 - data crossing to an external system -> `http`, with the stub's received calls
   asserted;
-- a subjective quality (looks, feel) -> first make it checkable, e.g. a
-  screenshot compared against an approved reference kept in `spec/`; `manual`
-  only as a last resort. Never "any page matches spec/<reference>": no bounded
-  test proves it, so the build keeps writing ever larger tests around it.
-  Name the properties the reference fixes — the palette, the fonts, a
-  breakpoint — one AC each. `manual` is reserved: it needs no definition and no
-  test, and `hamilton verify` lists it as not machine-verified.
+- how it looks or reads (layout, colour, type, imagery, tone) -> **not an
+  AC**. Presentation is intent, written in `spec/design-guide.md` (see
+  **Specify presentation**) and validated by the engineer in `hamilton
+  validate` — never verified. An AC holds what the actor can do and observe:
+  that the page offers a "Subscribe" button, not what colour it is. A
+  criterion a person must judge that is *not* presentation is `manual`, as a
+  last resort; `manual` is reserved: it needs no definition and no test, and
+  `hamilton verify` lists it as not machine-verified.
 - **every root needs at least one AC with an actor-facing method.** A root
   whose ACs are all `unit` proves the parts, never the goal — `hamilton verify`
   warns `root-unit-only`. If no actor-facing method fits, ask the engineer.
@@ -535,6 +570,72 @@ one where none does — and takes the gate from there.
 
 ---
 
+## Validate — build phase
+
+`hamilton validate` is the second gate. `hamilton verify` proves the software
+does what the spec says; here the engineer tries it by hand — `hamilton run`
+keeps it running in another terminal — and tells you what they find. The
+phase is `build`: code and tests are writable, `spec/` is not.
+
+### Opening
+
+One or two lines: greet the engineer, remind them to keep `hamilton run`
+going, and ask for their first finding. Nothing else — they are the one
+testing.
+
+### One finding at a time
+
+Read what the engineer describes and look at the code it points to. Then sort
+it into **exactly one** of three kinds. When you cannot tell which, ask —
+through `ask_engineer`, naming the kinds it could be and why.
+
+1. **Presentation** — how it looks or reads: layout, spacing, colour, type,
+   imagery, the tone of copy. Presentation is validated, never verified: fix
+   it here, directly, following `spec/design-guide.md` if there is one. Stay
+   inside the presentation layer — templates, styles, components — and change
+   no behaviour. Show the engineer what you changed; they check it in the
+   running software.
+2. **Bug** — the spec is right and the code is wrong. Find the criterion whose
+   behaviour it breaks (`hamilton show`, `hamilton show R-nnnn`) and name it
+   to the engineer, with its path.
+   - Add a test that fails on the bug, tagged `@covers R-nnnn/ACn` for that
+     criterion, in the criterion's own test file under its method's paths.
+     The test proves the criterion, not the fix: its expected values come
+     from the criterion's text.
+   - Run it with `hamilton verify R-nnnn/ACn` and see it **fail**. Then fix
+     the code, and run it again until it passes. Never run the whole suite:
+     Hamilton does.
+   - **If no criterion covers the behaviour, it is not a bug**: the spec is
+     incomplete — the third kind.
+3. **Spec wrong or incomplete** — what the engineer expects is not what a
+   criterion says, or nothing in the spec asks for it. Say which requirement
+   is missing or wrong, where it belongs in the tree, and why. Then call the
+   **`change_spec`** tool with the finding and the change in a sentence.
+   Hamilton asks the engineer. If they agree, the phase is `spec` and you run
+   the **Specify review protocol** from Phase 1 for that change, exactly as
+   in a `hamilton design` session — plan it silently, state its size, present
+   one item at a time, write each only on approval, end with the summary and
+   `HAMILTON_SESSION_DONE`. Code and tests are not writable while you do. If
+   they decline, do not work around it in the code.
+
+End a presentation fix or a bug fix with a short summary and
+`HAMILTON_SESSION_DONE`, as any iteration.
+
+### What Hamilton does after you
+
+After each of your turns Hamilton checks the gate. A spec change or a new or
+changed test leaves it with findings, and Hamilton runs the build before the
+engineer goes on: your test is reviewed, the changed criteria are tested and
+implemented, the suite runs. You are told how it went — pass that on in a
+line, remind the engineer to restart `hamilton run` if the software does not
+reload by itself, and ask for the next finding. A presentation fix leaves
+the gate as it was, and costs no build.
+
+Two things still hold: **never write, edit or copy a `#…` review suffix**,
+and a correct failing test is never edited to pass.
+
+---
+
 ## Build phase — `hamilton build` drives
 
 You do not implement a Hamilton project by hand, and neither does an agent.
@@ -547,8 +648,8 @@ against the tests. The writer may read the code; the reviewer never does --
 that is where the independence lives. It asks the engineer only when a
 criterion needs clarifying, and their answer goes into the spec.
 
-So in build phase there is one thing to do: **run `hamilton build`** and read
-what it reports. Each step of it briefs its own agent; none of those briefs is
+So in build phase, outside a `hamilton validate` session, there is one thing
+to do: **run `hamilton build`** and read what it reports. Each step of it briefs its own agent; none of those briefs is
 here, because the loop that enforces them owns them.
 
 Two things still hold wherever you are:

@@ -8,6 +8,11 @@ rules for any coding agent working here; Hamilton's commands (`hamilton design`,
 - Specification is top-down: ratify the root layer of actor goals before
   decomposing them into child requirements.
 - If a write to `spec/` is denied, stop and report. Never work around it.
+- Presentation — how the software looks and feels — is intent in
+  `spec/design-guide.md`: realised as well as you can, validated by the
+  engineer, never verified. Keep it in its own layer (templates, styles,
+  components), apart from behaviour, and leave existing presentation alone
+  unless a criterion or a change to the guide asks for it.
 - `spec/requirements.md` is the whole model: one `Parent:` tree. A root names an
   `Actor:`; every other requirement names a `Parent:`. Every acceptance
   criterion ends in its verification method, e.g. `[browser]`, defined once
@@ -19,7 +24,8 @@ rules for any coding agent working here; Hamilton's commands (`hamilton design`,
   which only the reviewer in `hamilton build` writes, when it passes the test. A
   change to the AC or to the test clears it. Never write or edit a suffix.
 - `.hamilton/` is read-only in build phase, except `.hamilton/config`: choosing
-  the test framework and layout (`test_command`, `paths.<method>`) is a
+  the test framework, the layout and how the software starts
+  (`test_command`, `paths.<method>`, `run.<method>`, `start_command`) is a
   build-time call and yours to make. Do not touch any other key there.
 - `hamilton verify` passes before a merge request opens.
 - A correct failing test is never edited to pass.

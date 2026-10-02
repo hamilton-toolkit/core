@@ -9,7 +9,8 @@ vendor-specific things are contained here on purpose:
   * **Questions.** The engineer-facing question flow is an in-process MCP tool
     (`ask_engineer`) rather than the CLI's own interactive prompt, because
     Hamilton has to own the rendering to offer "re-pick before this is sent".
-    The skill is told to call it.
+    The skill is told to call it. A mode's own tools (`protocol.Tool`) are
+    served the same way, beside it.
   * **Writes.** The phase gate and the review-suffix rule run as a
     `can_use_tool` callback over `hamilton_core.guard.decide` and
     `guard.suffix_denial`. The project's `.claude/settings.json`
@@ -170,12 +171,21 @@ def _as_question(args: dict) -> P.Question:
                       header=str(args.get("header", "")))
 
 
+def _sdk_tool(t: P.Tool):
+    """A mode's own tool, as an in-process MCP tool beside `ask_engineer`."""
+    @tool(t.name, t.description, t.params)
+    async def call(args: dict) -> dict:
+        return {"content": [{"type": "text", "text": await t.run(args)}]}
+    return call
+
+
 class ClaudeSdkAdapter:
     """`protocol.AgentAdapter` over `claude_agent_sdk`."""
 
     def __init__(self, root: str, answerer: P.Answerer,
                  write_policy: P.WritePolicy,
-                 resume_ref: str | None = None) -> None:
+                 resume_ref: str | None = None,
+                 tools: tuple[P.Tool, ...] = ()) -> None:
         self._root = root
         self._answerer = answerer
         self._write_policy = write_policy
@@ -203,7 +213,7 @@ class ClaudeSdkAdapter:
             # A session is scoped to a phase, so it wants its own skill anyway.
             skills=[SKILL],
             mcp_servers={"hamilton": create_sdk_mcp_server(
-                "hamilton", tools=[ask_engineer])},
+                "hamilton", tools=[ask_engineer, *map(_sdk_tool, tools)])},
             can_use_tool=self._can_use_tool,
             hooks={"PreToolUse": [HookMatcher(matcher="|".join(SUBAGENT_TOOLS),
                                               hooks=[_foreground(FOREGROUND)])]},
@@ -344,7 +354,8 @@ DEFAULT_MODELS = {"tests": "sonnet", "review": "sonnet"}
 # much. Left to itself a test writer spends most of its output thinking --
 # twenty thousand tokens before a single edit, at times -- and a planner
 # three quarters of it.
-DEFAULT_EFFORTS = {"plan": "medium", "tests": "medium", "code": "medium"}
+DEFAULT_EFFORTS = {"plan": "medium", "tests": "medium", "code": "medium",
+                   "present": "medium"}
 
 # Every build agent caches its prompt for 5 minutes, not the hour a
 # subscription defaults to: a 1-hour cache write costs twice the input, a
@@ -416,7 +427,8 @@ class ClaudeSdkJudge:
             env=CACHE,
         )
 
-    async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None) -> str:
+    async def ask(self, prompt: str, on_tokens: P.OnTokens | None = None,
+                  step: str = "review") -> str:
         texts, error = [], None
         with tempfile.TemporaryDirectory(prefix="hamilton-review-") as cwd:
             async for msg in query(prompt=prompt, options=self._options(cwd)):
@@ -424,7 +436,7 @@ class ClaudeSdkJudge:
                     texts += [b.text for b in msg.content if isinstance(b, TextBlock)]
                 elif isinstance(msg, ResultMessage):
                     spent = _spent(msg)
-                    self.tokens["review"] = self.tokens.get("review", 0) + spent
+                    self.tokens[step] = self.tokens.get(step, 0) + spent
                     if on_tokens:
                         on_tokens(spent)
                     if msg.is_error:

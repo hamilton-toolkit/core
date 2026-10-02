@@ -97,7 +97,7 @@ def drive(tmp_path, adapter, keys=""):
     return rc, out.getvalue(), P.Checkpoint.load(str(tmp_path))
 
 
-FINISH = "5\n"        # the spec menu's four steps, then "Finish this session"
+FINISH = "6\n"        # the spec menu's five steps, then "Finish this session"
 
 
 def test_a_finished_iteration_offers_the_next_step_instead_of_exiting(tmp_path):
@@ -141,7 +141,8 @@ def test_the_next_step_menu_offers_no_typed_answer(tmp_path):
 def test_each_menu_choice_carries_its_own_instruction(tmp_path):
     for pick, expected in (("1\n", "review protocol"),
                            ("3\n", "decompose"),
-                           ("4\n", "add up")):
+                           ("4\n", "add up"),
+                           ("5\n", "specify presentation")):
         a = FakeAdapter([DONE], [P.AgentText("ok")],
                         session_ref="s1")
         drive(tmp_path, a, keys=pick + "\n")
@@ -239,6 +240,60 @@ def test_the_adapter_is_closed_even_when_a_turn_raises(tmp_path):
     except RuntimeError:
         pass
     assert a.closed is True
+
+
+# --- the presentation -----------------------------------------------------------
+
+def test_specifying_the_presentation_scaffolds_a_missing_design_guide(tmp_path):
+    root = copy_fixture("tree", tmp_path)
+    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
+    c, out = console("5\n" + "\n")
+    asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
+    guide = Path(root) / "spec" / "design-guide.md"
+    assert guide.read_text().startswith("# Design guide")
+    assert "design-guide.md" in a.sent[1]
+
+
+def test_an_existing_design_guide_is_left_as_it_is(tmp_path):
+    root = copy_fixture("tree", tmp_path)
+    guide = Path(root) / "spec" / "design-guide.md"
+    guide.write_text("# Design guide\n\nCalm, lots of white space.\n")
+    a = FakeAdapter([DONE], [P.AgentText("ok")], session_ref="s1")
+    c, out = console("5\n" + "\n")
+    asyncio.run(L.drive(root, DESIGN, "KICKOFF", a, c))
+    assert "Calm" in guide.read_text()
+    assert "scaffolded" not in out.getvalue()
+
+
+# --- what a mode does between turns ---------------------------------------------
+
+def test_what_after_turn_says_is_sent_instead_of_asking_the_engineer(tmp_path):
+    told = []
+
+    async def after_turn(done):
+        told.append(done)
+        return "the build is green" if len(told) == 1 else None
+
+    a = FakeAdapter([P.AgentText("fixed"), DONE], [P.AgentText("noted"), DONE],
+                    session_ref="s1")
+    c, out = console(FINISH)
+    asyncio.run(L.drive(str(tmp_path), DESIGN, "KICKOFF", a, c, after_turn))
+    assert a.sent == ["KICKOFF", "the build is green"]
+    assert told == [True, True]
+    assert out.getvalue().count("Iteration complete") == 1
+
+
+def test_the_agents_rows_are_drawn_again_after_after_turn(tmp_path):
+    c, _ = console("\n")
+    c.follow(lambda: ())
+
+    async def after_turn(done):
+        c.follow(lambda: ("a build row",))     # what a build does
+        return None
+
+    asyncio.run(L.drive(str(tmp_path), DESIGN, "KICKOFF",
+                        FakeAdapter([P.AgentText("x")]), c, after_turn))
+    assert c._activity() == ()
 
 
 # --- changing specific requirements ---------------------------------------------

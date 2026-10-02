@@ -13,7 +13,12 @@ an agent only for the work that needs one.
             implementation: its brief is all it gets.
     review  Hamilton runs `review` in-process. A reject goes back to a fresh
             writer with the reviewer's reasons, at most `ROUNDS` times.
-    code    one task: make the suite green. Then round again.
+    code    one task: make the suite green. Its diff is judged for
+            presentation it changed with no criterion asking (`drift`), and
+            what is flagged goes back to it once. Then round again.
+    present once green, when the design guide changed since it was last
+            realised: one task realises what changed, and the suite checks
+            it (`design`).
 
 Because Hamilton starts each task and waits for it, it always knows what is
 running: the step line, the indicator and the rows are what is happening, not
@@ -50,10 +55,12 @@ from string import Template
 
 from hamilton_core import verify as _verify
 from hamilton_core import clarify as _clarify
+from hamilton_core import design as _design
 from hamilton_core import guard as _guard
 from hamilton_core import phase as _phase
 from hamilton_core import review as _review
 from hamilton_core import status as _status
+from hamilton_core import tree as _tree
 from hamilton_core.verify import REQ_REL, UsageError
 from hamilton_core.session import protocol as P
 from hamilton_core.session.console import Console, Rows, elapsed, tokens as _tokens
@@ -71,7 +78,9 @@ WRITERS = 4             # test writers at once
 # What the time at the end of a run is booked under: each step's kind, and
 # the engineer's own time at a question, which is no step's.
 SPENT = {"check": "checking", "plan": "planning", "tests": "writing tests",
-         "review": "reviewing", "code": "coding", "wait": "waiting for you"}
+         "review": "reviewing", "code": "coding",
+         "drift": "checking the presentation",
+         "present": "realising the design", "wait": "waiting for you"}
 
 STEPS = {
     "check": "Checking the gate",
@@ -80,6 +89,8 @@ STEPS = {
     "retests": "Revising tests",
     "review": "Reviewing tests",
     "code": "Coding",
+    "drift": "Checking the presentation",
+    "present": "Realising the design guide",
 }
 
 # Every rule `hamilton verify` can report belongs to exactly one step. This is
@@ -88,9 +99,10 @@ SPEC_RULES = frozenset({"malformed", "dangling-ref", "orphan-requirement",
                         "cyclic-parent", "no-method", "unknown-method",
                         "missing-reference"})
 CONFIG_RULES = frozenset({"no-test-command", "no-method-paths", "retired-config"})
-# Not the gate's: what lets a step run one criterion's tests. The plan step
-# sets it, and nothing needs coding for it.
-RUN_RULES = frozenset({"no-run-command"})
+# Not the gate's: what lets a step run one criterion's tests, and what lets
+# `hamilton run` start the software. The plan step sets them, and nothing
+# needs coding for them.
+RUN_RULES = frozenset({"no-run-command", "no-start-command"})
 COVER_RULES = frozenset({"uncovered", "wrong-method", "orphan-tag"})
 # What the coding step fixes without a test being written: a failing suite,
 # and a copied test, which it deletes.
@@ -324,6 +336,7 @@ def plan_prompt(root: str, work: Work, reqs: dict, defined: dict) -> str:
         criteria="\n\n".join(spec_of(reqs, defined, q) for q in quals),
         quals=", ".join(quals) or "(none)",
         config=_config_text(root),
+        design=_design.brief(root),
         requirements=REQ_REL)
 
 
@@ -383,7 +396,8 @@ def test_files(root: str, quals) -> list:
 
 
 def code_prompt(work: Work, reqs: dict, defined: dict, quals: list,
-                files: list = (), command: str = "") -> str:
+                files: list = (), command: str = "",
+                design: str = _design.NO_GUIDE) -> str:
     """The implementer's brief. A failed suite comes with its failures: the
     engineer never needs to read them, the implementer does."""
     failures = "\n\n".join(
@@ -402,6 +416,7 @@ def code_prompt(work: Work, reqs: dict, defined: dict, quals: list,
         tests="\n".join(f"- {f}" for f in files)
               or "- (none tagged yet: run the failing tests the output above names)",
         command=command or "the full suite",
+        design=design,
         criteria="\n\n".join(spec_of(reqs, defined, q) for q in quals) or "(none)")
 
 
@@ -452,6 +467,7 @@ class Run:
         self.spent: dict = {}           # SPENT key -> seconds
         self.checks = self.suites = 0
         self.runs_asked = False         # missing `run.<method>`s put to the plan
+        self.kept: dict = {}            # flagged presentation the coder kept
         self._open: tuple | None = None # (SPENT key, when it started)
 
     # -- where the time goes --
@@ -534,8 +550,10 @@ class Run:
         if findings and not self.runs_asked:
             # With work to do anyway, a missing `run.<method>` joins it --
             # once a run: without one, every step works out the project's
-            # runners for itself.
-            findings += _verify.missing_runs(self.root)
+            # runners for itself. So does a missing `start_command`, without
+            # which the engineer cannot try the software.
+            findings += (_verify.missing_runs(self.root)
+                         + _verify.missing_start(self.root))
             self.runs_asked = True
         self.checks += 1
         self.suites += suite
@@ -637,10 +655,61 @@ class Run:
         if "copied-suffix" in rules:
             why.append("a test is copied")
         self.step("code", " · ".join(why))
+        before = _tree.snapshot(self.root)
         await self.task("code", "Write the implementation",
                         code_prompt(work, reqs, defined, quals,
-                                    test_files(self.root, quals), self.command),
+                                    test_files(self.root, quals), self.command,
+                                    _design.brief(self.root)),
                         "code")
+        await self.drift(before, reqs, defined, quals)
+
+    async def drift(self, before: str | None, reqs: dict, defined: dict,
+                    quals: list) -> None:
+        """The coding step judged for presentation it changed with no
+        criterion asking: what is flagged goes back to the coder once, and
+        what it keeps is reported at the end of the run. Advisory -- it
+        never stops the run."""
+        after = _tree.snapshot(self.root)
+        if before is None or after is None or before == after:
+            return
+        criteria = "\n\n".join(spec_of(reqs, defined, q) for q in quals)
+        prompt = _design.drift_prompt(_template("drift"),
+                                      _tree.diff(self.root, before, after), criteria)
+        if prompt is None:
+            return
+        self.step("drift")
+        started, used = time.monotonic(), []
+        try:
+            answer = await self.judge.ask(prompt, on_tokens=used.append,
+                                          step="drift")
+        except Exception as exc:        # advisory: a failed check is no stop
+            self.said(f"not checked: {exc}")
+            return
+        flagged = _design.files(answer, "flagged")
+        self.said(_cost(time.monotonic() - started, sum(used)) if not flagged
+                  else f"{_count(len(flagged), 'file', 'files')} changed the "
+                       f"presentation unasked: {', '.join(flagged)}")
+        if not flagged:
+            return
+        answer = await self.task(
+            "restore", "Restore the presentation",
+            _template("restore").substitute(
+                flagged="\n".join(f"- `{f}`: {why}" for f, why in flagged.items()),
+                criteria=criteria or "(none)", command=self.command),
+            "code")
+        self.kept.update(_design.files(answer, "kept"))
+
+    async def present(self) -> bool:
+        """Realise what changed in the design guide since it was last
+        realised. Returns whether it ran."""
+        if not _design.changed(self.root):
+            return False
+        self.step("present", _design.GUIDE_REL)
+        await self.task("present", "Realise the design guide",
+                        _design.present_prompt(self.root, _template("present")),
+                        "present")
+        _design.record(self.root)
+        return True
 
 
 def _cost(seconds: float, tokens: int) -> str:
@@ -663,6 +732,13 @@ async def build(root: str, worker: P.Worker, judge: P.Judge, console: Console,
         # Where the time went, however the run ended.
         console.say()
         console.say(console.paint.dim(run.times()))
+        # Presentation the coder changed unasked and kept, for the engineer
+        # to look at when they try the software.
+        if run.kept:
+            console.say(console.paint.yellow(
+                "Presentation changed without a criterion asking, and kept:"))
+            for file, why in run.kept.items():
+                console.say(f"  {console.paint.bold(file)}  {why}")
         # Whatever a review left open, for the engineer to unfold now that
         # nothing else wants the terminal. Off the loop: the list is a
         # terminal application with an event loop of its own.
@@ -687,6 +763,15 @@ async def _loop(run: "Run", root: str, state: State, console: Console) -> int:
             return 2
         if not findings:
             if suite:
+                # Green: now the design guide, whose changes make no finding.
+                # What realising them changed is checked by the suite again.
+                try:
+                    if await run.present():
+                        continue
+                except Failed as exc:
+                    if await _task_failed(run, exc) is Answer.END:
+                        return 1
+                    continue
                 console.say()
                 console.say(f"hamilton build: the gate is green "
                             f"({elapsed(time.monotonic() - started)}).")
@@ -996,20 +1081,10 @@ def main() -> int:
         State.clear(root)
         state = State()
 
-    from hamilton_core.session.claude_sdk_adapter import (ClaudeSdkJudge,
-                                                          ClaudeSdkWorker)
-    # The model and effort of each step, as the engineer wrote them in
-    # `model.<step>` and `effort.<step>`: what a name means, and the default
-    # for a step left unset, is the adapter's business.
     try:
-        cfg = _verify.read_config(root)
+        worker, judge = agents(root)
     except UsageError as exc:
         return refuse(str(exc), 2)
-    models = _verify.keyed(cfg, MODEL_PREFIX)
-    efforts = _verify.keyed(cfg, EFFORT_PREFIX)
-    worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target),
-                             models, efforts)
-    judge = ClaudeSdkJudge(models.get("review"), efforts.get("review"))
     console.start_working(STEPS["check"])
     try:
         return asyncio.run(build(root, worker, judge, console, state))
@@ -1025,6 +1100,23 @@ def main() -> int:
         return 1
     finally:
         console.stop_working()
+
+
+def agents(root: str) -> tuple[P.Worker, P.Judge]:
+    """The worker and the judge a build runs its steps with. Raises
+    UsageError when there is no `.hamilton/config` to read them from."""
+    from hamilton_core.session.claude_sdk_adapter import (ClaudeSdkJudge,
+                                                          ClaudeSdkWorker)
+    # The model and effort of each step, as the engineer wrote them in
+    # `model.<step>` and `effort.<step>`: what a name means, and the default
+    # for a step left unset, is the adapter's business.
+    cfg = _verify.read_config(root)
+    models = _verify.keyed(cfg, MODEL_PREFIX)
+    efforts = _verify.keyed(cfg, EFFORT_PREFIX)
+    worker = ClaudeSdkWorker(root, lambda target: _guard.decide(root, target),
+                             models, efforts)
+    judge = ClaudeSdkJudge(models.get("review"), efforts.get("review"))
+    return worker, judge
 
 
 def _keep(console: Console, state: State) -> bool:

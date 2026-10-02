@@ -133,6 +133,9 @@ PATHS_PREFIX = "paths."
 # one method given to it as arguments -- how `hamilton verify R-nnnn/ACn`
 # runs one criterion's tests without the whole suite.
 RUN_PREFIX = "run."
+# `start_command=docker compose up`: what `hamilton run` starts -- the whole
+# software, for the engineer to try it by hand.
+START_KEY = "start_command"
 # a supporting spec file named in a Statement or AC: `spec/price_model.md`. It
 # ends in a word character, so the "." closing a sentence is not part of it.
 REF_RE = re.compile(r"(?<![\w/])spec/[\w./-]*\w")
@@ -877,6 +880,27 @@ def missing_runs(root: str) -> list:
         f"Fix: set it in {CONFIG_REL}, and check it with 'hamilton verify "
         f"R-nnnn/ACn' on a [{m}] criterion.", CONFIG_REL, 1, methods=[m])
         for m in used]
+
+
+def missing_start(root: str) -> list:
+    """A `no-start-command` finding when `.hamilton/config` has no
+    `start_command`. Not part of the gate either: `hamilton build` has it set,
+    so that `hamilton run` can start the software for the engineer to
+    validate it by hand."""
+    if start_command(read_config(root)):
+        return []
+    return [_finding("no-start-command",
+        f"{CONFIG_REL} has no {START_KEY}, so `hamilton run` cannot start the "
+        f"software for the engineer to try it. Expected: a '{START_KEY}="
+        f"<command>' line that starts the whole software in the foreground "
+        f"until stopped (a dev server, a compose stack, the app itself). "
+        f"Found: none. Fix: set it in {CONFIG_REL}.", CONFIG_REL, 1)]
+
+
+def start_command(cfg: dict) -> str:
+    """The `start_command` of the config, or "" when it is unset."""
+    value, _line = cfg.get(START_KEY, ("", 0))
+    return value.strip()
 
 
 def still_failing(ran: dict) -> dict | None:

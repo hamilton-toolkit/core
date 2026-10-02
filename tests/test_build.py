@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import subprocess
 
 from conftest import copy_fixture, stamp
 
@@ -45,7 +46,9 @@ class FakeWorker:
         """The prompts of one kind: 'plan', 'write_test' or 'implement'."""
         marks = {"plan": "into a contract a test can be written",
                  "write_test": "Write the tests for one acceptance criterion",
-                 "implement": "Write the implementation"}
+                 "implement": "Write the implementation",
+                 "present": "in line with its design guide",
+                 "restore": "A reviewer found that it"}
         return [p for p in self.prompts if marks[kind] in p]
 
 
@@ -55,13 +58,18 @@ class FakeJudge:
     a re-review settles the points it was given -- resolved on a pass, left
     open on a reject -- the way the real reviewer is told to."""
 
-    def __init__(self, verdict):
+    def __init__(self, verdict, flag=None):
         self._verdict = verdict
         self.asked = []
         self.settles = []
+        self.drifts = []            # the presentation checks it was asked
+        self.flag = flag or {}      # ... and what it flags in each
         self.tokens = {}
 
-    async def ask(self, prompt, on_tokens=None):
+    async def ask(self, prompt, on_tokens=None, step="review"):
+        if step == "drift":
+            self.drifts.append(prompt)
+            return json.dumps({"flagged": self.flag})
         self.asked.append(prompt)
         blocks = re.split(r"^## (?=R-\d{4}/AC\d+$)", prompt, flags=re.M)[1:]
         settling = "Comments to settle" in prompt
@@ -402,7 +410,7 @@ def test_a_test_that_only_needed_judging_costs_no_implementation(tmp_path):
     the whole job: there is nothing to plan and nothing to build."""
     d = project(tmp_path)
     with open(f"{d}/.hamilton/config", "a") as fh:
-        fh.write("run.http=true\nrun.unit=true\n")
+        fh.write("run.http=true\nrun.unit=true\nstart_command=true\n")
     stamp(d)
     body = open(f"{d}/tests/covers.js").read()
     open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
@@ -425,6 +433,26 @@ def test_a_missing_run_command_goes_to_the_planner_once_and_needs_no_coding(tmp_
     assert "has no run.http" in plan
     assert worker.of("implement") == []
     assert "▸ Planning — the config" in out.getvalue()
+
+
+def test_a_missing_start_command_goes_to_the_planner_with_the_rest(tmp_path):
+    """So that `hamilton run` can start the software for the engineer."""
+    d = project(tmp_path)
+    with open(f"{d}/.hamilton/config", "a") as fh:
+        fh.write("run.http=true\nrun.unit=true\n")
+    stamp(d)
+    body = open(f"{d}/tests/covers.js").read()
+    open(f"{d}/tests/covers.js", "w").write(body + "\n// a comment, which is an edit\n")
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    [plan] = worker.of("plan")
+    assert "has no start_command" in plan
+    assert worker.of("implement") == []
+
+
+def test_a_missing_start_command_is_set_aside_like_a_run_command():
+    work = B.route([finding("no-start-command")], skipped=[])
+    assert work.runs and not work.open
 
 
 def test_a_green_gate_is_not_held_up_for_a_run_command(tmp_path):
@@ -1179,3 +1207,128 @@ def test_a_green_gate_is_not_held_up_for_long_tests(tmp_path):
     worker = FakeWorker()
     assert run(d, worker, FakeJudge(passes), console()[0]) == 0
     assert worker.prompts == []
+
+
+# --- the presentation ---------------------------------------------------------
+
+GUIDE = "# Design guide\n\n## Intent\n\nCalm, one accent colour: teal.\n"
+
+
+def with_guide(d, text=GUIDE):
+    with open(f"{d}/spec/design-guide.md", "w") as fh:
+        fh.write(text)
+
+
+def test_a_new_design_guide_is_realised_once_the_gate_is_green(tmp_path):
+    d = project(tmp_path)
+    stamp(d)
+    with_guide(d)
+    worker = FakeWorker()
+    c, out = console()
+    assert run(d, worker, FakeJudge(passes), c) == 0
+    [present] = worker.of("present")
+    assert "Calm, one accent colour: teal." in present
+    assert "the whole guide is new to it" in present
+    assert "▸ Realising the design guide" in out.getvalue()
+    # realised, and remembered: the next run has nothing to do
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert worker.prompts == []
+
+
+def test_a_changed_guide_is_realised_from_what_changed(tmp_path):
+    d = project(tmp_path)
+    stamp(d)
+    with_guide(d)
+    run(d, FakeWorker(), FakeJudge(passes), console()[0])
+    with_guide(d, GUIDE.replace("teal", "orange"))
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    [present] = worker.of("present")
+    assert "-Calm, one accent colour: teal." in present
+    assert "+Calm, one accent colour: orange." in present
+
+
+def test_no_guide_or_the_template_is_nothing_to_realise(tmp_path):
+    from hamilton_core import design, init
+    d = project(tmp_path)
+    stamp(d)
+    assert design.brief(d) == design.NO_GUIDE
+    init.ensure(d, design.GUIDE_REL)
+    assert design.brief(d) == design.NO_GUIDE
+    worker = FakeWorker()
+    assert run(d, worker, FakeJudge(passes), console()[0]) == 0
+    assert worker.prompts == []
+
+
+def test_the_coder_is_told_about_the_guide(tmp_path):
+    d = project(tmp_path, "uncovered")
+    with_guide(d)
+    worker = FakeWorker(writes_a_test(d))
+    run(d, worker, FakeJudge(passes), console()[0])
+    [coding] = worker.of("implement")
+    assert "spec/design-guide.md" in coding
+    assert "Leave the existing presentation alone" in coding
+    assert "spec/design-guide.md" in worker.of("plan")[0]
+
+
+def git_project(tmp_path):
+    """An uncovered criterion in a project under git, with a stylesheet."""
+    d = project(tmp_path, "uncovered")
+    with open(f"{d}/app.css", "w") as fh:
+        fh.write("h1 { color: teal; }\n")
+    subprocess.run(["git", "init", "-q", d], check=True)
+    return d
+
+
+def restyles(d):
+    """A coder that implements -- and, unasked, restyles the heading."""
+    write = writes_a_test(d)
+
+    def act(prompt):
+        if "Write the implementation" in prompt:
+            with open(f"{d}/app.css", "w") as fh:
+                fh.write("h1 { color: grey; }\n")
+            return ""
+        if "A reviewer found that it" in prompt:
+            return '{"kept": {"app.css": "R-0001/AC1 needs it"}}'
+        return write(prompt)
+    return act
+
+
+def test_presentation_changed_unasked_goes_back_to_the_coder_once(tmp_path):
+    d = git_project(tmp_path)
+    worker = FakeWorker(restyles(d))
+    judge = FakeJudge(passes, flag={"app.css": "the heading turned grey"})
+    c, out = console()
+    assert run(d, worker, judge, c) == 0
+    [drift] = judge.drifts
+    assert "color: grey" in drift
+    [restore] = worker.of("restore")
+    assert "`app.css`: the heading turned grey" in restore
+    text = out.getvalue()
+    assert "▸ Checking the presentation" in text
+    # what it kept is left for the engineer to look at
+    assert "and kept:" in text and "R-0001/AC1 needs it" in text
+
+
+def test_a_coding_step_that_left_the_presentation_alone_costs_no_restore(tmp_path):
+    d = git_project(tmp_path)
+    worker = FakeWorker(restyles(d))
+    judge = FakeJudge(passes)                   # flags nothing
+    assert run(d, worker, judge, console()[0]) == 0
+    assert len(judge.drifts) == 1 and worker.of("restore") == []
+
+
+def test_outside_git_the_presentation_is_not_checked(tmp_path):
+    d = project(tmp_path, "uncovered")
+    judge = FakeJudge(passes, flag={"app.css": "x"})
+    run(d, FakeWorker(writes_a_test(d)), judge, console()[0])
+    assert judge.drifts == []
+
+
+def test_a_garbled_presentation_check_flags_nothing():
+    from hamilton_core import design
+    assert design.files("no json here", "flagged") == {}
+    assert design.files('{"flagged": ["a.css"]}', "flagged") == {}
+    assert design.files('{"flagged": {"a.css": "grey"}}', "flagged") == {"a.css": "grey"}
